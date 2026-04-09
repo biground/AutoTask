@@ -1,0 +1,556 @@
+plan_id: variable-mode-system
+objective: "研究 AutoPilot 项目中变量系统和模式系统的需求规格与当前代码基线"
+focus_area: "variable_system + mode_system"
+created_at: "2026-04-09"
+created_by: "gem-researcher"
+status: completed
+
+tldr: |
+  - 变量系统需求定义明确（V-001~V-011 共 11 项），AutoTask 现有 Referent/Reference 机制仅支持 Applet 间输出→输入引用链，缺少类型化变量、全局作用域、持久化、魔术变量
+  - 模式系统在 feature-taxonomy 中有 3 个直接条目（T-INT-004 Mode Change, A-INT-007 Set App Mode, C-INT-005 App Mode），但无独立数据模型定义，需全新设计
+  - 变量系统 9/11 项在 MVP 阶段，Dictionary/Array 在 V1 阶段；模式系统触发器 T-INT-004 在 V1 阶段，动作 A-INT-007 在 V2 阶段
+  - 两系统强耦合：模式切换可触发变量变化，变量条件可约束模式状态；均依赖 tasker-engine 的 ValueRegistry 和 Applet 插件架构
+  - AutoTask 的 ValueRegistry + Referent + AppletOptionRegistry 提供了可扩展的基础，但需在其上新建独立的 Variable 存储层和 Mode 状态机
+
+# ============================================================
+# 一、变量系统（Variable System）
+# ============================================================
+variable_system:
+
+  feature_taxonomy_items:
+    - id: V-001
+      name: "Boolean 变量"
+      description: "true/false"
+      roadmap_phase: MVP
+    - id: V-002
+      name: "Integer 变量"
+      description: "整数"
+      roadmap_phase: MVP
+    - id: V-003
+      name: "Decimal 变量"
+      description: "浮点数"
+      roadmap_phase: MVP
+    - id: V-004
+      name: "String 变量"
+      description: "字符串"
+      roadmap_phase: MVP
+    - id: V-005
+      name: "Dictionary 变量"
+      description: "键值对映射"
+      roadmap_phase: V1
+    - id: V-006
+      name: "Array 变量"
+      description: "有序列表"
+      roadmap_phase: V1
+    - id: V-007
+      name: "全局变量"
+      description: "跨宏共享"
+      roadmap_phase: MVP
+    - id: V-008
+      name: "局部变量"
+      description: "仅当前宏可见"
+      roadmap_phase: MVP
+    - id: V-009
+      name: "变量持久化"
+      description: "重启后变量值保留"
+      roadmap_phase: MVP
+    - id: V-010
+      name: "魔术变量"
+      description: "系统内置只读变量（当前时间、电量、设备名等）"
+      roadmap_phase: MVP
+    - id: V-011
+      name: "变量表达式"
+      description: "支持数学运算、字符串拼接、条件表达式"
+      roadmap_phase: MVP
+
+  data_model:
+    source: "docs/feature-taxonomy.md 第九节 8.5"
+    definition: |
+      Variable {
+        id: UUID
+        name: String
+        type: BOOLEAN | INTEGER | DECIMAL | STRING | DICTIONARY | ARRAY
+        value: Any
+        scope: GLOBAL | LOCAL
+        persisted: Boolean
+      }
+    notes:
+      - "6 种类型: BOOLEAN, INTEGER, DECIMAL, STRING, DICTIONARY, ARRAY"
+      - "2 种作用域: GLOBAL（跨宏共享）, LOCAL（仅当前宏可见）"
+      - "persisted 标记控制是否在重启后保留"
+
+  related_triggers:
+    - id: T-INT-001
+      name: "Variable Change"
+      description: "内部变量值变化时触发"
+      roadmap_phase: MVP
+
+  related_actions:
+    - id: A-DATA-006
+      name: "Set Variable"
+      description: "设置变量值"
+      roadmap_phase: MVP
+    - id: A-DATA-007
+      name: "Delete Variable"
+      description: "删除变量"
+      roadmap_phase: MVP
+    - id: A-DATA-008
+      name: "Clear Variables"
+      description: "清除所有变量"
+      roadmap_phase: V1
+    - id: A-DATA-009
+      name: "Array Manipulation"
+      description: "数组操作（添加/删除/排序/查找）"
+      roadmap_phase: V1
+    - id: A-DATA-010
+      name: "Clear Dictionary/Array Entry"
+      description: "清除字典/数组条目"
+      roadmap_phase: V1
+    - id: A-DATA-011
+      name: "JSON Parse"
+      description: "解析 JSON 字符串"
+      roadmap_phase: V1
+    - id: A-DATA-012
+      name: "Text Manipulation"
+      description: "文本处理（正则/替换/截取/编码）"
+      roadmap_phase: V1
+
+  related_constraints:
+    - id: C-INT-001
+      name: "Variable"
+      description: "内部变量值匹配条件"
+      roadmap_phase: MVP
+    - id: C-SYS-006
+      name: "Compare Values"
+      description: "比较两个变量/表达式"
+      roadmap_phase: MVP
+
+  related_expression_engine:
+    - id: EX-001
+      name: "数学运算"
+      description: "+, -, *, /, %, 幂, 取整"
+      roadmap_phase: MVP
+    - id: EX-002
+      name: "字符串操作"
+      description: "拼接、截取、替换、正则匹配、大小写转换"
+      roadmap_phase: MVP
+    - id: EX-003
+      name: "日期/时间函数"
+      description: "格式化、差值计算、时区转换"
+      roadmap_phase: MVP
+    - id: EX-004
+      name: "逻辑运算"
+      description: "AND, OR, NOT, 比较运算符"
+      roadmap_phase: MVP
+    - id: EX-005
+      name: "JSON 解析"
+      description: "解析 JSON 字符串，提取字段"
+      roadmap_phase: MVP
+    - id: EX-006
+      name: "数组操作"
+      description: "排序、过滤、映射、查找、去重"
+      roadmap_phase: V1
+    - id: EX-007
+      name: "文本操作"
+      description: "正则提取、模板替换、Base64 编解码"
+      roadmap_phase: V2
+
+  related_ui:
+    - id: NUI-005
+      name: "变量管理界面"
+      description: "变量列表 + 类型标签 + 实时值预览"
+      roadmap_phase: MVP
+    - id: WEB-006
+      name: "变量管理器"
+      description: "创建/编辑/删除变量"
+      roadmap_phase: V1
+    - id: WEB-007
+      name: "表达式编辑器"
+      description: "支持自动补全的表达式输入"
+      roadmap_phase: V1
+    - id: SYNC-003
+      name: "变量数据同步"
+      description: "全局变量同步"
+      roadmap_phase: V1
+
+  autotask_baseline:
+    existing_mechanism: |
+      AutoTask 使用 Referent/Reference 系统实现 Applet 间的数据传递：
+      - Applet.referents: Map<Int, String> — 输出变量名映射（Applet 执行后产生的引用值）
+      - Applet.references: Map<Int, String> — 输入变量名映射（引用其他 Applet 的输出值）
+      - Referent 接口: getReferredValue(which, runtime) 获取引用值
+      - ValueRegistry: 键值对存储，XTask 继承此类作为任务级值注册表
+      - TaskRuntime: 运行时通过 registerReferent() 注册输出，通过 getReferenceArgument() 获取引用值
+      - 作用域仅限 GLOBAL_SCOPE_TASK（任务级）和 GLOBAL_SCOPE_EVENT（事件级），无跨宏全局作用域
+      - 无类型系统：值以 Any 存储，无 Boolean/Integer/Decimal 等类型区分
+      - 无持久化：运行时结束后值丢失
+      - 无魔术变量概念
+
+    key_files:
+      - path: "tasker-engine/src/main/java/top/xjunz/tasker/engine/runtime/Referent.kt"
+        purpose: "定义 Referent 接口，Applet 执行后可产生引用值"
+        key_elements:
+          - "interface Referent"
+          - "getReferredValue(which: Int, runtime: TaskRuntime): Any?"
+          - "asResult(): AppletResult"
+
+      - path: "tasker-engine/src/main/java/top/xjunz/tasker/engine/runtime/ValueRegistry.kt"
+        purpose: "键值对值注册表，XTask 继承此类"
+        key_elements:
+          - "open class ValueRegistry"
+          - "registry: MutableMap<Any, Any> — 强引用注册表"
+          - "weakRegistry: MutableMap<WeakKey, Any> — 弱引用注册表"
+          - "getValue(key, initializer) / getWeakValue(key, initializer)"
+
+      - path: "tasker-engine/src/main/java/top/xjunz/tasker/engine/runtime/TaskRuntime.kt"
+        purpose: "任务运行时，管理 Referent 注册/查询、作用域变量、事件传递"
+        key_elements:
+          - "class TaskRuntime — 从池化复用"
+          - "referents: ArrayMap<String, IndexedReferent> — 运行时引用名到值的映射"
+          - "eventValueRegistry: ValueRegistry — 事件级值注册表"
+          - "getScopedValue(scope, key, initializer) — 按作用域获取值"
+          - "registerReferent(referent) — 注册当前 Applet 的输出引用"
+          - "getReferenceArgument(applet, which) — 获取引用参数值"
+          - "GLOBAL_SCOPE_TASK / GLOBAL_SCOPE_EVENT — 两种作用域常量"
+
+      - path: "tasker-engine/src/main/java/top/xjunz/tasker/engine/applet/base/Applet.kt"
+        purpose: "Applet 基类，定义 references/referents/values 属性"
+        key_elements:
+          - "references: Map<Int, String> — 输入引用映射"
+          - "referents: Map<Int, String> — 输出引用映射"
+          - "values: Map<Int, Any> — 非引用输入参数"
+          - "argumentTypes: IntArray — 参数类型掩码（ARG_TYPE_REFERENCE, ARG_TYPE_TEXT, ARG_TYPE_INT, ARG_TYPE_FLOAT, ARG_TYPE_LONG）"
+          - "getArgument(index, runtime) — 自动决定从 values 或 references 取值"
+
+      - path: "tasker-engine/src/main/java/top/xjunz/tasker/engine/applet/action/VarRefAction.kt"
+        purpose: "引用变量的动作基类"
+        key_elements:
+          - "abstract class VarRefAction<V> : Action()"
+          - "apply(runtime) — 从 references 获取引用参数，传递给 doAction"
+          - "optimisticVarRefAction — 工厂函数创建简单的引用动作"
+
+      - path: "tasker-engine/src/main/java/top/xjunz/tasker/engine/dto/AppletDTO.kt"
+        purpose: "Applet 序列化 DTO"
+        key_elements:
+          - "@Serializable class AppletDTO"
+          - "values: Map<Int, String>? — 序列化后的值参数"
+          - "referents: Map<Int, String>? — 输出引用名"
+          - "references: Map<Int, String>? — 输入引用名"
+
+      - path: "tasker-engine/src/main/java/top/xjunz/tasker/engine/dto/AppletArgumentSerializer.kt"
+        purpose: "参数序列化/反序列化工具"
+        key_elements:
+          - "valuesToStringMap() — 将 values 序列化为 String Map"
+          - "deserializeValues(raw) — 从 String Map 反序列化 values"
+          - "支持集合类型的嵌套序列化"
+
+      - path: "tasker-engine/src/main/java/top/xjunz/tasker/engine/applet/base/RootFlow.kt"
+        purpose: "根流程，包含引用合法性检查"
+        key_elements:
+          - "checkInvalidReference(applet, referents) — 验证引用的变量名是否已被先前 Applet 注册"
+
+      - path: "tasker-engine/src/main/java/top/xjunz/tasker/engine/task/XTask.kt"
+        purpose: "任务定义，继承 ValueRegistry 作为任务级值存储"
+        key_elements:
+          - "class XTask : ValueRegistry()"
+
+    key_classes:
+      - name: "Referent"
+        type: interface
+        location: "tasker-engine/.../runtime/Referent.kt"
+        role: "定义 Applet 输出引用值的能力"
+
+      - name: "ValueRegistry"
+        type: class
+        location: "tasker-engine/.../runtime/ValueRegistry.kt"
+        role: "通用键值对存储，XTask 的基类"
+
+      - name: "TaskRuntime"
+        type: class
+        location: "tasker-engine/.../runtime/TaskRuntime.kt"
+        role: "运行时状态管理：引用注册/查询、作用域变量、事件分发"
+
+      - name: "Applet"
+        type: abstract_class
+        location: "tasker-engine/.../applet/base/Applet.kt"
+        role: "所有可执行元素的基类，定义 references/referents/values"
+
+      - name: "VarRefAction"
+        type: abstract_class
+        location: "tasker-engine/.../applet/action/VarRefAction.kt"
+        role: "引用变量的动作基类"
+
+      - name: "AppletDTO"
+        type: data_class
+        location: "tasker-engine/.../dto/AppletDTO.kt"
+        role: "Applet 的 JSON 序列化 DTO"
+
+      - name: "AppletOptionRegistry"
+        type: abstract_class
+        location: "app/.../option/registry/AppletOptionRegistry.kt"
+        role: "Applet 选项注册表基类，通过注解发现和注册选项"
+
+    extension_points:
+      - name: "AppletOptionRegistry 子类注册"
+        description: "新建 Registry 子类（如 VariableActionRegistry），通过 @AppletOrdinal 注解注册新的 Applet 选项"
+        location: "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/"
+
+      - name: "Referent 接口实现"
+        description: "新的 Applet 可实现 Referent 接口来产生引用输出"
+        location: "tasker-engine/.../runtime/Referent.kt"
+
+      - name: "ValueRegistry 扩展"
+        description: "可在 TaskRuntime 中新增变量作用域（如 GLOBAL_SCOPE_APP 跨宏全局）"
+        location: "tasker-engine/.../runtime/TaskRuntime.kt"
+
+      - name: "AppletArgumentSerializer 扩展"
+        description: "可扩展支持新的参数类型（如 Boolean、Dictionary、Array 的序列化）"
+        location: "tasker-engine/.../dto/AppletArgumentSerializer.kt"
+
+      - name: "BootstrapOptionRegistry ID 常量"
+        description: "在 BootstrapOptionRegistry 中新增 ID 常量以注册新的 Registry"
+        location: "app/.../option/registry/BootstrapOptionRegistry.kt"
+
+  gap_summary: |
+    来自 gap-analysis.md 第 3.4 节「变量系统差距」：
+    1. 变量类型：AutoTask 仅有无类型引用系统 (Referent) → AutoPilot 需要 6 种明确类型（Bool/Int/Decimal/String/Dict/Array）— 需要类型化重构
+    2. 全局变量：AutoTask 仅有任务级/事件级 scope → AutoPilot 需要跨宏全局 + 宏内局部 — 需要新增全局 scope
+    3. 变量持久化：AutoTask 完全缺失 → 需要持久化存储（Room DB 或 DataStore）— 全新开发
+    4. 魔术变量：AutoTask 完全缺失 → 需要系统内置只读变量（当前时间/电量/设备名等）— 全新开发
+    5. 变量表达式：AutoTask 仅有文本正则 → 需要完整表达式引擎（数学/字符串/日期/逻辑/JSON）— 基本全新开发
+    6. Dictionary/Array：AutoTask 完全缺失 → 需要完整集合操作 — 全新开发
+
+    来自 gap-analysis.md 第 4.2 节「需改造资产」：
+    - 变量系统需从 Referent 模式 → 类型化全局变量系统
+
+  roadmap_phase:
+    MVP: "V-001~V-004（4 种基本类型）, V-007~V-011（全局/局部/持久化/魔术变量/表达式）, EX-001~EX-005（5 项表达式）, T-INT-001, A-DATA-006/007, C-INT-001, C-SYS-006, NUI-005"
+    V1: "V-005（Dictionary）, V-006（Array）, EX-006（数组操作）, CF-004（遍历集合）, A-DATA-008~012, WEB-006/007, SYNC-003"
+    V2: "EX-007（文本操作高级）, EX-008（OCR）"
+
+# ============================================================
+# 二、模式系统（Mode System）
+# ============================================================
+mode_system:
+
+  feature_taxonomy_items:
+    - id: T-INT-004
+      name: "Mode Change"
+      description: "应用模式切换触发器"
+      tags: "🟢🌐"
+      roadmap_phase: V1
+    - id: A-INT-007
+      name: "Set App Mode"
+      description: "设置应用模式（动作）"
+      tags: "🟢🌐"
+      roadmap_phase: V2
+    - id: C-INT-005
+      name: "App Mode"
+      description: "当前应用模式约束"
+      tags: "🟢🌐"
+      roadmap_phase: "未明确列出，预计 V1 (与 T-INT-004 同期)"
+
+  data_model:
+    source: "feature-taxonomy.md 中无独立数据模型定义，需自行设计"
+    proposed_concept: |
+      MacroDroid 的 Mode 系统类似 Tasker 的 Profile，是一种命名状态集合：
+      - 用户创建自定义模式（如「工作模式」「睡眠模式」「驾驶模式」）
+      - 模式之间互斥或可叠加
+      - 模式切换可由触发器自动触发，也可由动作手动切换
+      - 模式状态可作为约束条件
+      - 模式切换时可联动启用/禁用一批宏
+
+    notes:
+      - "feature-taxonomy 中没有定义 Mode 的数据结构，需新建"
+      - "MacroDroid 中 Mode 本质上是一个全局字符串变量 + 触发/约束语法糖"
+      - "也可设计为独立的状态机实体，具有更强的语义"
+
+  related_triggers:
+    - id: T-INT-004
+      name: "Mode Change"
+      description: "应用模式切换时触发"
+
+  related_actions:
+    - id: A-INT-007
+      name: "Set App Mode"
+      description: "设置应用模式"
+
+  related_constraints:
+    - id: C-INT-005
+      name: "App Mode"
+      description: "当前应用模式是否匹配"
+
+  autotask_baseline:
+    existing_mechanism: |
+      AutoTask 中没有 Mode/Profile/状态机 相关机制。
+      搜索结果中的 "mode" 匹配项均为：
+      - InspectorMode（布局审查模式，UI 调试用）
+      - isInspectorMode / FLAG_REQUEST_INSPECTOR_MODE（A11yAutomatorService 中的审查/工作模式切换）
+      - prepareWorkerMode（AutomatorService 中的工作模式初始化）
+      - compatMode（AppletFactory 的兼容模式标志）
+      这些都是服务内部的运行模式，与用户级的 App Mode 概念完全不同。
+      
+      结论：模式系统需完全从零开发。
+
+    key_files: []
+    key_classes: []
+
+  gap_summary: |
+    来自 gap-analysis.md：
+    - 第 3.3 节「约束差距 > 内部」：变量/宏状态/模式/逻辑组合等 — 全部缺失
+    - 第 3.5 节「完全缺失的系统」：未列出 Mode 为独立缺失系统，但在约束差距中提及
+    - 模式系统在 AutoTask 中没有任何对应代码，需全新设计和实现
+
+  roadmap_phase:
+    V1: "T-INT-004（Mode Change 触发器）"
+    V2: "A-INT-007（Set App Mode 动作）"
+    note: "C-INT-005（App Mode 约束）未在 roadmap 中明确列出时间节点，推测与 T-INT-004 同期或 V2"
+
+# ============================================================
+# 三、系统间依赖关系
+# ============================================================
+dependencies:
+
+  variable_mode_dependencies:
+    - dependency: "Mode 系统依赖变量系统"
+      description: "模式状态可作为特殊全局变量存储，模式切换动作 (A-INT-007) 可通过 Set Variable 语义实现"
+    - dependency: "变量变化触发器 (T-INT-001) 可监听模式变化"
+      description: "如果模式实现为特殊变量，T-INT-001 即可覆盖 T-INT-004 的部分功能"
+    - dependency: "模式约束 (C-INT-005) 可用变量约束 (C-INT-001) 的特化实现"
+      description: "模式判断本质上是变量值比较"
+
+  engine_core_dependencies:
+    - dependency: "变量系统依赖 tasker-engine 的 ValueRegistry"
+      description: "全局变量可构建在 ValueRegistry 之上，新增一个应用级 ValueRegistry 实例"
+    - dependency: "变量系统依赖 Applet 的 reference/referent 机制"
+      description: "变量读取可复用 references 机制，变量写入可通过新的 Applet 动作实现"
+    - dependency: "变量系统依赖 AppletOptionRegistry 扩展点"
+      description: "新的变量动作/约束需通过 Registry 注册"
+    - dependency: "变量系统需要独立的持久化层"
+      description: "Room DB 或 DataStore，与 AppletDTO 序列化体系并行"
+    - dependency: "表达式引擎是变量系统的核心依赖"
+      description: "V-011 变量表达式依赖 EX-001~EX-005，需要完整的 AST 解析/求值引擎"
+
+  serialization_dependencies:
+    - dependency: "变量定义需新增 DTO"
+      description: "Variable 实体需要自己的 DTO 和 JSON 序列化，与 AppletDTO 体系共存但独立"
+    - dependency: "变量引用需兼容 AppletDTO"
+      description: "A-DATA-006 (Set Variable) 等动作的参数中包含变量名引用，需在 AppletDTO 的 values/references 体系中表达"
+
+# ============================================================
+# 四、实现建议顺序
+# ============================================================
+recommended_implementation_order:
+  - step: 1
+    name: "变量存储层"
+    items:
+      - "定义 Variable 数据类（id, name, type, value, scope, persisted）"
+      - "实现 VariableRepository（内存缓存 + Room DB 持久化）"
+      - "实现应用级 ValueRegistry（跨宏全局作用域 GLOBAL_SCOPE_APP）"
+    rationale: "所有后续功能的基础"
+
+  - step: 2
+    name: "变量 CRUD 动作与约束"
+    items:
+      - "A-DATA-006 Set Variable：新建 VariableActionRegistry"
+      - "A-DATA-007 Delete Variable"
+      - "C-INT-001 Variable 约束：新建 VariableConstraintRegistry 或扩展 GlobalCriterionRegistry"
+      - "C-SYS-006 Compare Values"
+    rationale: "基本的变量读写和条件判断"
+
+  - step: 3
+    name: "变量变化触发器"
+    items:
+      - "T-INT-001 Variable Change：扩展 Event 枚举，新增 EVENT_ON_VARIABLE_CHANGED"
+      - "在 VariableRepository 中写入时发送变化事件"
+    rationale: "实现变量驱动的宏间联动"
+
+  - step: 4
+    name: "魔术变量"
+    items:
+      - "定义 MagicVariableProvider 接口"
+      - "实现内置魔术变量：当前时间/日期/电量/WiFi SSID/设备名/屏幕亮度等"
+      - "在表达式引擎中支持魔术变量引用"
+    rationale: "增强变量系统的实用性"
+
+  - step: 5
+    name: "表达式引擎"
+    items:
+      - "设计表达式语法（支持变量引用、数学运算、字符串操作、函数调用）"
+      - "实现词法分析器 + AST 解析器 + 求值器"
+      - "集成到变量系统：V-011 变量表达式"
+    rationale: "解锁复杂自动化逻辑"
+
+  - step: 6
+    name: "变量管理 UI"
+    items:
+      - "NUI-005 变量管理界面（Jetpack Compose）"
+      - "变量类型选择、值编辑、作用域配置"
+    rationale: "用户可见的变量管理入口"
+
+  - step: 7
+    name: "模式系统（V1 阶段）"
+    items:
+      - "设计 Mode 数据模型（id, name, icon, color, is_active）"
+      - "Mode 可实现为特殊的全局变量或独立实体"
+      - "T-INT-004 Mode Change 触发器"
+      - "C-INT-005 App Mode 约束"
+      - "A-INT-007 Set App Mode 动作"
+      - "模式管理 UI"
+    rationale: "依赖变量系统已就绪，模式系统在其基础上实现"
+
+  - step: 8
+    name: "高级集合操作（V1 阶段）"
+    items:
+      - "V-005 Dictionary, V-006 Array"
+      - "A-DATA-009 Array Manipulation"
+      - "A-DATA-010 Clear Dictionary/Array Entry"
+      - "CF-004 Iterate Dictionary/Array"
+      - "EX-006 数组操作"
+    rationale: "高级数据类型，依赖基础变量系统已稳定"
+
+# ============================================================
+# 五、研究元数据
+# ============================================================
+research_metadata:
+  methodology: |
+    混合检索：semantic_search + grep_search 搜索代码库中的 Referent/Reference/ValueRegistry/Mode/Profile 模式，
+    read_file 深度阅读关键源文件（Referent.kt, ValueRegistry.kt, TaskRuntime.kt, Applet.kt, AppletDTO.kt, VarRefAction.kt, AppletArgumentSerializer.kt, AppletOptionRegistry.kt, EventCriterionRegistry.kt），
+    文档分析：feature-taxonomy.md, gap-analysis.md, roadmap.md, PRD.yaml 全文阅读
+  scope: "变量系统和模式系统的需求规格、代码基线、差距分析、实现路线"
+  confidence: high
+  coverage: 95
+  decision_blockers: 2
+  research_blockers: 0
+
+open_questions:
+  - question: "模式系统应设计为独立实体还是特殊全局变量？"
+    context: "MacroDroid 中 Mode 本质上是全局字符串变量 + UI 语法糖，但也可设计为独立的状态机实体，支持互斥组、激活/去激活钩子等更丰富的语义"
+    type: decision_blocker
+    affects: ["mode_system_design", "variable_system_integration"]
+
+  - question: "变量持久化应使用 Room DB 还是 DataStore？"
+    context: "PRD.yaml 中此问题标为 open。Room 适合结构化查询和批量操作，DataStore 适合简单键值对。变量系统有类型/作用域/名称等结构化字段，倾向于 Room。"
+    type: decision_blocker
+    affects: ["variable_persistence_layer"]
+
+  - question: "表达式引擎是否需要支持自定义函数？"
+    context: "MVP 阶段的 EX-001~EX-005 定义了基本运算，但缺乏自定义函数扩展的能力定义"
+    type: nice_to_know
+    affects: ["expression_engine_architecture"]
+
+gaps:
+  - area: "模式系统数据模型"
+    description: "feature-taxonomy.md 中仅定义了 Mode 相关的触发器/动作/约束 3 个条目，但没有 Mode 实体本身的数据模型（类似 Variable 的 8.5 节定义），需要在设计阶段补充"
+    impact: decision_blocker
+    affects: ["mode_system_design"]
+
+  - area: "变量与引用系统的兼容策略"
+    description: "新的类型化变量系统如何与 AutoTask 现有的无类型 Referent/Reference 系统共存？是替换还是在其上叠加一层？"
+    impact: research_blocker
+    affects: ["variable_system_architecture"]
+
+  - area: "魔术变量清单"
+    description: "V-010 定义了魔术变量概念，但 feature-taxonomy 中没有列出具体的内置变量清单（如当前时间、电量、WiFi SSID 等）"
+    impact: nice_to_know
+    affects: ["magic_variable_implementation"]
