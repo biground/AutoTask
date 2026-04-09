@@ -1,0 +1,1636 @@
+plan_id: geofence-system
+objective: |
+  为 AutoPilot 项目实现完整的地理围栏（Geofence）系统，
+  包括高德地图 SDK 集成、围栏进入/离开触发器(T-LOC-001)、到达位置触发器(T-LOC-002)、
+  围栏约束(C-LOC-001)、地图选点 UI、POI 搜索、围栏可视化、API Key 管理。
+created_at: "2026-04-09"
+created_by: "gem-planner"
+status: pending_approval
+research_confidence: high
+
+plan_metrics:
+  wave_1_task_count: 5
+  total_dependencies: 27
+  risk_score: medium
+
+tldr: |
+  20 个原子任务，分 5 波执行：
+  W1 基础设施（事件常量 + Gradle 依赖 + Manifest 权限 + 数据模型 + API Key 管理）→
+  W2 核心组件（GeofenceReferent + ConfigRepository + LocationEventDispatcher + GeofenceConstraint + API Key UI）→
+  W3 注册与集成（EventFilter 扩展 + EventCriterionRegistry + LocationCriterionRegistry + AutomatorService 注册 + 地图选点界面）→
+  W4 全局注册 + UI（BootstrapOptionRegistry + AppletOptionFactory + 围栏列表 + POI 搜索 + 围栏可视化）→
+  W5 端到端集成测试。
+  核心架构：LocationEventDispatcher 嵌入 MetaEventDispatcher，复用 A11yAutomatorService 保活机制。
+  高德 SDK 通过 GeoFenceClient PendingIntent 回调实现低功耗围栏监听。
+  API Key 由用户在设置界面自行填写，运行时通过 AMapLocationClient.setApiKey() 配置。
+
+open_questions:
+  - "围栏配置数据是否需要支持导出/导入或云同步？当前计划仅支持本地 DataStore 持久化"
+  - "A-SYS-003 (Force Location Update) 和 A-SYS-004 (Set Location Update Rate) 为可选低优先级，未纳入本计划，后续迭代实现"
+
+pre_mortem:
+  overall_risk_level: medium
+  critical_failure_modes:
+    - scenario: "高德 SDK 后台围栏监听被系统电池优化策略杀死，导致围栏事件丢失"
+      likelihood: medium
+      impact: high
+      mitigation: "依赖 A11yAutomatorService 已有的前台服务保活机制；GeoFenceClient 使用 PendingIntent 而非持续定位，系统级保活；无活跃围栏时自动释放 SDK 资源"
+    - scenario: "Android 16 后台位置权限进一步收紧，用户拒绝授权导致功能不可用"
+      likelihood: medium
+      impact: high
+      mitigation: "权限检查前置，无权限时优雅降级（禁用围栏触发器，通知用户）；满足 FOREGROUND_SERVICE_LOCATION 声明要求"
+    - scenario: "用户未填写高德 API Key 或 Key 无效，SDK 初始化失败"
+      likelihood: high
+      impact: medium
+      mitigation: "LocationEventDispatcher.onRegistered() 先检查 Key 有效性，无 Key 时跳过初始化并记录警告；首次使用地理围栏功能时弹出 API Key 设置引导"
+    - scenario: "高德 SDK 版本与项目 minSdk/targetSdk 不兼容"
+      likelihood: low
+      impact: high
+      mitigation: "锁定高德 SDK 稳定版本；在 T02 任务中先验证 Gradle sync 和编译通过"
+    - scenario: "GCJ-02 坐标系与 Web 端编辑器坐标不一致"
+      likelihood: low
+      impact: medium
+      mitigation: "全流程统一使用 GCJ-02（高德坐标系），数据模型中标注坐标系类型；未来 Web 端也使用高德 JS API"
+    - scenario: "围栏数量过多导致高德 SDK 性能下降或超出限制（通常 100 个上限）"
+      likelihood: low
+      impact: medium
+      mitigation: "UI 层添加围栏数量限制和警告提示；超限时禁止新增"
+  assumptions:
+    - "高德地图 SDK 支持 Android 16 (targetSdk 36) 且稳定可用"
+    - "A11yAutomatorService 的前台服务保活机制足以保持 LocationEventDispatcher 存活"
+    - "用户自行在高德开放平台申请 API Key，应用不内置 Key"
+    - "所有坐标使用 GCJ-02 加密坐标系（高德默认）"
+    - "当前 DataStore Preferences 依赖已在 app/build.gradle 中配置"
+    - "围栏配置仅本地持久化，不做云同步"
+    - "API Key 存储使用明文 DataStore Preferences（不涉及高安全等级场景）"
+    - "所有新代码使用 Kotlin，测试使用 JUnit 4"
+
+implementation_specification:
+  code_structure: |
+    新增一个 app 层包 + 扩展现有多个文件：
+    1. app 应用层新增：
+       - top.xjunz.tasker.task.location — LocationEventDispatcher、AmapApiKeyManager、GeofenceConfig、GeofenceConfigRepository
+       - top.xjunz.tasker.task.applet.flow.ref.GeofenceReferent — 围栏事件引用值
+       - top.xjunz.tasker.task.applet.criterion.GeofenceConstraint — 围栏约束
+       - top.xjunz.tasker.task.applet.option.registry.LocationCriterionRegistry — 位置约束注册表
+       - top.xjunz.tasker.ui.task.selector.argument.GeofencePickerDialog — 地图选点对话框
+       - top.xjunz.tasker.ui.task.selector.argument.GeofenceListDialog — 围栏列表管理
+    2. tasker-engine 引擎层修改：
+       - Event.kt — 新增 3 个事件常量
+    3. app 层修改：
+       - EventFilter.kt — 新增地理围栏事件分支
+       - EventCriterionRegistry.kt — 新增 3 个事件触发器条目
+       - BootstrapOptionRegistry.kt — 新增 ID 常量 + PhantomFlow
+       - AppletOptionFactory.kt — 实例化 LocationCriterionRegistry
+       - AutomatorService.kt — 注册 LocationEventDispatcher
+       - app/build.gradle — 高德 SDK 依赖
+       - AndroidManifest.xml — 位置权限声明
+
+  affected_areas:
+    - "tasker-engine/src/main/java/top/xjunz/tasker/engine/runtime/Event.kt — 新增 3 个事件常量"
+    - "app/build.gradle — 高德地图 SDK 依赖"
+    - "app/src/main/AndroidManifest.xml — 位置权限 + 前台服务声明"
+    - "app/src/main/java/top/xjunz/tasker/task/location/ — 新增包（LocationEventDispatcher、AmapApiKeyManager、GeofenceConfig、GeofenceConfigRepository）"
+    - "app/src/main/java/top/xjunz/tasker/task/applet/flow/ref/ — 新增 GeofenceReferent"
+    - "app/src/main/java/top/xjunz/tasker/task/applet/criterion/ — 新增 GeofenceConstraint"
+    - "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/ — 新增 LocationCriterionRegistry、修改 EventCriterionRegistry、BootstrapOptionRegistry"
+    - "app/src/main/java/top/xjunz/tasker/task/applet/option/AppletOptionFactory.kt — 注册新 Registry"
+    - "app/src/main/java/top/xjunz/tasker/task/applet/criterion/EventFilter.kt — 新增事件分支"
+    - "app/src/main/java/top/xjunz/tasker/service/AutomatorService.kt — 注册 EventDispatcher"
+    - "app/src/main/java/top/xjunz/tasker/ui/task/selector/argument/ — 新增地图选点 UI"
+    - "app/src/main/res/values/strings.xml — 新增字符串资源"
+    - "app/src/test/ — 新增单元测试"
+
+  component_details:
+    - component: "GeofenceConfig 数据模型"
+      responsibility: "围栏配置数据结构（名称、坐标、半径）+ JSON 序列化"
+      interfaces:
+        - "data class GeofenceConfig(id: String, name: String, latitude: Double, longitude: Double, radius: Float, enabled: Boolean, address: String?)"
+        - "enum class GeofenceTransition { ENTER, EXIT }"
+        - "kotlinx.serialization @Serializable 注解"
+
+    - component: "AmapApiKeyManager"
+      responsibility: "高德 API Key 的存储、读取、有效性检查"
+      interfaces:
+        - "suspend fun getApiKey(): String?"
+        - "suspend fun setApiKey(key: String)"
+        - "fun hasApiKey(): Boolean"
+        - "fun observeApiKeyState(): Flow<Boolean>"
+
+    - component: "GeofenceConfigRepository"
+      responsibility: "围栏配置的 CRUD 持久化操作"
+      interfaces:
+        - "suspend fun addGeofence(config: GeofenceConfig)"
+        - "suspend fun removeGeofence(id: String)"
+        - "suspend fun updateGeofence(config: GeofenceConfig)"
+        - "suspend fun getGeofence(id: String): GeofenceConfig?"
+        - "suspend fun getAllGeofences(): List<GeofenceConfig>"
+        - "fun observeGeofences(): Flow<List<GeofenceConfig>>"
+
+    - component: "LocationEventDispatcher"
+      responsibility: "封装高德 GeoFenceClient，监听围栏进出事件并转换为 Event 分发"
+      interfaces:
+        - "onRegistered() — 检查 API Key → setApiKey() → 初始化 GeoFenceClient → 加载已保存围栏"
+        - "destroy() — 移除所有围栏 → 释放 SDK 资源"
+        - "dispatchEvents(Event) — 围栏回调触发"
+        - "companion object: EXTRA_GEOFENCE_NAME=0, EXTRA_GEOFENCE_LAT=1, EXTRA_GEOFENCE_LNG=2, EXTRA_GEOFENCE_RADIUS=3, EXTRA_TRANSITION_TYPE=4"
+
+    - component: "GeofenceReferent"
+      responsibility: "围栏事件上下文数据的引用值提供者"
+      interfaces:
+        - "getReferredValue(0) → this"
+        - "getReferredValue(1) → geofenceName: String"
+        - "getReferredValue(2) → latitude: Double"
+        - "getReferredValue(3) → longitude: Double"
+        - "getReferredValue(4) → transitionType: String (ENTER/EXIT)"
+
+    - component: "GeofenceConstraint"
+      responsibility: "判断当前位置是否在指定围栏内"
+      interfaces:
+        - "apply(runtime) — 获取最后已知位置，计算 distanceTo(center) ≤ radius"
+        - "参数 0：纬度 Double"
+        - "参数 1：经度 Double"
+        - "参数 2：半径 Float"
+
+    - component: "LocationCriterionRegistry"
+      responsibility: "位置相关约束条件的注册表"
+      interfaces:
+        - "class LocationCriterionRegistry(id: Int) : AppletOptionRegistry(id)"
+        - "@AppletOrdinal(0x0000) geofenceInside"
+
+  dependencies:
+    - component: "LocationEventDispatcher"
+      relationship: "依赖 AmapApiKeyManager（获取 Key）、GeofenceConfigRepository（加载围栏配置）、Event.kt（事件常量）"
+    - component: "GeofenceConstraint"
+      relationship: "依赖高德 SDK AMapLocationClient（获取当前位置）"
+    - component: "EventFilter"
+      relationship: "依赖 GeofenceReferent（创建事件引用）、LocationEventDispatcher（Extra key 常量）"
+    - component: "EventCriterionRegistry"
+      relationship: "依赖 EventFilter（内部创建）、GeofenceReferent（.withResult 声明）"
+    - component: "AppletOptionFactory"
+      relationship: "依赖 LocationCriterionRegistry（实例化）、BootstrapOptionRegistry（ID 常量）"
+
+  integration_points:
+    - "Event.kt — 新增 EVENT_ON_GEOFENCE_ENTERED=17, EVENT_ON_GEOFENCE_EXITED=18, EVENT_ON_LOCATION_ARRIVED=19"
+    - "AutomatorService.initEventDispatcher() — 注册 LocationEventDispatcher"
+    - "BootstrapOptionRegistry — 新增 ID_LOCATION_CRITERION_REGISTRY=0x1A, @AppletOrdinal(0x0019) locationCriteria, criterionFlowOptions 新增"
+    - "AppletOptionFactory — 实例化 LocationCriterionRegistry 并加入 allRegistries"
+    - "EventCriterionRegistry — 新增 @AppletOrdinal(0x0015-0x0017) 三个地理围栏事件"
+    - "EventFilter.apply() — when(hit.type) 新增 3 个围栏事件分支"
+
+contracts:
+  - from_task: "T01"
+    to_task: "T06, T08, T09, T11, T12"
+    interface: "EVENT_ON_GEOFENCE_ENTERED=17, EVENT_ON_GEOFENCE_EXITED=18, EVENT_ON_LOCATION_ARRIVED=19 事件常量"
+    format: "Int constants in Event companion object"
+
+  - from_task: "T04"
+    to_task: "T06, T07, T08"
+    interface: "GeofenceConfig data class + GeofenceTransition enum"
+    format: "Kotlin @Serializable data class"
+
+  - from_task: "T05"
+    to_task: "T08, T10, T15"
+    interface: "AmapApiKeyManager（getApiKey, hasApiKey, setApiKey, observeApiKeyState）"
+    format: "Kotlin class with DataStore Preferences"
+
+  - from_task: "T06"
+    to_task: "T11, T12"
+    interface: "GeofenceReferent 类（getReferredValue 返回围栏名/坐标/转场类型）"
+    format: "Kotlin class implementing Referent"
+
+  - from_task: "T07"
+    to_task: "T08, T15, T16, T18"
+    interface: "GeofenceConfigRepository（CRUD + observeGeofences）"
+    format: "Kotlin class with DataStore JSON persistence"
+
+  - from_task: "T08"
+    to_task: "T11, T14"
+    interface: "LocationEventDispatcher（companion object Extra key 常量）"
+    format: "Kotlin class extending EventDispatcher"
+
+  - from_task: "T09"
+    to_task: "T13"
+    interface: "GeofenceConstraint Applet 类"
+    format: "Kotlin class extending Applet"
+
+  - from_task: "T12"
+    to_task: "T17"
+    interface: "EventCriterionRegistry 新增 3 个事件条目（geofenceEntered, geofenceExited, locationArrived）"
+    format: "@AppletOrdinal 注解字段"
+
+  - from_task: "T13"
+    to_task: "T17"
+    interface: "LocationCriterionRegistry 实例"
+    format: "AppletOptionRegistry subclass"
+
+  - from_task: "T15"
+    to_task: "T18, T19"
+    interface: "GeofencePickerDialog Compose 界面 + ViewModel"
+    format: "Jetpack Compose @Composable + ViewModel"
+
+  - from_task: "T17"
+    to_task: "T20"
+    interface: "所有新 Registry 已注册到 BootstrapOptionRegistry + AppletOptionFactory"
+    format: "ID 常量 + allRegistries 数组 + criterionFlowOptions 数组"
+
+tasks:
+  # ============================================================
+  # Wave 1 — 基础设施 (T01-T05, 5 并行任务)
+  # ============================================================
+
+  - id: "T01"
+    title: "Event.kt 新增 3 个地理围栏事件常量"
+    description: |
+      在 tasker-engine 的 Event 类中添加地理围栏事件类型常量：
+      1. 在 Event.companion 中添加：
+         - const val EVENT_ON_GEOFENCE_ENTERED = 17
+         - const val EVENT_ON_GEOFENCE_EXITED = 18
+         - const val EVENT_ON_LOCATION_ARRIVED = 19
+      2. 在 Event.toString() 的 when 分支中添加名称映射：
+         - EVENT_ON_GEOFENCE_ENTERED -> "geofenceEntered"
+         - EVENT_ON_GEOFENCE_EXITED -> "geofenceExited"
+         - EVENT_ON_LOCATION_ARRIVED -> "locationArrived"
+
+      当前 Event.kt 最大 ID 为 EVENT_ON_MODE_CHANGED = 16，新 ID 从 17 起。
+
+      无需单独测试文件，在后续 LocationEventDispatcher 测试中覆盖。
+    wave: 1
+    agent: gem-implementer
+    prototype: false
+    covers: ["T-LOC-001", "T-LOC-002"]
+    priority: high
+    status: pending
+    dependencies: []
+    conflicts_with: []
+    context_files:
+      - path: "tasker-engine/src/main/java/top/xjunz/tasker/engine/runtime/Event.kt"
+        description: "现有事件定义文件，当前定义 16 种事件（0~16）"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-09"
+        estimated_effort: small
+        estimated_files: 1
+        estimated_lines: 20
+        focus_area: "tasker-engine/src/main/java/top/xjunz/tasker/engine/runtime/Event.kt"
+        verification:
+          - "编译通过：Event.EVENT_ON_GEOFENCE_ENTERED == 17"
+          - "编译通过：Event.EVENT_ON_GEOFENCE_EXITED == 18"
+          - "编译通过：Event.EVENT_ON_LOCATION_ARRIVED == 19"
+          - "Event.obtain(17).toString() 包含 'geofenceEntered'"
+        acceptance_criteria:
+          - "Event.kt companion object 包含 EVENT_ON_GEOFENCE_ENTERED=17, EVENT_ON_GEOFENCE_EXITED=18, EVENT_ON_LOCATION_ARRIVED=19"
+          - "toString() 方法包含 3 个新事件的名称映射"
+          - "ID 不与现有事件冲突（现有最大 ID=16）"
+        failure_modes:
+          - scenario: "ID 17-19 与其他并行开发分支的事件 ID 冲突"
+            likelihood: low
+            impact: medium
+            mitigation: "研究阶段已确认 17-19 为下一批可用 ID，且当前无其他并行功能开发"
+        tech_stack:
+          - "Kotlin"
+        test_coverage: null
+
+  - id: "T02"
+    title: "app/build.gradle 添加高德地图 SDK 依赖"
+    description: |
+      在 app 模块的 build.gradle 中添加高德地图定位 SDK 依赖：
+      1. 在 app/build.gradle 的 dependencies 块中添加：
+         implementation 'com.amap.api:3dmap:latest.integration'
+         implementation 'com.amap.api:location:latest.integration'
+         implementation 'com.amap.api:search:latest.integration'
+      2. 在 app/proguard-rules.pro 中添加高德 SDK ProGuard 规则：
+         -keep class com.amap.api.** { *; }
+         -keep class com.autonavi.** { *; }
+         -dontwarn com.amap.api.**
+         -dontwarn com.autonavi.**
+      3. 验证 Gradle sync 成功
+
+      注意：高德 SDK 使用 'latest.integration' 动态版本是临时方案，
+      后续应锁定具体版本号以确保构建可重现。
+    wave: 1
+    agent: gem-implementer
+    prototype: false
+    covers: ["T-LOC-001", "T-LOC-002", "C-LOC-001"]
+    priority: high
+    status: pending
+    dependencies: []
+    conflicts_with: []
+    context_files:
+      - path: "app/build.gradle"
+        description: "当前 app 模块构建文件，dependencies 块在第 72 行"
+      - path: "app/proguard-rules.pro"
+        description: "现有 ProGuard 规则文件"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-09"
+        estimated_effort: small
+        estimated_files: 2
+        estimated_lines: 15
+        focus_area: "app/build.gradle + app/proguard-rules.pro"
+        verification:
+          - "运行 ./gradlew app:dependencies | grep amap 确认依赖存在"
+          - "运行 ./gradlew :app:assembleDebug 确认编译通过"
+        acceptance_criteria:
+          - "app/build.gradle 包含 com.amap.api:3dmap、com.amap.api:location、com.amap.api:search 三个依赖"
+          - "ProGuard 规则包含 com.amap.api 和 com.autonavi 的 keep 规则"
+          - "Gradle sync 成功无报错"
+        failure_modes:
+          - scenario: "高德 SDK 版本与 compileSdk/minSdk 不兼容"
+            likelihood: low
+            impact: high
+            mitigation: "使用高德官网推荐的稳定版本；如 latest.integration 有问题则固定具体版本"
+        tech_stack:
+          - "Gradle"
+          - "高德地图 SDK"
+        test_coverage: null
+
+  - id: "T03"
+    title: "AndroidManifest.xml 添加位置权限和前台服务声明"
+    description: |
+      在 app/src/main/AndroidManifest.xml 中添加地理围栏所需的权限和服务声明：
+      1. 在现有权限声明后新增：
+         <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+         <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+         <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
+         <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+      2. 在 A11yAutomatorService 的 <service> 声明中添加 foregroundServiceType：
+         如果当前没有 foregroundServiceType 属性，添加：
+         android:foregroundServiceType="accessibility|location"
+         如果已有，追加 |location
+
+      注意：ACCESS_BACKGROUND_LOCATION 在 Android 10+ 需要分步请求（先前台后后台）。
+      FOREGROUND_SERVICE_LOCATION 在 Android 14+ 必须声明。
+
+      无需测试，编译验证即可。
+    wave: 1
+    agent: gem-implementer
+    prototype: false
+    covers: ["T-LOC-001", "T-LOC-002", "C-LOC-001"]
+    priority: high
+    status: pending
+    dependencies: []
+    conflicts_with: []
+    context_files:
+      - path: "app/src/main/AndroidManifest.xml"
+        description: "当前 Manifest 文件，已有 7 个权限声明（第 5-11 行）"
+      - path: "app/src/main/java/top/xjunz/tasker/service/A11yAutomatorService.kt"
+        description: "A11y 服务类，确认 Manifest 中的 service 声明位置"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-09"
+        estimated_effort: small
+        estimated_files: 1
+        estimated_lines: 10
+        focus_area: "app/src/main/AndroidManifest.xml"
+        verification:
+          - "grep ACCESS_FINE_LOCATION AndroidManifest.xml 有结果"
+          - "grep ACCESS_BACKGROUND_LOCATION AndroidManifest.xml 有结果"
+          - "grep FOREGROUND_SERVICE_LOCATION AndroidManifest.xml 有结果"
+          - "编译通过无 manifest merger 错误"
+        acceptance_criteria:
+          - "AndroidManifest.xml 包含 ACCESS_FINE_LOCATION, ACCESS_COARSE_LOCATION, ACCESS_BACKGROUND_LOCATION, FOREGROUND_SERVICE_LOCATION 四个权限"
+          - "A11yAutomatorService 的 foregroundServiceType 包含 location"
+          - "编译成功"
+        failure_modes:
+          - scenario: "foregroundServiceType 属性格式错误导致 manifest merger 失败"
+            likelihood: low
+            impact: medium
+            mitigation: "使用标准格式 android:foregroundServiceType='accessibility|location'，在合并前用 aapt2 验证"
+        tech_stack:
+          - "Android Manifest"
+        test_coverage: null
+
+  - id: "T04"
+    title: "GeofenceConfig 数据模型 + GeofenceTransition 枚举"
+    description: |
+      在 app 模块创建地理围栏配置的数据模型：
+      1. 创建 app/src/main/java/top/xjunz/tasker/task/location/GeofenceConfig.kt：
+         @Serializable
+         data class GeofenceConfig(
+             val id: String,           // UUID
+             val name: String,         // 用户自定义围栏名称
+             val latitude: Double,     // 纬度（GCJ-02 坐标系）
+             val longitude: Double,    // 经度（GCJ-02 坐标系）
+             val radius: Float,        // 半径（米），范围 50~5000
+             val enabled: Boolean = true,
+             val address: String? = null  // 可选地址描述
+         )
+      2. 创建 GeofenceTransition 枚举：
+         enum class GeofenceTransition {
+             ENTER,   // 进入围栏
+             EXIT     // 离开围栏
+         }
+      3. 添加辅助扩展函数：
+         - GeofenceConfig.isValid(): Boolean（验证坐标/半径合法性）
+      4. 编写单元测试：
+         - 创建 GeofenceConfig、验证默认值
+         - 序列化/反序列化 JSON 往返
+         - isValid() 验证合法/非法配置
+
+      测试文件：app/src/test/kotlin/top/xjunz/tasker/task/location/GeofenceConfigTest.kt
+    wave: 1
+    agent: gem-implementer
+    prototype: false
+    covers: ["T-LOC-001", "C-LOC-001"]
+    priority: high
+    status: pending
+    dependencies: []
+    conflicts_with: []
+    context_files:
+      - path: "app/build.gradle"
+        description: "确认 kotlinx.serialization 已可用（ktor-serialization-kotlinx-json 依赖存在）"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-09"
+        estimated_effort: small
+        estimated_files: 2
+        estimated_lines: 80
+        focus_area: "app/src/main/java/top/xjunz/tasker/task/location/"
+        verification:
+          - "运行 GeofenceConfigTest，所有测试通过"
+          - "JSON 序列化/反序列化往返一致"
+          - "isValid() 对合法配置返回 true，越界值返回 false"
+        acceptance_criteria:
+          - "GeofenceConfig 包含 id/name/latitude/longitude/radius/enabled/address 字段"
+          - "使用 @Serializable 注解支持 kotlinx.serialization"
+          - "GeofenceTransition 包含 ENTER/EXIT 两种类型"
+          - "isValid() 检查：纬度 -90~90、经度 -180~180、半径 50~5000"
+          - "单元测试覆盖构造、序列化、验证"
+        failure_modes:
+          - scenario: "kotlinx.serialization 插件未应用导致 @Serializable 编译错误"
+            likelihood: low
+            impact: medium
+            mitigation: "确认 app/build.gradle 中有 kotlinx-serialization 插件；如无则添加"
+        tech_stack:
+          - "Kotlin data class"
+          - "kotlinx.serialization"
+          - "JUnit 4"
+        test_coverage: "数据类构造 + JSON 序列化 + 验证逻辑"
+
+  - id: "T05"
+    title: "AmapApiKeyManager — API Key 存储管理"
+    description: |
+      创建高德 API Key 的存储管理类：
+      1. 创建 app/src/main/java/top/xjunz/tasker/task/location/AmapApiKeyManager.kt：
+         object AmapApiKeyManager {
+             private val Context.amapKeyDataStore by preferencesDataStore("amap_api_key")
+             private val API_KEY = stringPreferencesKey("api_key")
+
+             suspend fun getApiKey(context: Context): String?
+             suspend fun setApiKey(context: Context, key: String)
+             fun hasApiKey(context: Context): Boolean  // 同步检查缓存
+             fun observeApiKeyState(context: Context): Flow<Boolean>
+         }
+      2. 内部维护一个内存缓存（AtomicReference<String?>），避免频繁读 DataStore
+      3. 初始化时从 DataStore 同步到缓存
+      4. 编写单元测试（mock DataStore 或使用 Robolectric）：
+         - 设置 Key → 读取一致
+         - 未设置时返回 null
+         - hasApiKey 同步检查
+
+      测试文件：app/src/test/kotlin/top/xjunz/tasker/task/location/AmapApiKeyManagerTest.kt
+    wave: 1
+    agent: gem-implementer
+    prototype: false
+    priority: high
+    status: pending
+    dependencies: []
+    conflicts_with: []
+    context_files:
+      - path: "app/build.gradle"
+        description: "确认 DataStore Preferences 依赖已存在"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-09"
+        estimated_effort: small
+        estimated_files: 2
+        estimated_lines: 100
+        focus_area: "app/src/main/java/top/xjunz/tasker/task/location/"
+        verification:
+          - "运行 AmapApiKeyManagerTest，所有测试通过"
+          - "setApiKey 后 getApiKey 返回相同值"
+          - "未设置时 hasApiKey 返回 false"
+        acceptance_criteria:
+          - "AmapApiKeyManager 支持 getApiKey/setApiKey/hasApiKey/observeApiKeyState 四个方法"
+          - "使用 DataStore Preferences 持久化"
+          - "hasApiKey() 可同步调用（使用内存缓存）"
+          - "单元测试覆盖存储/读取/状态查询"
+        failure_modes:
+          - scenario: "DataStore 初始化时缓存未同步，hasApiKey 返回错误结果"
+            likelihood: medium
+            impact: medium
+            mitigation: "init 块中使用 runBlocking 同步加载缓存；或首次调用时 lazy 初始化"
+        tech_stack:
+          - "AndroidX DataStore Preferences"
+          - "Kotlin Coroutines"
+          - "JUnit 4"
+        test_coverage: "Key CRUD + 缓存同步"
+        requires_review: true
+        review_depth: standard
+        review_security_sensitive: true
+
+  # ============================================================
+  # Wave 2 — 核心组件 (T06-T10, 5 并行任务)
+  # ============================================================
+
+  - id: "T06"
+    title: "GeofenceReferent 围栏事件引用值类"
+    description: |
+      创建地理围栏事件的引用值提供者，遵循 VariableChangeReferent 模式：
+      1. 创建 app/src/main/java/top/xjunz/tasker/task/applet/flow/ref/GeofenceReferent.kt：
+         class GeofenceReferent(
+             val geofenceName: String,
+             val latitude: Double,
+             val longitude: Double,
+             val transitionType: String  // "ENTER" 或 "EXIT"
+         ) : Referent {
+             override fun getReferredValue(which: Int, runtime: TaskRuntime): Any? {
+                 return when (which) {
+                     0 -> this              // 围栏引用本身
+                     1 -> geofenceName      // 围栏名称
+                     2 -> latitude           // 纬度
+                     3 -> longitude          // 经度
+                     4 -> transitionType     // 转场类型
+                     else -> super.getReferredValue(which, runtime)
+                 }
+             }
+         }
+      2. 编写单元测试：
+         - 各索引返回正确字段值
+         - 越界索引走 super 默认逻辑
+
+      测试文件：app/src/test/kotlin/top/xjunz/tasker/task/applet/flow/ref/GeofenceReferentTest.kt
+
+      参考：VariableChangeReferent.kt 和 ModeChangeReferent.kt
+    wave: 2
+    agent: gem-implementer
+    prototype: false
+    covers: ["T-LOC-001", "T-LOC-002"]
+    priority: high
+    status: pending
+    dependencies: ["T01", "T04"]
+    conflicts_with: []
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/flow/ref/VariableChangeReferent.kt"
+        description: "最佳参考：Referent 实现模式"
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/flow/ref/ModeChangeReferent.kt"
+        description: "另一个 Referent 实现参考"
+      - path: "tasker-engine/src/main/java/top/xjunz/tasker/engine/runtime/Referent.kt"
+        description: "Referent 接口定义"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-09"
+        estimated_effort: small
+        estimated_files: 2
+        estimated_lines: 50
+        focus_area: "app/src/main/java/top/xjunz/tasker/task/applet/flow/ref/"
+        verification:
+          - "运行 GeofenceReferentTest，所有测试通过"
+          - "getReferredValue(1) 返回围栏名称"
+          - "getReferredValue(4) 返回转场类型字符串"
+        acceptance_criteria:
+          - "GeofenceReferent 实现 Referent 接口"
+          - "getReferredValue 支持 5 个索引（0=this, 1=name, 2=lat, 3=lng, 4=transition）"
+          - "单元测试覆盖所有索引 + 越界索引"
+        failure_modes:
+          - scenario: "Referent 接口 super.getReferredValue 默认行为未知"
+            likelihood: low
+            impact: low
+            mitigation: "阅读 Referent 基类代码确认默认行为（通常返回 null 或抛异常）"
+        tech_stack:
+          - "Kotlin"
+          - "JUnit 4"
+        test_coverage: "所有引用值索引"
+
+  - id: "T07"
+    title: "GeofenceConfigRepository 围栏配置持久化"
+    description: |
+      创建围栏配置的持久化存储 Repository：
+      1. 创建 app/src/main/java/top/xjunz/tasker/task/location/GeofenceConfigRepository.kt：
+         class GeofenceConfigRepository(private val context: Context) {
+             private val Context.geofenceDataStore by preferencesDataStore("geofence_configs")
+             private val CONFIGS_KEY = stringPreferencesKey("configs_json")
+
+             // 内存缓存
+             private val _configs = MutableStateFlow<List<GeofenceConfig>>(emptyList())
+
+             // 初始化：从 DataStore 加载
+             suspend fun initialize()
+
+             suspend fun addGeofence(config: GeofenceConfig)
+             suspend fun removeGeofence(id: String)
+             suspend fun updateGeofence(config: GeofenceConfig)
+             suspend fun getGeofence(id: String): GeofenceConfig?
+             suspend fun getAllGeofences(): List<GeofenceConfig>
+             fun observeGeofences(): Flow<List<GeofenceConfig>>
+
+             // 内部序列化：List<GeofenceConfig> → JSON string → DataStore
+             private suspend fun persist()
+         }
+      2. 序列化策略：整个 List<GeofenceConfig> 序列化为 JSON 字符串存入 DataStore
+      3. 编写单元测试：
+         - 添加围栏 → getAllGeofences 包含新围栏
+         - 删除围栏 → getAllGeofences 不包含
+         - 更新围栏 → 验证字段变化
+         - observeGeofences 收到变化通知
+         - 重初始化后数据恢复
+
+      测试文件：app/src/test/kotlin/top/xjunz/tasker/task/location/GeofenceConfigRepositoryTest.kt
+    wave: 2
+    agent: gem-implementer
+    prototype: false
+    covers: ["T-LOC-001", "C-LOC-001"]
+    priority: high
+    status: pending
+    dependencies: ["T04"]
+    conflicts_with: []
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/task/location/GeofenceConfig.kt"
+        description: "围栏配置数据模型（T04 产出）"
+      - path: "app/build.gradle"
+        description: "确认 DataStore 和 kotlinx.serialization 依赖"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-09"
+        estimated_effort: medium
+        estimated_files: 2
+        estimated_lines: 180
+        focus_area: "app/src/main/java/top/xjunz/tasker/task/location/"
+        verification:
+          - "运行 GeofenceConfigRepositoryTest，所有测试通过"
+          - "CRUD 操作正常"
+          - "DataStore 持久化后重新加载数据一致"
+        acceptance_criteria:
+          - "GeofenceConfigRepository 支持 add/remove/update/get/getAll/observe 6 个操作"
+          - "使用 DataStore Preferences + JSON 序列化"
+          - "内存缓存 + 持久化双层存储"
+          - "单元测试覆盖 CRUD + 持久化恢复 + Flow 订阅"
+        failure_modes:
+          - scenario: "JSON 列表序列化在大量围栏时性能下降"
+            likelihood: low
+            impact: low
+            mitigation: "围栏数量通常不超过 100，JSON 列表序列化性能足够"
+        tech_stack:
+          - "AndroidX DataStore Preferences"
+          - "kotlinx.serialization JSON"
+          - "Kotlin Coroutines Flow"
+          - "JUnit 4"
+        test_coverage: "CRUD 全路径 + 持久化恢复 + Flow 订阅"
+
+  - id: "T08"
+    title: "LocationEventDispatcher — 高德 SDK 围栏事件分发"
+    description: |
+      创建地理围栏事件分发器，封装高德 GeoFenceClient：
+      1. 创建 app/src/main/java/top/xjunz/tasker/task/location/LocationEventDispatcher.kt：
+         class LocationEventDispatcher(
+             private val apiKeyManager: AmapApiKeyManager,
+             private val configRepository: GeofenceConfigRepository,
+             private val scope: CoroutineScope
+         ) : EventDispatcher() {
+
+             companion object {
+                 const val EXTRA_GEOFENCE_NAME = 0
+                 const val EXTRA_GEOFENCE_LAT = 1
+                 const val EXTRA_GEOFENCE_LNG = 2
+                 const val EXTRA_GEOFENCE_RADIUS = 3
+                 const val EXTRA_TRANSITION_TYPE = 4
+             }
+
+             private var geoFenceClient: GeoFenceClient? = null
+             private var locationClient: AMapLocationClient? = null
+
+             override fun onRegistered() {
+                 // 1. 检查 API Key
+                 val apiKey = runBlocking { apiKeyManager.getApiKey(context) }
+                 if (apiKey.isNullOrBlank()) {
+                     Log.w(TAG, "高德 API Key 未配置，地理围栏功能已禁用")
+                     return
+                 }
+                 // 2. 设置 API Key（运行时配置，不依赖 Manifest meta-data）
+                 AMapLocationClient.setApiKey(apiKey)
+                 // 3. 初始化 GeoFenceClient
+                 geoFenceClient = GeoFenceClient(context).apply {
+                     setActivateAction(GeoFenceClient.GEOFENCE_IN or GeoFenceClient.GEOFENCE_OUT)
+                     createPendingIntent(GEOFENCE_BROADCAST_ACTION)
+                     setGeoFenceListener { geoFenceList, errorCode, customId ->
+                         // 围栏创建结果回调
+                     }
+                 }
+                 // 4. 注册 BroadcastReceiver 监听围栏事件
+                 registerGeofenceBroadcastReceiver()
+                 // 5. 从 Repository 加载已保存围栏并注册到 SDK
+                 scope.launch { loadAndRegisterSavedGeofences() }
+             }
+
+             private fun handleGeofenceEvent(intent: Intent) {
+                 val bundle = intent.extras ?: return
+                 val status = bundle.getInt(GeoFence.BUNDLE_KEY_FENCESTATUS)
+                 val customId = bundle.getString(GeoFence.BUNDLE_KEY_CUSTOMID)
+                 val fence = bundle.getParcelable<GeoFence>(GeoFence.BUNDLE_KEY_FENCEID)
+                 // 根据 status 分发 EVENT_ON_GEOFENCE_ENTERED 或 EVENT_ON_GEOFENCE_EXITED
+                 val eventType = when (status) {
+                     GeoFence.STATUS_IN -> Event.EVENT_ON_GEOFENCE_ENTERED
+                     GeoFence.STATUS_OUT -> Event.EVENT_ON_GEOFENCE_EXITED
+                     else -> return
+                 }
+                 val event = Event.obtain(eventType).apply {
+                     putExtra(EXTRA_GEOFENCE_NAME, customId ?: "")
+                     putExtra(EXTRA_GEOFENCE_LAT, fence?.center?.latitude ?: 0.0)
+                     putExtra(EXTRA_GEOFENCE_LNG, fence?.center?.longitude ?: 0.0)
+                     putExtra(EXTRA_TRANSITION_TYPE, if (status == GeoFence.STATUS_IN) "ENTER" else "EXIT")
+                 }
+                 dispatchEvents(event)
+             }
+
+             override fun destroy() {
+                 geoFenceClient?.removeGeoFence()
+                 unregisterGeofenceBroadcastReceiver()
+                 locationClient?.onDestroy()
+             }
+         }
+      2. 编写单元测试（mock 高德 SDK 类）：
+         - onRegistered 无 API Key → 不初始化
+         - onRegistered 有 API Key → 初始化 SDK
+         - handleGeofenceEvent → 正确分发事件
+
+      测试文件：app/src/test/kotlin/top/xjunz/tasker/task/location/LocationEventDispatcherTest.kt
+    wave: 2
+    agent: gem-implementer
+    prototype: false
+    covers: ["T-LOC-001", "T-LOC-002"]
+    priority: high
+    status: pending
+    dependencies: ["T01", "T02", "T03", "T05"]
+    conflicts_with: []
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/task/event/NetworkEventDispatcher.kt"
+        description: "最佳参考：系统回调→事件分发模式"
+      - path: "app/src/main/java/top/xjunz/tasker/task/variable/VariableChangeEventDispatcher.kt"
+        description: "另一个 EventDispatcher 参考（协程+Flow 模式）"
+      - path: "tasker-engine/src/main/java/top/xjunz/tasker/engine/task/EventDispatcher.kt"
+        description: "EventDispatcher 基类"
+      - path: "app/src/main/java/top/xjunz/tasker/bridge/ContextBridge.kt"
+        description: "Context 获取桥接"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-09"
+        estimated_effort: medium
+        estimated_files: 2
+        estimated_lines: 250
+        focus_area: "app/src/main/java/top/xjunz/tasker/task/location/"
+        verification:
+          - "运行 LocationEventDispatcherTest，所有测试通过"
+          - "无 API Key 时 onRegistered 安全退出不崩溃"
+          - "围栏进入事件正确分发 EVENT_ON_GEOFENCE_ENTERED"
+          - "destroy 正确释放 SDK 资源"
+        acceptance_criteria:
+          - "LocationEventDispatcher 继承 EventDispatcher"
+          - "onRegistered 检查 API Key，无 Key 时跳过初始化"
+          - "使用 AMapLocationClient.setApiKey() 运行时配置 Key"
+          - "GeoFenceClient 注册围栏事件回调"
+          - "围栏进入/离开分发对应 Event + 5 个 Extra"
+          - "destroy 释放所有 SDK 资源"
+        failure_modes:
+          - scenario: "高德 SDK 类在单元测试环境不可用（非 Android 环境）"
+            likelihood: high
+            impact: medium
+            mitigation: "使用 mockk/mockito mock 高德 SDK 类；或使用 Robolectric 提供 Android 环境"
+          - scenario: "BroadcastReceiver 在 A11yService 进程中无法正常注册"
+            likelihood: low
+            impact: high
+            mitigation: "使用 ContextBridge.getContext() 获取应用 Context 注册 Receiver"
+        tech_stack:
+          - "高德地图 SDK (GeoFenceClient, AMapLocationClient)"
+          - "Android BroadcastReceiver"
+          - "Kotlin Coroutines"
+          - "JUnit 4 + mockk"
+        test_coverage: "初始化/销毁 + 事件分发 + 无 Key 降级"
+
+  - id: "T09"
+    title: "GeofenceConstraint — 是否在围栏内约束 (C-LOC-001)"
+    description: |
+      创建判断当前位置是否在指定围栏内的约束 Applet：
+      1. 创建 app/src/main/java/top/xjunz/tasker/task/applet/criterion/GeofenceConstraint.kt：
+         class GeofenceConstraint : Applet() {
+             override suspend fun apply(runtime: TaskRuntime): AppletResult {
+                 // 1. 获取围栏参数（lat, lng, radius）
+                 val targetLat = values[0] as Double
+                 val targetLng = values[1] as Double
+                 val targetRadius = values[2] as Float
+
+                 // 2. 获取当前位置（通过高德 SDK 最后已知位置）
+                 val currentLocation = getLastKnownLocation()
+                     ?: return AppletResult.EMPTY_FAILURE
+
+                 // 3. 计算距离
+                 val distance = AMapUtils.calculateLineDistance(
+                     LatLng(currentLocation.latitude, currentLocation.longitude),
+                     LatLng(targetLat, targetLng)
+                 )
+
+                 // 4. 判断是否在围栏内
+                 return if (distance <= targetRadius) {
+                     AppletResult.EMPTY_SUCCESS
+                 } else {
+                     AppletResult.EMPTY_FAILURE
+                 }
+             }
+
+             private fun getLastKnownLocation(): AMapLocation? {
+                 // 使用高德 SDK 获取最后已知位置
+             }
+         }
+      2. 支持取反（invertible）：不在围栏内
+      3. 编写单元测试（mock 位置数据）：
+         - 在围栏内 → 返回 SUCCESS
+         - 在围栏外 → 返回 FAILURE
+         - 无位置数据 → 返回 FAILURE
+
+      测试文件：app/src/test/kotlin/top/xjunz/tasker/task/applet/criterion/GeofenceConstraintTest.kt
+    wave: 2
+    agent: gem-implementer
+    prototype: false
+    covers: ["C-LOC-001"]
+    priority: high
+    status: pending
+    dependencies: ["T01", "T02"]
+    conflicts_with: []
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/criterion/EventFilter.kt"
+        description: "Applet.apply() 模式参考"
+      - path: "tasker-engine/src/main/java/top/xjunz/tasker/engine/applet/base/Applet.kt"
+        description: "Applet 基类（values, relation, apply）"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-09"
+        estimated_effort: medium
+        estimated_files: 2
+        estimated_lines: 120
+        focus_area: "app/src/main/java/top/xjunz/tasker/task/applet/criterion/"
+        verification:
+          - "运行 GeofenceConstraintTest，所有测试通过"
+          - "mock 位置在围栏中心 → SUCCESS"
+          - "mock 位置在围栏外 → FAILURE"
+          - "无位置时 → FAILURE"
+        acceptance_criteria:
+          - "GeofenceConstraint 继承 Applet，接受 lat/lng/radius 三个参数"
+          - "apply() 使用 AMapUtils.calculateLineDistance 计算距离"
+          - "距离 ≤ 半径返回 SUCCESS，否则 FAILURE"
+          - "无位置数据返回 FAILURE（不抛异常）"
+          - "单元测试覆盖在围栏内/外/无位置三种场景"
+        failure_modes:
+          - scenario: "getLastKnownLocation 在后台无法获取位置"
+            likelihood: medium
+            impact: high
+            mitigation: "先尝试从 LocationEventDispatcher 缓存的最新位置获取；如无则使用 SDK 单次定位"
+        tech_stack:
+          - "高德地图 SDK (AMapUtils)"
+          - "Kotlin"
+          - "JUnit 4 + mockk"
+        test_coverage: "围栏内/外/无位置判断"
+
+  - id: "T10"
+    title: "API Key 设置界面"
+    description: |
+      创建高德 API Key 的设置入口界面（Jetpack Compose）：
+      1. 在现有设置界面中添加"地图 API Key"设置项，或创建独立设置页面
+      2. UI 组件：
+         - "高德地图 API Key" 设置项标题
+         - 当前状态显示：已配置 / 未配置
+         - 点击后弹出对话框：TextField 输入 Key + 保存/取消按钮
+         - 帮助提示文本：引导用户去高德开放平台申请 Key
+         - Key 输入验证：非空、长度合理（32 位 hex）
+      3. 调用 AmapApiKeyManager.setApiKey() 保存
+      4. 保存成功后显示 Toast 提示
+
+      文件位置：根据现有设置 UI 结构选择合适位置
+      （可能是在 app/src/main/java/top/xjunz/tasker/ui/main/ 下某个设置相关的文件中添加入口）
+
+      测试：手动验证 UI 交互（Compose Preview 验证布局）
+    wave: 2
+    agent: gem-implementer
+    prototype: false
+    priority: medium
+    status: pending
+    dependencies: ["T05"]
+    conflicts_with: []
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/ui/main/"
+        description: "现有主界面 UI 结构"
+      - path: "app/src/main/java/top/xjunz/tasker/task/location/AmapApiKeyManager.kt"
+        description: "API Key 管理类（T05 产出）"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-09"
+        estimated_effort: medium
+        estimated_files: 2
+        estimated_lines: 150
+        focus_area: "app/src/main/java/top/xjunz/tasker/ui/"
+        verification:
+          - "Compose Preview 显示设置项布局正常"
+          - "输入 API Key 并保存后，AmapApiKeyManager.hasApiKey() 返回 true"
+        acceptance_criteria:
+          - "设置界面包含高德 API Key 配置入口"
+          - "弹出对话框支持输入/保存/取消"
+          - "保存后显示 '已配置' 状态"
+          - "输入验证：非空"
+        failure_modes:
+          - scenario: "现有设置 UI 结构不清楚，添加入口位置不确定"
+            likelihood: medium
+            impact: low
+            mitigation: "先 grep 搜索现有设置相关 UI 文件结构，找到合适添加位置"
+        tech_stack:
+          - "Jetpack Compose"
+          - "Material Design 3"
+        test_coverage: null
+
+  # ============================================================
+  # Wave 3 — 注册与集成 (T11-T15, 5 并行任务)
+  # ============================================================
+
+  - id: "T11"
+    title: "EventFilter.kt 扩展 — 地理围栏事件分支"
+    description: |
+      在 EventFilter.apply() 的 when(hit.type) 分支中新增地理围栏事件处理：
+      1. 在 EventFilter.kt 的 when(hit.type) 块中，在 EVENT_ON_MODE_CHANGED 分支后添加：
+
+         Event.EVENT_ON_GEOFENCE_ENTERED,
+         Event.EVENT_ON_GEOFENCE_EXITED,
+         Event.EVENT_ON_LOCATION_ARRIVED -> {
+             GeofenceReferent(
+                 hit.getExtra(LocationEventDispatcher.EXTRA_GEOFENCE_NAME),
+                 hit.getExtra(LocationEventDispatcher.EXTRA_GEOFENCE_LAT),
+                 hit.getExtra(LocationEventDispatcher.EXTRA_GEOFENCE_LNG),
+                 hit.getExtra(LocationEventDispatcher.EXTRA_TRANSITION_TYPE)
+             ).asResult()
+         }
+
+      2. 添加必要的 import：
+         import top.xjunz.tasker.task.applet.flow.ref.GeofenceReferent
+         import top.xjunz.tasker.task.location.LocationEventDispatcher
+
+      无需单独测试文件，在 T20 端到端测试中覆盖。
+    wave: 3
+    agent: gem-implementer
+    prototype: false
+    covers: ["T-LOC-001", "T-LOC-002"]
+    priority: high
+    status: pending
+    dependencies: ["T06", "T08"]
+    conflicts_with: []
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/criterion/EventFilter.kt"
+        description: "目标文件：when(hit.type) 分支在第 36-73 行"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-09"
+        estimated_effort: small
+        estimated_files: 1
+        estimated_lines: 15
+        focus_area: "app/src/main/java/top/xjunz/tasker/task/applet/criterion/EventFilter.kt"
+        verification:
+          - "编译通过无错误"
+          - "EventFilter when 分支覆盖 EVENT_ON_GEOFENCE_ENTERED、EVENT_ON_GEOFENCE_EXITED、EVENT_ON_LOCATION_ARRIVED"
+        acceptance_criteria:
+          - "EventFilter.apply() 的 when 分支包含 3 个新地理围栏事件处理"
+          - "正确创建 GeofenceReferent 并返回 asResult()"
+          - "import 正确"
+        failure_modes:
+          - scenario: "GeofenceReferent 构造参数与 LocationEventDispatcher Extra 不匹配"
+            likelihood: low
+            impact: medium
+            mitigation: "T06 和 T08 的 Extra key 常量和构造参数已在 implementation_specification 中统一定义"
+        tech_stack:
+          - "Kotlin"
+        test_coverage: null
+
+  - id: "T12"
+    title: "EventCriterionRegistry 新增 3 个地理围栏事件注册"
+    description: |
+      在 EventCriterionRegistry 中新增地理围栏事件触发器条目：
+      1. 在 EventCriterionRegistry.kt 的 modeChanged 条目后添加：
+
+         @AppletOrdinal(0x0015)
+         val geofenceEntered =
+             eventFilterOption(Event.EVENT_ON_GEOFENCE_ENTERED, R.string.on_geofence_entered)
+                 .withResult<GeofenceReferent>(R.string.geofence_event_details)
+                 .withResult<String>(R.string.geofence_name)
+
+         @AppletOrdinal(0x0016)
+         val geofenceExited =
+             eventFilterOption(Event.EVENT_ON_GEOFENCE_EXITED, R.string.on_geofence_exited)
+                 .withResult<GeofenceReferent>(R.string.geofence_event_details)
+                 .withResult<String>(R.string.geofence_name)
+
+         @AppletOrdinal(0x0017)
+         val locationArrived =
+             eventFilterOption(Event.EVENT_ON_LOCATION_ARRIVED, R.string.on_location_arrived)
+                 .withResult<GeofenceReferent>(R.string.location_event_details)
+
+      2. 添加 import：
+         import top.xjunz.tasker.task.applet.flow.ref.GeofenceReferent
+
+      3. 在 strings.xml 中添加对应字符串资源：
+         <string name="on_geofence_entered">进入地理围栏</string>
+         <string name="on_geofence_exited">离开地理围栏</string>
+         <string name="on_location_arrived">到达指定位置</string>
+         <string name="geofence_event_details">围栏事件详情</string>
+         <string name="geofence_name">围栏名称</string>
+         <string name="location_event_details">位置事件详情</string>
+
+      无需测试，编译验证。
+    wave: 3
+    agent: gem-implementer
+    prototype: false
+    covers: ["T-LOC-001", "T-LOC-002"]
+    priority: high
+    status: pending
+    dependencies: ["T06"]
+    conflicts_with: []
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/EventCriterionRegistry.kt"
+        description: "目标文件：当前最后条目 modeChanged @AppletOrdinal(0x0014)"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-09"
+        estimated_effort: small
+        estimated_files: 2
+        estimated_lines: 30
+        focus_area: "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/EventCriterionRegistry.kt"
+        verification:
+          - "编译通过"
+          - "EventCriterionRegistry 包含 geofenceEntered、geofenceExited、locationArrived 三个字段"
+        acceptance_criteria:
+          - "@AppletOrdinal(0x0015) geofenceEntered — EVENT_ON_GEOFENCE_ENTERED"
+          - "@AppletOrdinal(0x0016) geofenceExited — EVENT_ON_GEOFENCE_EXITED"
+          - "@AppletOrdinal(0x0017) locationArrived — EVENT_ON_LOCATION_ARRIVED"
+          - "每个 withResult 声明 GeofenceReferent 和/或 String 引用"
+          - "strings.xml 包含 6 个新字符串"
+        failure_modes:
+          - scenario: "@AppletOrdinal ID 与现有注册表冲突"
+            likelihood: low
+            impact: high
+            mitigation: "研究阶段已确认 0x0015-0x0017 为下一批可用 ordinal（当前最大 0x0014）"
+        tech_stack:
+          - "Kotlin"
+        test_coverage: null
+
+  - id: "T13"
+    title: "LocationCriterionRegistry 新建 — 位置约束注册表"
+    description: |
+      创建位置约束注册表：
+      1. 创建 app/src/main/java/top/xjunz/tasker/task/applet/option/registry/LocationCriterionRegistry.kt：
+         class LocationCriterionRegistry(id: Int) : AppletOptionRegistry(id) {
+
+             @AppletOrdinal(0x0000)
+             val geofenceInside = invertibleAppletOption(R.string.geofence_inside) {
+                 GeofenceConstraint()
+             }.withValueArgument<Double>(R.string.geofence_latitude, VariantArgType.DECIMAL_NUMBER)
+              .withValueArgument<Double>(R.string.geofence_longitude, VariantArgType.DECIMAL_NUMBER)
+              .withValueArgument<Float>(R.string.geofence_radius, VariantArgType.DECIMAL_NUMBER)
+              .withValueArgument<String>(R.string.geofence_display_name, VariantArgType.TEXT_SINGLE_LINE)
+         }
+
+      2. 在 strings.xml 添加字符串资源：
+         <string name="geofence_inside">在地理围栏内</string>
+         <string name="geofence_latitude">纬度</string>
+         <string name="geofence_longitude">经度</string>
+         <string name="geofence_radius">半径（米）</string>
+         <string name="geofence_display_name">围栏名称</string>
+         <string name="location_criteria">位置条件</string>
+
+      注意：invertibleAppletOption 支持取反（不在围栏内）。
+      参数配置参考 GeofencePickerDialog（T15）—— 用户通过地图 UI 选择后填入参数。
+
+      无需测试，编译验证。
+    wave: 3
+    agent: gem-implementer
+    prototype: false
+    covers: ["C-LOC-001"]
+    priority: high
+    status: pending
+    dependencies: ["T09"]
+    conflicts_with: []
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/NetworkCriterionRegistry.kt"
+        description: "同类型 Registry 参考"
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/VariableCriterionRegistry.kt"
+        description: "另一个 CriterionRegistry 参考"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-09"
+        estimated_effort: small
+        estimated_files: 2
+        estimated_lines: 40
+        focus_area: "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/"
+        verification:
+          - "编译通过"
+          - "LocationCriterionRegistry 包含 geofenceInside 字段"
+          - "@AppletOrdinal(0x0000) 正确"
+        acceptance_criteria:
+          - "LocationCriterionRegistry(id) 继承 AppletOptionRegistry(id)"
+          - "@AppletOrdinal(0x0000) geofenceInside 使用 invertibleAppletOption"
+          - "geofenceInside 包含 4 个参数：lat, lng, radius, name"
+          - "strings.xml 包含 6 个新字符串"
+        failure_modes:
+          - scenario: "invertibleAppletOption 的参数绑定与 GeofenceConstraint.values[] 不匹配"
+            likelihood: medium
+            impact: medium
+            mitigation: "确保参数顺序与 GeofenceConstraint.apply() 中 values[0]/[1]/[2] 对应"
+        tech_stack:
+          - "Kotlin"
+        test_coverage: null
+
+  - id: "T14"
+    title: "AutomatorService 注册 LocationEventDispatcher"
+    description: |
+      在 AutomatorService.initEventDispatcher() 中注册新的 LocationEventDispatcher：
+      1. 在 AutomatorService.kt 的 initEventDispatcher() 方法中，
+         在 NetworkEventDispatcher() 注册后添加：
+         eventDispatcher.registerEventDispatcher(
+             LocationEventDispatcher(
+                 AmapApiKeyManager,
+                 GeofenceConfigRepository(ContextBridge.getContext()),
+                 CoroutineScope(Dispatchers.IO + SupervisorJob())
+             )
+         )
+      2. 添加必要的 import：
+         import top.xjunz.tasker.task.location.LocationEventDispatcher
+         import top.xjunz.tasker.task.location.AmapApiKeyManager
+         import top.xjunz.tasker.task.location.GeofenceConfigRepository
+
+      注意：LocationEventDispatcher 内部检查 API Key，无 Key 时自动跳过初始化，不影响其他 Dispatcher。
+
+      无需测试，在 T20 端到端测试中覆盖。
+    wave: 3
+    agent: gem-implementer
+    prototype: false
+    covers: ["T-LOC-001", "T-LOC-002"]
+    priority: high
+    status: pending
+    dependencies: ["T08"]
+    conflicts_with: []
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/service/AutomatorService.kt"
+        description: "目标文件：initEventDispatcher() 方法在第 60-66 行"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-09"
+        estimated_effort: small
+        estimated_files: 1
+        estimated_lines: 10
+        focus_area: "app/src/main/java/top/xjunz/tasker/service/AutomatorService.kt"
+        verification:
+          - "编译通过"
+          - "initEventDispatcher() 包含 LocationEventDispatcher 注册"
+        acceptance_criteria:
+          - "AutomatorService.initEventDispatcher() 注册 LocationEventDispatcher"
+          - "LocationEventDispatcher 创建时传入 apiKeyManager、configRepository、scope"
+          - "import 正确"
+        failure_modes:
+          - scenario: "GeofenceConfigRepository 需要 Context，在 AutomatorService 初始化时可能未就绪"
+            likelihood: low
+            impact: medium
+            mitigation: "使用 ContextBridge.getContext() 获取 Application Context（生命周期最长）"
+        tech_stack:
+          - "Kotlin"
+        test_coverage: null
+
+  - id: "T15"
+    title: "高德 MapView 地图选点基础界面"
+    description: |
+      创建地理围栏配置的地图选点对话框（Jetpack Compose）：
+      1. 创建 app/src/main/java/top/xjunz/tasker/ui/task/selector/argument/GeofencePickerDialog.kt：
+         @Composable
+         fun GeofencePickerDialog(
+             initialConfig: GeofenceConfig?,
+             onConfirm: (GeofenceConfig) -> Unit,
+             onDismiss: () -> Unit
+         ) {
+             // 全屏对话框
+             // 1. 高德 MapView（Compose 中使用 AndroidView 包裹）
+             // 2. 地图中心十字准线
+             // 3. 底部面板：围栏名称输入、地址显示、确认/取消按钮
+             // 4. 长按/拖拽地图选点 → 更新坐标
+             // 5. initialConfig 非空时定位到已有坐标
+         }
+      2. 创建 GeofencePickerViewModel：
+         - selectedLatLng: MutableStateFlow<LatLng?>
+         - geofenceName: MutableStateFlow<String>
+         - address: MutableStateFlow<String>
+         - 逆地理编码：坐标→地址描述
+      3. 高德 MapView 初始化：
+         - 使用 AndroidView { mapView -> ... } 包裹
+         - 设置 GCJ-02 坐标系
+         - 添加地图点击监听
+      4. 在 res/values/strings.xml 添加 UI 字符串
+
+      测试：Compose Preview 验证布局
+
+      注意：高德地图 SDK 需要 API Key 才能显示地图，
+      无 Key 时显示提示文本引导用户去设置。
+    wave: 3
+    agent: gem-implementer
+    prototype: false
+    priority: medium
+    status: pending
+    dependencies: ["T02", "T03", "T05", "T07"]
+    conflicts_with: []
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/ui/task/selector/argument/"
+        description: "现有参数选择器 UI 所在目录"
+      - path: "app/src/main/java/top/xjunz/tasker/ui/task/selector/AppletSelectorDialog.kt"
+        description: "现有对话框 UI 模式参考"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-09"
+        estimated_effort: medium
+        estimated_files: 3
+        estimated_lines: 280
+        focus_area: "app/src/main/java/top/xjunz/tasker/ui/task/selector/argument/"
+        verification:
+          - "Compose Preview 显示地图区域 + 底部面板"
+          - "无 API Key 时显示设置引导提示"
+        acceptance_criteria:
+          - "GeofencePickerDialog 使用 AndroidView 包裹高德 MapView"
+          - "支持地图点击选点 + 坐标显示"
+          - "底部面板包含围栏名称输入 + 地址显示 + 确认/取消"
+          - "逆地理编码：选点后自动填充地址"
+          - "无 API Key 时显示提示引导设置"
+        failure_modes:
+          - scenario: "MapView 在 Compose AndroidView 中生命周期管理不当导致内存泄漏"
+            likelihood: medium
+            impact: medium
+            mitigation: "在 DisposableEffect 中正确调用 mapView.onResume/onPause/onDestroy"
+          - scenario: "高德 SDK 初始化在非主线程导致崩溃"
+            likelihood: medium
+            impact: high
+            mitigation: "MapView 初始化在 AndroidView factory 中（主线程）；SDK 回调注意线程切换"
+        tech_stack:
+          - "Jetpack Compose"
+          - "高德地图 SDK (MapView)"
+          - "AndroidView interop"
+        test_coverage: null
+
+  # ============================================================
+  # Wave 4 — 全局注册 + 高级 UI (T16-T19, 4 任务)
+  # ============================================================
+
+  - id: "T16"
+    title: "围栏列表管理界面"
+    description: |
+      创建围栏列表管理对话框（Jetpack Compose）：
+      1. 创建 app/src/main/java/top/xjunz/tasker/ui/task/selector/argument/GeofenceListDialog.kt：
+         @Composable
+         fun GeofenceListDialog(
+             onSelect: (GeofenceConfig) -> Unit,
+             onDismiss: () -> Unit
+         ) {
+             // 1. 标题栏：已保存的围栏 + 新建围栏按钮
+             // 2. LazyColumn 显示围栏列表：
+             //    - 每项：围栏名称 + 地址/坐标 + 半径 + 启用开关
+             //    - 左滑删除
+             //    - 点击选择（填充到参数）
+             //    - 长按编辑
+             // 3. 空状态：无围栏时显示引导
+             // 4. 新建围栏按钮 → 打开 GeofencePickerDialog
+         }
+      2. 创建 GeofenceListViewModel：
+         - geofences: StateFlow<List<GeofenceConfig>> from GeofenceConfigRepository.observeGeofences()
+         - deleteGeofence(id: String)
+         - toggleGeofence(id: String, enabled: Boolean)
+      3. 添加 UI 字符串到 strings.xml
+
+      测试：Compose Preview + 手动验证列表操作
+    wave: 4
+    agent: gem-implementer
+    prototype: false
+    priority: medium
+    status: pending
+    dependencies: ["T07", "T15"]
+    conflicts_with: []
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/ui/task/selector/argument/GeofencePickerDialog.kt"
+        description: "地图选点对话框（T15 产出）"
+      - path: "app/src/main/java/top/xjunz/tasker/task/location/GeofenceConfigRepository.kt"
+        description: "围栏配置仓库（T07 产出）"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-09"
+        estimated_effort: medium
+        estimated_files: 2
+        estimated_lines: 200
+        focus_area: "app/src/main/java/top/xjunz/tasker/ui/task/selector/argument/"
+        verification:
+          - "Compose Preview 显示列表布局"
+          - "新建围栏按钮打开 GeofencePickerDialog"
+          - "删除围栏后列表更新"
+        acceptance_criteria:
+          - "LazyColumn 显示围栏列表（名称 + 坐标 + 半径 + 启用状态）"
+          - "支持新建、删除、启用/禁用操作"
+          - "空状态引导文本"
+          - "点击选择围栏回调 onSelect"
+        failure_modes:
+          - scenario: "列表状态与 Repository 不同步"
+            likelihood: low
+            impact: low
+            mitigation: "使用 collectAsState() 订阅 Repository.observeGeofences()"
+        tech_stack:
+          - "Jetpack Compose"
+          - "Material Design 3"
+        test_coverage: null
+
+  - id: "T17"
+    title: "BootstrapOptionRegistry + AppletOptionFactory 全局注册"
+    description: |
+      在根注册表和工厂中注册新的位置约束注册表：
+      1. BootstrapOptionRegistry.kt 修改：
+         a. companion object 中添加：
+            const val ID_LOCATION_CRITERION_REGISTRY = 0x1A
+         b. 新增 PhantomFlow 条目：
+            @AppletOrdinal(0x0019)
+            val locationCriteria =
+                flowOptionWithId<PhantomFlow>(ID_LOCATION_CRITERION_REGISTRY, R.string.location_criteria)
+         c. criterionFlowOptions 数组追加 locationCriteria：
+            位于 modeCriteria 之后
+
+      2. AppletOptionFactory.kt 修改：
+         a. 新增 import：
+            import top.xjunz.tasker.task.applet.option.registry.LocationCriterionRegistry
+         b. 新增 Registry 实例化：
+            private val locationCriterionRegistry =
+                LocationCriterionRegistry(BootstrapOptionRegistry.ID_LOCATION_CRITERION_REGISTRY)
+         c. allRegistries 数组中，在 modeCriterionRegistry 后添加 locationCriterionRegistry
+
+      无需测试，编译验证。
+    wave: 4
+    agent: gem-implementer
+    prototype: false
+    covers: ["C-LOC-001"]
+    priority: high
+    status: pending
+    dependencies: ["T12", "T13"]
+    conflicts_with: []
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/BootstrapOptionRegistry.kt"
+        description: "根注册表：companion object IDs 在第 40-64 行，criterionFlowOptions 在第 112-120 行"
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/option/AppletOptionFactory.kt"
+        description: "工厂：allRegistries 数组在第 128-155 行"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-09"
+        estimated_effort: small
+        estimated_files: 2
+        estimated_lines: 25
+        focus_area: "app/src/main/java/top/xjunz/tasker/task/applet/option/"
+        verification:
+          - "编译通过"
+          - "BootstrapOptionRegistry.ID_LOCATION_CRITERION_REGISTRY == 0x1A"
+          - "criterionFlowOptions 包含 locationCriteria"
+          - "AppletOptionFactory.allRegistries 包含 locationCriterionRegistry"
+        acceptance_criteria:
+          - "BootstrapOptionRegistry companion 包含 ID_LOCATION_CRITERION_REGISTRY = 0x1A"
+          - "@AppletOrdinal(0x0019) locationCriteria PhantomFlow 注册"
+          - "criterionFlowOptions 数组末尾包含 locationCriteria"
+          - "AppletOptionFactory 实例化 LocationCriterionRegistry 并加入 allRegistries"
+          - "allRegistries 中 locationCriterionRegistry 位于 modeCriterionRegistry 之后"
+        failure_modes:
+          - scenario: "allRegistries 数组顺序错误导致 ID 查找失败"
+            likelihood: low
+            impact: high
+            mitigation: "allRegistries 按 ID 排序：criterion 在前，action 在后；locationCriterionRegistry(0x1A) 排在 modeCriterionRegistry(0x19) 之后"
+        tech_stack:
+          - "Kotlin"
+        test_coverage: null
+
+  - id: "T18"
+    title: "POI 地址搜索功能"
+    description: |
+      在地图选点对话框中添加 POI 地址搜索功能：
+      1. 在 GeofencePickerDialog 中新增搜索栏：
+         - 顶部 SearchBar（TextField + 搜索图标）
+         - 输入文字后调用高德 POI 搜索 API
+         - 显示搜索结果列表（名称 + 地址 + 距离）
+         - 选择结果 → 地图定位到该位置 + 填充地址
+      2. 使用高德搜索 SDK：
+         PoiSearch.Query(keyword, "", "")
+         PoiSearch(context, query).setOnPoiSearchListener { ... }
+         结果中取出 LatLonPoint → 转为地图坐标
+      3. 搜索防抖（300ms debounce）
+      4. 搜索结果为空时显示"暂无结果"
+
+      修改文件：GeofencePickerDialog.kt + GeofencePickerViewModel.kt
+    wave: 4
+    agent: gem-implementer
+    prototype: false
+    priority: medium
+    status: pending
+    dependencies: ["T15"]
+    conflicts_with: ["T19"]
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/ui/task/selector/argument/GeofencePickerDialog.kt"
+        description: "地图选点对话框（T15 产出）"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-09"
+        estimated_effort: medium
+        estimated_files: 2
+        estimated_lines: 150
+        focus_area: "app/src/main/java/top/xjunz/tasker/ui/task/selector/argument/"
+        verification:
+          - "搜索框输入文字后显示结果列表"
+          - "选择结果后地图定位到该位置"
+          - "搜索防抖工作正常"
+        acceptance_criteria:
+          - "GeofencePickerDialog 顶部包含搜索栏"
+          - "调用高德 POI 搜索 API 获取结果"
+          - "搜索结果列表显示名称 + 地址"
+          - "选择结果定位地图 + 填充坐标和地址"
+          - "300ms 防抖避免过度请求"
+        failure_modes:
+          - scenario: "POI 搜索请求频率过高被高德限流"
+            likelihood: medium
+            impact: low
+            mitigation: "300ms debounce + 最少 3 字符触发搜索"
+        tech_stack:
+          - "高德搜索 SDK (PoiSearch)"
+          - "Jetpack Compose"
+          - "Kotlin Coroutines (debounce)"
+        test_coverage: null
+
+  - id: "T19"
+    title: "围栏可视化圆形叠加层 + 半径调节滑块"
+    description: |
+      在地图选点对话框中添加围栏可视化效果和半径调节：
+      1. 围栏可视化圆形叠加层：
+         - 在高德地图上绘制圆形覆盖物 (Circle)：
+           aMap.addCircle(CircleOptions()
+               .center(latLng)
+               .radius(radius.toDouble())
+               .fillColor(0x200000FF)  // 半透明蓝色
+               .strokeColor(0xFF0000FF.toInt())
+               .strokeWidth(2f))
+         - 当坐标或半径变化时更新圆形
+      2. 半径调节滑块：
+         - Slider 组件：范围 50m ~ 5000m
+         - 显示当前半径值
+         - 滑动时实时更新地图上的圆形大小
+         - 预设快捷值：100m、500m、1000m
+      3. 地图缩放适配：根据半径自动调整地图缩放级别
+
+      修改文件：GeofencePickerDialog.kt + GeofencePickerViewModel.kt
+    wave: 4
+    agent: gem-implementer
+    prototype: false
+    priority: medium
+    status: pending
+    dependencies: ["T15"]
+    conflicts_with: ["T18"]
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/ui/task/selector/argument/GeofencePickerDialog.kt"
+        description: "地图选点对话框（T15 产出）"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-09"
+        estimated_effort: medium
+        estimated_files: 2
+        estimated_lines: 130
+        focus_area: "app/src/main/java/top/xjunz/tasker/ui/task/selector/argument/"
+        verification:
+          - "地图上显示蓝色半透明圆形覆盖物"
+          - "拖动滑块时圆形大小实时变化"
+          - "圆形中心随选点位置更新"
+        acceptance_criteria:
+          - "地图上绘制半透明圆形表示围栏范围"
+          - "Slider 范围 50-5000m，滑动实时更新圆形"
+          - "显示当前半径数值"
+          - "自动调整地图缩放适配围栏大小"
+        failure_modes:
+          - scenario: "频繁更新 Circle 导致性能问题"
+            likelihood: low
+            impact: low
+            mitigation: "复用同一个 Circle 对象，调用 setRadius() 更新而非重新创建"
+        tech_stack:
+          - "高德地图 SDK (Circle, CircleOptions)"
+          - "Jetpack Compose (Slider)"
+        test_coverage: null
+
+  # ============================================================
+  # Wave 5 — 端到端集成测试 (T20, 1 任务)
+  # ============================================================
+
+  - id: "T20"
+    title: "地理围栏系统端到端集成测试"
+    description: |
+      编写端到端集成测试验证完整的地理围栏流水线：
+      1. 引擎层测试（app/src/test）：
+         a. 事件常量测试：
+            - Event.EVENT_ON_GEOFENCE_ENTERED == 17
+            - Event.EVENT_ON_GEOFENCE_EXITED == 18
+            - Event.EVENT_ON_LOCATION_ARRIVED == 19
+         b. EventFilter 集成测试：
+            - 构造 Event(EVENT_ON_GEOFENCE_ENTERED) + putExtra
+            - EventFilter(EVENT_ON_GEOFENCE_ENTERED).apply(runtime)
+            - 验证返回的 GeofenceReferent 字段正确
+         c. GeofenceConstraint 集成测试：
+            - mock 位置数据在围栏内 → SUCCESS
+            - mock 位置数据在围栏外 → FAILURE
+         d. Registry 注册验证测试：
+            - AppletOptionFactory.createAppletById() 能创建 LocationCriterionRegistry 中的 Applet
+            - BootstrapOptionRegistry.criterionFlowOptions 包含 locationCriteria
+      2. 完整流水线测试（可选，需 Robolectric）：
+         - 创建围栏配置 → LocationEventDispatcher 注册围栏 →
+           模拟围栏进入事件 → EventFilter 匹配 → GeofenceReferent 返回正确值
+
+      测试文件：app/src/test/kotlin/top/xjunz/tasker/task/location/GeofenceIntegrationTest.kt
+    wave: 5
+    agent: gem-implementer
+    prototype: false
+    covers: ["T-LOC-001", "T-LOC-002", "C-LOC-001"]
+    priority: high
+    status: pending
+    dependencies: ["T17", "T14"]
+    conflicts_with: []
+    context_files:
+      - path: "app/src/test/kotlin/top/xjunz/tasker/task/location/"
+        description: "已有的地理围栏单元测试目录"
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/option/AppletOptionFactory.kt"
+        description: "工厂 — 验证注册表集成"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-09"
+        estimated_effort: medium
+        estimated_files: 1
+        estimated_lines: 200
+        focus_area: "app/src/test/kotlin/top/xjunz/tasker/task/location/"
+        verification:
+          - "运行 GeofenceIntegrationTest，所有测试通过"
+          - "事件常量值正确"
+          - "EventFilter 正确返回 GeofenceReferent"
+          - "Registry 注册完整"
+        acceptance_criteria:
+          - "事件常量测试通过（17, 18, 19）"
+          - "EventFilter 对 3 个事件类型返回正确的 GeofenceReferent"
+          - "GeofenceConstraint 集成测试通过（围栏内/外判断）"
+          - "AppletOptionFactory 能创建 LocationCriterionRegistry 中的 applet"
+          - "BootstrapOptionRegistry.criterionFlowOptions 包含 locationCriteria"
+        failure_modes:
+          - scenario: "集成测试因缺少 Android 环境（高德 SDK）而无法运行部分测试"
+            likelihood: high
+            impact: medium
+            mitigation: "高德 SDK 相关部分使用 mock；Registry 注册验证不需要 Android 环境"
+        tech_stack:
+          - "JUnit 4"
+          - "mockk"
+          - "Kotlin Coroutines Test"
+        test_coverage: "事件常量 + EventFilter + GeofenceConstraint + Registry 注册"
+        requires_review: true
+        review_depth: standard
+        review_security_sensitive: false
+
+planning_pass: 1
+planning_history:
+  - pass: 1
+    reason: "初始规划"
+    timestamp: "2026-04-09"
