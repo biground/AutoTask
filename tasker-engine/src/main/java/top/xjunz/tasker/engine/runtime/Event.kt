@@ -74,6 +74,10 @@ class Event private constructor(
 
         const val EVENT_ON_NETWORK_UNAVAILABLE = 14
 
+        const val EVENT_ON_VARIABLE_CHANGED = 15
+
+        const val EVENT_ON_MODE_CHANGED = 16
+
         fun obtain(
             eventType: Int,
             pkgName: String? = null,
