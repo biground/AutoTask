@@ -11,6 +11,7 @@ import top.xjunz.tasker.engine.variable.Variable
 import top.xjunz.tasker.engine.variable.VariableRepository
 import top.xjunz.tasker.engine.variable.VariableScope
 import top.xjunz.tasker.engine.variable.VariableType
+import top.xjunz.tasker.task.applet.util.ExpressionHelper
 
 /**
  * 设置变量值的动作 (A-DATA-006)
@@ -39,8 +40,15 @@ class SetVariableAction(
         val scope = VariableScope.values().getOrNull(scopeOrdinal) ?: VariableScope.GLOBAL
         val persisted = args.getOrNull(4) as? Boolean ?: false
 
+        // 如果原始值是字符串且被识别为表达式，通过表达式引擎求值
+        val effectiveValue = if (rawValue is String && ExpressionHelper.isExpression(rawValue)) {
+            ExpressionHelper.evaluateExpression(rawValue, repositoryProvider()) ?: rawValue
+        } else {
+            rawValue
+        }
+
         // 类型转换/校验
-        val typedValue = coerceValue(rawValue, type) ?: return AppletResult.EMPTY_FAILURE
+        val typedValue = coerceValue(effectiveValue, type) ?: return AppletResult.EMPTY_FAILURE
 
         val existingVar = repositoryProvider().getVariable(name)
         val variable = Variable(
