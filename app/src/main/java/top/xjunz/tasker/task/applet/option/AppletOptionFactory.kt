@@ -6,6 +6,8 @@ package top.xjunz.tasker.task.applet.option
 
 import top.xjunz.tasker.engine.applet.base.Applet
 import top.xjunz.tasker.engine.applet.factory.AppletFactory
+import top.xjunz.tasker.engine.mode.InMemoryModeRepository
+import top.xjunz.tasker.engine.mode.ModeRepository
 import top.xjunz.tasker.engine.variable.InMemoryVariableRepository
 import top.xjunz.tasker.engine.variable.VariableRepository
 import top.xjunz.tasker.task.applet.option.registry.AppletOptionRegistry
@@ -18,6 +20,8 @@ import top.xjunz.tasker.task.applet.option.registry.FileActionRegistry
 import top.xjunz.tasker.task.applet.option.registry.GestureActionRegistry
 import top.xjunz.tasker.task.applet.option.registry.GlobalActionRegistry
 import top.xjunz.tasker.task.applet.option.registry.GlobalCriterionRegistry
+import top.xjunz.tasker.task.applet.option.registry.ModeActionRegistry
+import top.xjunz.tasker.task.applet.option.registry.ModeCriterionRegistry
 import top.xjunz.tasker.task.applet.option.registry.NetworkCriterionRegistry
 import top.xjunz.tasker.task.applet.option.registry.ShellCmdActionRegistry
 import top.xjunz.tasker.task.applet.option.registry.TextActionRegistry
@@ -41,6 +45,8 @@ object AppletOptionFactory : AppletFactory {
     private var preloaded = false
 
     private val variableRepository: VariableRepository by lazy { InMemoryVariableRepository() }
+
+    private val modeRepository: ModeRepository by lazy { InMemoryModeRepository() }
 
     val flowRegistry = BootstrapOptionRegistry()
 
@@ -103,6 +109,18 @@ object AppletOptionFactory : AppletFactory {
             { variableRepository }
         )
 
+    private val modeActionRegistry =
+        ModeActionRegistry(
+            BootstrapOptionRegistry.ID_MODE_ACTION_REGISTRY,
+            { modeRepository }
+        )
+
+    private val modeCriterionRegistry =
+        ModeCriterionRegistry(
+            BootstrapOptionRegistry.ID_MODE_CRITERION_REGISTRY,
+            { modeRepository }
+        )
+
     val uiObjectFlowRegistry =
         UiObjectFlowRegistry(BootstrapOptionRegistry.ID_UI_OBJECT_FLOW_REGISTRY)
 
@@ -118,6 +136,7 @@ object AppletOptionFactory : AppletFactory {
         textRegistry,
         networkRegistry,
         variableCriterionRegistry,
+        modeCriterionRegistry,
         /* action */
         controlActionRegistry,
         globalActionRegistry,
@@ -129,6 +148,7 @@ object AppletOptionFactory : AppletFactory {
         fileActionRegistry,
         vibrationActionRegistry,
         variableActionRegistry,
+        modeActionRegistry,
         /* control */
         uiObjectFlowRegistry,
     )
