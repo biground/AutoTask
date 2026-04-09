@@ -139,4 +139,16 @@
     <string name="expected_value">期望值</string>
     <string name="left_operand">左操作数</string>
     <string name="right_operand">右操作数</string>
+
+    <!-- 模式操作 -->
+    <string name="mode_actions">模式操作</string>
+    <string name="set_mode">设置模式</string>
+    <string name="mode_name">模式名称</string>
+    <string name="mode_operation_type">操作类型</string>
+
+    <!-- 模式条件 -->
+    <string name="mode_criteria">模式条件</string>
+    <string name="check_mode_status">模式状态满足条件</string>
+    <string name="not_check_mode_status">模式状态不满足条件</string>
+    <string name="expected_mode_active">期望模式激活</string>
 </resources>
