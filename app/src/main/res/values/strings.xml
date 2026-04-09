@@ -676,4 +676,8 @@
     <string name="restart_app">重启应用</string>
     <string name="send_to">发送到…</string>
     <string name="notification_owner_app_name">发送通知的应用名称</string>
+    <string name="on_variable_changed">当变量发生变化时</string>
+    <string name="changed_variable_name">发生变化的变量名</string>
+    <string name="variable_old_value">变量旧值</string>
+    <string name="variable_new_value">变量新值</string>
 </resources>

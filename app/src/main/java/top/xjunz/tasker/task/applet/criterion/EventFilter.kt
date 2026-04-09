@@ -10,8 +10,10 @@ import top.xjunz.tasker.engine.runtime.Event
 import top.xjunz.tasker.engine.runtime.TaskRuntime
 import top.xjunz.tasker.task.applet.flow.ref.ComponentInfoWrapper
 import top.xjunz.tasker.task.applet.flow.ref.NotificationReferent
+import top.xjunz.tasker.task.applet.flow.ref.VariableChangeReferent
 import top.xjunz.tasker.task.event.ClipboardEventDispatcher
 import top.xjunz.tasker.task.event.NetworkEventDispatcher
+import top.xjunz.tasker.task.variable.VariableChangeEventDispatcher
 
 /**
  * @author xjunz 2022/08/25
@@ -43,6 +45,14 @@ class EventFilter(private val eventType: Int) : Applet() {
 
                 Event.EVENT_ON_WIFI_CONNECTED, Event.EVENT_ON_WIFI_DISCONNECTED -> {
                     AppletResult.succeeded(hit.getExtra(NetworkEventDispatcher.EXTRA_WIFI_SSID))
+                }
+
+                Event.EVENT_ON_VARIABLE_CHANGED -> {
+                    VariableChangeReferent(
+                        hit.getExtra(VariableChangeEventDispatcher.EXTRA_VARIABLE_NAME),
+                        hit.getExtra(VariableChangeEventDispatcher.EXTRA_VARIABLE_OLD_VALUE),
+                        hit.getExtra(VariableChangeEventDispatcher.EXTRA_VARIABLE_NEW_VALUE)
+                    ).asResult()
                 }
 
                 else -> ComponentInfoWrapper.wrap(hit.componentInfo).asResult()

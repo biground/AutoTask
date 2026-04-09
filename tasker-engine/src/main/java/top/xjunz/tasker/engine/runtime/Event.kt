@@ -102,6 +102,7 @@ class Event private constructor(
             EVENT_ON_PRIMARY_CLIP_CHANGED -> "primaryClipChanged"
             EVENT_ON_TICK -> "tick"
             EVENT_ON_TOAST_RECEIVED -> "toastNotificationReceived"
+            EVENT_ON_VARIABLE_CHANGED -> "variableChanged"
             else -> "undefined"
         }
         return "Event(type=$typeName, compInfo=$componentInfo)"

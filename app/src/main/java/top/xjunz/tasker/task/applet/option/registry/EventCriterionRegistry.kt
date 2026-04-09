@@ -12,6 +12,7 @@ import top.xjunz.tasker.task.applet.criterion.EventFilter
 import top.xjunz.tasker.task.applet.criterion.FileEventCriterion
 import top.xjunz.tasker.task.applet.flow.ref.ComponentInfoWrapper
 import top.xjunz.tasker.task.applet.flow.ref.NotificationReferent
+import top.xjunz.tasker.task.applet.flow.ref.VariableChangeReferent
 import top.xjunz.tasker.task.applet.value.VariantArgType
 
 /**
@@ -97,6 +98,14 @@ class EventCriterionRegistry(id: Int) : AppletOptionRegistry(id) {
     @AppletOrdinal(0X0012)
     val networkUnavailable =
         eventFilterOption(Event.EVENT_ON_NETWORK_AVAILABLE, R.string.on_network_unavailable)
+
+    @AppletOrdinal(0x0013)
+    val variableChanged =
+        eventFilterOption(Event.EVENT_ON_VARIABLE_CHANGED, R.string.on_variable_changed)
+            .withResult<VariableChangeReferent>(R.string.on_variable_changed)
+            .withResult<String>(R.string.changed_variable_name)
+            .withResult<String>(R.string.variable_old_value)
+            .withResult<String>(R.string.variable_new_value)
     /* @AppletOrdinal(0x0005)
      val primaryClipChanged =
          eventFilterOption(Event.EVENT_ON_PRIMARY_CLIP_CHANGED, R.string.on_primary_clip_changed)
