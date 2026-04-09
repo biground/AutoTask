@@ -1,0 +1,182 @@
+prd_id: "autopilot-v1"
+version: "0.1.0"
+
+user_stories:
+  - as_a: "Android 用户"
+    i_want: "在手机上创建自动化宏，让设备根据触发条件自动执行动作"
+    so_that: "减少重复操作，提高效率"
+
+  - as_a: "PC 用户"
+    i_want: "在 Web 端用可视化编辑器编辑宏，然后同步到手机执行"
+    so_that: "在大屏上更方便地编辑复杂宏逻辑"
+
+  - as_a: "跨设备用户"
+    i_want: "用 Google 账号登录，宏数据在 Android 和 Web 端自动同步"
+    so_that: "任何设备上都能管理我的宏"
+
+scope:
+  in_scope:
+    - "Android 自动化引擎（全部 83 触发器 + 128 动作 + 59 约束条件）"
+    - "变量系统（Boolean/Integer/Decimal/String/Dictionary/Array）"
+    - "控制流引擎（If/Loop/Block/Wait/Run Macro）"
+    - "表达式引擎（数学/字符串/日期/逻辑/JSON）"
+    - "自定义 UI 场景系统（15 种组件）"
+    - "PC/Web 端可视化宏编辑器"
+    - "Google 账号认证 + Firebase 云同步"
+    - "国内本地化（地图/天气/OCR/翻译 API 替代方案）"
+    - "宏导入/导出/模板系统"
+    - "权限管理（运行时/Shizuku/Root）"
+    - "桌面小部件/快速设置磁贴/悬浮按钮"
+
+  out_of_scope:
+    - "社区市场/宏分享平台（后续版本）"
+    - "Android Wear 支持"
+    - "iOS 版本"
+    - "多用户协作编辑"
+    - "AI 辅助宏生成"
+
+acceptance_criteria:
+  - criterion: "引擎能正确执行包含触发器、动作、约束条件的宏"
+    verification: "单元测试 + 集成测试覆盖所有控制流路径"
+  - criterion: "PC/Web 端编辑的宏能同步到 Android 端并正确执行"
+    verification: "端到端测试：Web 创建宏 → 同步 → Android 执行 → 验证结果"
+  - criterion: "所有 🔴 标记功能使用国内替代方案正常工作"
+    verification: "地理围栏、天气、OCR、翻译功能在中国大陆网络环境下测试通过"
+
+needs_clarification:
+  - question: "宏执行引擎的并发模型？"
+    context: "多个宏同时触发时如何调度，是否需要优先级？"
+    impact: "影响引擎架构核心设计"
+    status: open
+    owner: user
+
+  - question: "变量持久化的存储方案？"
+    context: "DataStore vs Room vs 混合方案"
+    impact: "影响数据层架构"
+    status: open
+    owner: user
+
+  - question: "Web 端宏编辑器是否需要离线能力？"
+    context: "PWA 还是纯在线 Web 应用"
+    impact: "影响前端架构选型"
+    status: open
+    owner: user
+
+features:
+  - name: "宏执行引擎"
+    overview: "Android 端核心自动化引擎，处理触发器监听、动作执行、约束评估"
+    status: planned
+
+  - name: "触发器系统"
+    overview: "83 种触发器，覆盖时间、设备、网络、电话、电量、通知、应用、传感器、位置、硬件等"
+    status: planned
+
+  - name: "动作系统"
+    overview: "128 种动作，覆盖设备设置、音量、通讯、UI、应用、文件、屏幕、网络、脚本等"
+    status: planned
+
+  - name: "约束条件系统"
+    overview: "59 种约束条件，支持 AND/OR/XOR/NOT 逻辑组合"
+    status: planned
+
+  - name: "变量与表达式引擎"
+    overview: "6 种变量类型 + 数学/字符串/日期/逻辑/JSON 表达式"
+    status: planned
+
+  - name: "控制流引擎"
+    overview: "If/Else/Loop/Iterator/Break/Continue/Wait/ActionBlock/MacroRun"
+    status: planned
+
+  - name: "自定义 UI 场景"
+    overview: "可视化 UI 设计器，15 种组件，支持事件和数据绑定"
+    status: planned
+
+  - name: "PC/Web 宏编辑器"
+    overview: "React + TypeScript，拖拽式可视化编辑器"
+    status: planned
+
+  - name: "云同步系统"
+    overview: "Firebase Auth + Firestore，支持增量同步和冲突解决"
+    status: planned
+
+  - name: "本地化适配"
+    overview: "地图、天气、OCR、翻译等功能使用国内服务替代"
+    status: planned
+
+state_machines:
+  - name: "宏生命周期"
+    states: [disabled, enabled, triggered, executing, completed, failed, cancelled]
+    transitions:
+      - from: disabled
+        to: enabled
+        trigger: "用户启用宏"
+      - from: enabled
+        to: triggered
+        trigger: "触发器事件匹配"
+      - from: triggered
+        to: executing
+        trigger: "约束检查通过"
+      - from: triggered
+        to: enabled
+        trigger: "约束检查失败"
+      - from: executing
+        to: completed
+        trigger: "所有动作执行完成"
+      - from: executing
+        to: failed
+        trigger: "动作执行出错"
+      - from: executing
+        to: cancelled
+        trigger: "Cancel Macro Actions"
+      - from: completed
+        to: enabled
+        trigger: "自动复位"
+      - from: failed
+        to: enabled
+        trigger: "自动复位"
+      - from: cancelled
+        to: enabled
+        trigger: "自动复位"
+
+  - name: "同步状态"
+    states: [synced, modified_local, modified_remote, syncing, conflict]
+    transitions:
+      - from: synced
+        to: modified_local
+        trigger: "本地编辑"
+      - from: synced
+        to: modified_remote
+        trigger: "远端变更推送"
+      - from: modified_local
+        to: syncing
+        trigger: "触发同步"
+      - from: modified_remote
+        to: syncing
+        trigger: "触发同步"
+      - from: syncing
+        to: synced
+        trigger: "同步成功"
+      - from: syncing
+        to: conflict
+        trigger: "检测到冲突"
+      - from: conflict
+        to: synced
+        trigger: "用户解决冲突"
+
+decisions:
+  - decision: "Android 端使用 Kotlin Native 开发"
+    rationale: "MacroDroid 的核心功能依赖 Accessibility Service、Device Admin、Notification Listener 等深层 Android API，只有原生开发才能完整实现"
+
+  - decision: "PC/Web 端使用 React + TypeScript"
+    rationale: "PC 端仅做宏编辑器，不需要设备级 API；React 生态成熟，适合复杂编辑器 UI"
+
+  - decision: "后端使用 Firebase（Auth + Firestore + Cloud Functions）"
+    rationale: "个人项目免运维，Firebase 免费层足够个人使用，Google Auth 集成简单"
+
+  - decision: "仅适配 Android 16"
+    rationale: "个人使用，减少兼容性工作量"
+
+  - decision: "地理围栏使用高德地图 SDK"
+    rationale: "国内网络环境下 Google Geofencing API 不可用"
+
+changes: []
