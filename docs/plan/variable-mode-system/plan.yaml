@@ -1,0 +1,1830 @@
+plan_id: variable-mode-system
+objective: |
+  为 AutoPilot 项目实现完整的变量系统（Variable System）和模式系统（Mode System），
+  包括类型化变量存储、CRUD 动作、约束条件、变量变化触发器、魔术变量、
+  完整 AST 表达式引擎、独立 Mode 实体与状态管理。
+created_at: "2026-04-09"
+created_by: "gem-planner"
+status: pending_approval
+research_confidence: high
+
+plan_metrics:
+  wave_1_task_count: 4
+  total_dependencies: 38
+  risk_score: medium
+
+tldr: |
+  26 个原子任务，分 6 波执行（W1 基础 → W2 存储/动作/词法 → W3 约束/解析/触发/模式 → W4 求值/模式Applet → W5 注册集成 → W6 端到端测试）。
+  变量存储层（Variable + VariableRepository + DataStore）是所有功能的根基（W1）。
+  表达式引擎（Lexer→Parser→Evaluator）与变量 CRUD 并行推进，内部串行（W2→W3→W4）。
+  模式系统作为独立实体，依赖变量存储层但不依赖表达式引擎（W1→W2→W3→W4）。
+  W5 完成所有 Registry 注册到 BootstrapOptionRegistry + AppletOptionFactory + Referent 桥接。
+  W6 端到端集成测试验证全链路。
+
+open_questions: []
+
+pre_mortem:
+  overall_risk_level: medium
+  critical_failure_modes:
+    - scenario: "表达式引擎 Parser 实现复杂度超预期，递归下降解析器处理运算符优先级/嵌套括号/函数调用可能引入大量边界情况"
+      likelihood: medium
+      impact: high
+      mitigation: "采用 Pratt Parser（自顶向下运算符优先级解析），比经典递归下降更适合表达式语法；先覆盖核心运算符，函数调用作为扩展点"
+    - scenario: "DataStore Preferences 对复杂类型序列化支持有限，变量值的多态序列化（Bool/Int/Decimal/String）可能需要自定义序列化方案"
+      likelihood: medium
+      impact: medium
+      mitigation: "变量值统一序列化为 JSON 字符串存入 DataStore，读取时根据 VariableType 反序列化；或使用 Proto DataStore"
+    - scenario: "新增的全局 VariableRepository 与现有 Referent/Reference 系统产生冲突，尤其在 TaskRuntime 作用域管理上"
+      likelihood: low
+      impact: high
+      mitigation: "新变量系统作为独立层叠加在 Referent 之上，通过 VariableReferent 适配器桥接；不修改现有 Referent 接口"
+    - scenario: "VariableChangeEventDispatcher 的事件分发时机与 TaskRuntime 生命周期不匹配，导致变量变化触发器无法正确触发"
+      likelihood: medium
+      impact: high
+      mitigation: "VariableChangeEventDispatcher 使用独立的协程通道广播变化事件，与现有 Event 分发机制并行"
+    - scenario: "模式系统的互斥语义（同时只能激活一个模式 or 可叠加）设计不清，导致后续扩展困难"
+      likelihood: low
+      impact: medium
+      mitigation: "MVP 阶段采用简单互斥模式（同时只有一个活跃模式），数据模型预留 exclusive_group 字段支持未来叠加模式"
+  assumptions:
+    - "DataStore Preferences 足以满足变量持久化需求（用户设计决策已确认）"
+    - "模式系统作为独立实体设计（用户设计决策已确认），不是特殊变量"
+    - "表达式引擎采用完整 AST 解析+求值（用户设计决策已确认）"
+    - "所有新代码使用 Kotlin，遵循项目现有的 JUnit 4 测试风格"
+    - "新增的 Registry ID 不会与现有 BootstrapOptionRegistry 中的 ID 冲突"
+    - "tasker-engine 模块可以添加 DataStore 依赖（纯引擎模块引入 AndroidX DataStore）"
+    - "MVP 阶段不包含 Dictionary/Array 类型、变量管理 UI、模式管理 UI"
+
+implementation_specification:
+  code_structure: |
+    新增两个包层级：
+    1. tasker-engine 引擎层：
+       - top.xjunz.tasker.engine.variable — 变量数据模型、Repository 接口、内存实现
+       - top.xjunz.tasker.engine.expression — 表达式引擎（Token、Lexer、AST、Parser、Evaluator）
+       - top.xjunz.tasker.engine.mode — 模式数据模型、Repository 接口、内存实现
+    2. app 应用层：
+       - top.xjunz.tasker.task.variable — DataStore 持久化 Repository、魔术变量实现、变量变化事件分发
+       - top.xjunz.tasker.task.mode — DataStore 持久化 Mode Repository、模式变化事件分发
+       - top.xjunz.tasker.task.applet.action — SetVariableAction、DeleteVariableAction、SetModeAction
+       - top.xjunz.tasker.task.applet.criterion — VariableConstraint、CompareValuesConstraint、ModeConstraint
+       - top.xjunz.tasker.task.applet.option.registry — VariableActionRegistry、VariableCriterionRegistry、ModeRegistry
+
+  affected_areas:
+    - "tasker-engine/src/main/java/top/xjunz/tasker/engine/ — 新增 variable/、expression/、mode/ 包"
+    - "tasker-engine/src/main/java/top/xjunz/tasker/engine/runtime/Event.kt — 新增事件常量"
+    - "tasker-engine/build.gradle — 新增 DataStore 依赖"
+    - "app/src/main/java/top/xjunz/tasker/task/ — 新增 variable/、mode/ 包"
+    - "app/src/main/java/top/xjunz/tasker/task/applet/action/ — 新增变量/模式动作"
+    - "app/src/main/java/top/xjunz/tasker/task/applet/criterion/ — 新增变量/模式约束"
+    - "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/ — 新增注册表 + 修改 BootstrapOptionRegistry、AppletOptionFactory"
+    - "app/build.gradle — 新增 DataStore 依赖"
+    - "tasker-engine/src/test/ — 新增变量、表达式、模式单元测试"
+    - "app/src/test/ — 新增应用层单元测试"
+
+  component_details:
+    - component: "Variable 数据模型"
+      responsibility: "定义类型化变量的数据结构、类型枚举、作用域枚举"
+      interfaces:
+        - "data class Variable(id: String, name: String, type: VariableType, value: Any?, scope: VariableScope, persisted: Boolean)"
+        - "enum class VariableType { BOOLEAN, INTEGER, DECIMAL, STRING }"
+        - "enum class VariableScope { GLOBAL, LOCAL }"
+
+    - component: "VariableRepository"
+      responsibility: "变量的 CRUD 操作接口 + 变化通知"
+      interfaces:
+        - "fun getVariable(name: String): Variable?"
+        - "fun setVariable(variable: Variable)"
+        - "fun deleteVariable(name: String): Boolean"
+        - "fun getAllVariables(): List<Variable>"
+        - "fun observeChanges(): Flow<VariableChangeEvent>"
+
+    - component: "Expression Engine"
+      responsibility: "将表达式字符串解析为 AST 并求值"
+      interfaces:
+        - "fun Lexer.tokenize(input: String): List<Token>"
+        - "fun Parser.parse(tokens: List<Token>): AstNode"
+        - "fun Evaluator.evaluate(node: AstNode, context: EvaluationContext): Any?"
+
+    - component: "Mode 实体"
+      responsibility: "定义独立的应用模式数据模型和状态管理"
+      interfaces:
+        - "data class Mode(id: String, name: String, icon: String?, color: Int?, isActive: Boolean)"
+        - "fun ModeRepository.getActiveMode(): Mode?"
+        - "fun ModeRepository.setActiveMode(modeId: String)"
+        - "fun ModeRepository.observeChanges(): Flow<ModeChangeEvent>"
+
+    - component: "Applet 注册表"
+      responsibility: "将新的变量/模式动作和约束注册到引擎的插件系统"
+      interfaces:
+        - "class VariableActionRegistry : AppletOptionRegistry(ID)"
+        - "class VariableCriterionRegistry : AppletOptionRegistry(ID)"
+        - "class ModeRegistry : AppletOptionRegistry(ID)"
+
+  dependencies:
+    - component: "VariableRepository"
+      relationship: "被 SetVariableAction、DeleteVariableAction、VariableConstraint、CompareValuesConstraint、VariableChangeEventDispatcher 使用"
+    - component: "Expression Engine"
+      relationship: "被 SetVariableAction 调用（表达式作为值来源），被 CompareValuesConstraint 调用（表达式作为比较值）"
+    - component: "ModeRepository"
+      relationship: "被 SetModeAction、ModeConstraint、ModeChangeTrigger 使用"
+    - component: "VariableReferent"
+      relationship: "适配器模式桥接新变量系统与现有 Referent/Reference 系统"
+
+  integration_points:
+    - "BootstrapOptionRegistry — 新增 ID 常量注册变量/模式 Registry"
+    - "AppletOptionFactory — 实例化并注册新 Registry 到 allRegistries"
+    - "Event.kt — 新增 EVENT_ON_VARIABLE_CHANGED 和 EVENT_ON_MODE_CHANGED 事件常量"
+    - "EventCriterionRegistry — 注册变量变化和模式变化事件过滤器"
+    - "TaskRuntime — 通过 VariableReferent 适配器支持变量引用"
+
+contracts:
+  - from_task: "T01"
+    to_task: "T05, T06, T07, T08, T09, T10, T11, T12"
+    interface: "Variable, VariableType, VariableScope 数据类"
+    format: "Kotlin data class + enum class"
+
+  - from_task: "T02"
+    to_task: "T05, T06, T07, T09, T11, T12, T14, T15, T25"
+    interface: "VariableRepository 接口（getVariable, setVariable, deleteVariable, getAllVariables, observeChanges）"
+    format: "Kotlin interface with suspend functions and Flow"
+
+  - from_task: "T03"
+    to_task: "T05, T16"
+    interface: "DataStore Preferences Gradle 依赖可用"
+    format: "Gradle dependency declaration"
+
+  - from_task: "T04"
+    to_task: "T16, T19, T20, T21"
+    interface: "Mode, ModeRepository 接口（getActiveMode, setActiveMode, getAllModes, observeChanges）"
+    format: "Kotlin data class + interface"
+
+  - from_task: "T06"
+    to_task: "T17, T23"
+    interface: "SetVariableAction Applet 实例"
+    format: "Kotlin class extending Action"
+
+  - from_task: "T07"
+    to_task: "T17"
+    interface: "DeleteVariableAction Applet 实例"
+    format: "Kotlin class extending Action"
+
+  - from_task: "T08"
+    to_task: "T13"
+    interface: "Token sealed class + Lexer.tokenize() 函数"
+    format: "List<Token>"
+
+  - from_task: "T10"
+    to_task: "T15, T19"
+    interface: "EVENT_ON_VARIABLE_CHANGED, EVENT_ON_MODE_CHANGED 事件常量"
+    format: "Int constants in Event companion object"
+
+  - from_task: "T11"
+    to_task: "T18"
+    interface: "VariableConstraint Applet 实例"
+    format: "Kotlin class extending Criterion"
+
+  - from_task: "T12"
+    to_task: "T18"
+    interface: "CompareValuesConstraint Applet 实例"
+    format: "Kotlin class extending Criterion"
+
+  - from_task: "T13"
+    to_task: "T22"
+    interface: "AstNode sealed class + Parser.parse() 函数"
+    format: "AstNode tree structure"
+
+  - from_task: "T17"
+    to_task: "T24"
+    interface: "VariableActionRegistry 实例"
+    format: "AppletOptionRegistry subclass"
+
+  - from_task: "T18"
+    to_task: "T24"
+    interface: "VariableCriterionRegistry 实例"
+    format: "AppletOptionRegistry subclass"
+
+  - from_task: "T20"
+    to_task: "T24"
+    interface: "ModeRegistry 实例（含触发器/动作/约束选项）"
+    format: "AppletOptionRegistry subclass"
+
+  - from_task: "T22"
+    to_task: "T23"
+    interface: "Evaluator.evaluate(node, context) 函数"
+    format: "Any? return value"
+
+  - from_task: "T24"
+    to_task: "T25, T26"
+    interface: "所有新 Registry 已注册到 BootstrapOptionRegistry + AppletOptionFactory"
+    format: "ID 常量 + allRegistries 数组更新"
+
+tasks:
+  # ============================================================
+  # Wave 1 — 基础数据模型（无依赖）
+  # ============================================================
+
+  - id: "T01"
+    title: "Variable 数据模型 + 类型枚举 + 作用域枚举"
+    description: |
+      在 tasker-engine 模块中创建变量系统的基础数据模型：
+      1. 创建 VariableType 枚举：BOOLEAN, INTEGER, DECIMAL, STRING
+      2. 创建 VariableScope 枚举：GLOBAL, LOCAL
+      3. 创建 Variable data class：
+         - id: String (UUID)
+         - name: String
+         - type: VariableType
+         - value: Any? (运行时值)
+         - scope: VariableScope
+         - persisted: Boolean
+      4. 编写单元测试验证数据类创建、equals、copy 行为
+      5. 验证 VariableType 包含 4 种基本类型、VariableScope 包含 2 种作用域
+
+      测试文件位置：tasker-engine/src/test/java/top/xjunz/tasker/engine/variable/VariableTest.kt
+    wave: 1
+    agent: gem-implementer
+    prototype: false
+    priority: high
+    status: pending
+    dependencies: []
+    conflicts_with: []
+    context_files:
+      - path: "tasker-engine/src/main/java/top/xjunz/tasker/engine/runtime/ValueRegistry.kt"
+        description: "现有值注册表，了解引擎层数据存储模式"
+      - path: "tasker-engine/src/test/java/top/xjunz/tasker/engine/applet/util/AppletsKtTest.kt"
+        description: "参考现有测试风格（JUnit 4）"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-09"
+        estimated_effort: small
+        estimated_files: 3
+        estimated_lines: 80
+        focus_area: "tasker-engine/src/main/java/top/xjunz/tasker/engine/variable/"
+        verification:
+          - "运行 VariableTest，所有测试通过"
+          - "Variable data class 包含 6 个字段：id, name, type, value, scope, persisted"
+          - "VariableType 枚举有 4 个值：BOOLEAN, INTEGER, DECIMAL, STRING"
+          - "VariableScope 枚举有 2 个值：GLOBAL, LOCAL"
+        acceptance_criteria:
+          - "VariableType.kt 定义 BOOLEAN, INTEGER, DECIMAL, STRING 四种类型"
+          - "VariableScope.kt 定义 GLOBAL, LOCAL 两种作用域"
+          - "Variable.kt 是 data class，包含 id/name/type/value/scope/persisted 字段"
+          - "单元测试覆盖 Variable 创建、copy、类型验证"
+        failure_modes:
+          - scenario: "data class 的 value: Any? 在序列化时丢失类型信息"
+            likelihood: low
+            impact: medium
+            mitigation: "序列化在 DataStoreRepository 层处理，data class 本身只管运行时"
+        tech_stack:
+          - "Kotlin data class"
+          - "JUnit 4"
+        test_coverage: "单元测试覆盖所有数据类构造和枚举值"
+
+  - id: "T02"
+    title: "VariableRepository 接口 + InMemoryVariableRepository 实现"
+    description: |
+      创建变量存储的核心接口和内存实现：
+      1. 创建 VariableRepository 接口：
+         - suspend fun getVariable(name: String): Variable?
+         - suspend fun setVariable(variable: Variable)
+         - suspend fun deleteVariable(name: String): Boolean
+         - suspend fun getAllVariables(): List<Variable>
+         - suspend fun getVariablesByScope(scope: VariableScope): List<Variable>
+         - fun observeChanges(): kotlinx.coroutines.flow.Flow<VariableChangeEvent>
+      2. 创建 VariableChangeEvent sealed class：
+         - data class Set(val variable: Variable, val oldValue: Any?)
+         - data class Deleted(val name: String)
+      3. 创建 InMemoryVariableRepository 实现：
+         - 使用 ConcurrentHashMap<String, Variable> 作为内存存储
+         - 使用 MutableSharedFlow<VariableChangeEvent> 广播变化
+      4. 编写单元测试验证 CRUD 操作和变化事件
+
+      测试文件：tasker-engine/src/test/java/top/xjunz/tasker/engine/variable/InMemoryVariableRepositoryTest.kt
+    wave: 1
+    agent: gem-implementer
+    prototype: false
+    priority: high
+    status: pending
+    dependencies: []
+    conflicts_with: []
+    context_files:
+      - path: "tasker-engine/src/main/java/top/xjunz/tasker/engine/runtime/ValueRegistry.kt"
+        description: "现有值存储模式参考"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-09"
+        estimated_effort: medium
+        estimated_files: 3
+        estimated_lines: 180
+        focus_area: "tasker-engine/src/main/java/top/xjunz/tasker/engine/variable/"
+        verification:
+          - "运行 InMemoryVariableRepositoryTest，所有测试通过"
+          - "setVariable → getVariable 返回正确值"
+          - "deleteVariable 后 getVariable 返回 null"
+          - "observeChanges 能收到 Set 和 Deleted 事件"
+        acceptance_criteria:
+          - "VariableRepository 接口定义 getVariable/setVariable/deleteVariable/getAllVariables/getVariablesByScope/observeChanges 6 个方法"
+          - "VariableChangeEvent 包含 Set 和 Deleted 两种子类型"
+          - "InMemoryVariableRepository 通过所有 CRUD 测试"
+          - "observeChanges 返回的 Flow 能正确接收变化事件"
+        failure_modes:
+          - scenario: "ConcurrentHashMap + SharedFlow 在高并发下事件丢失"
+            likelihood: low
+            impact: medium
+            mitigation: "使用 MutableSharedFlow(replay=0, extraBufferCapacity=64) 确保缓冲"
+        tech_stack:
+          - "Kotlin Coroutines Flow"
+          - "ConcurrentHashMap"
+          - "JUnit 4"
+          - "kotlinx-coroutines-test"
+        test_coverage: "CRUD 全路径 + 变化事件订阅"
+
+  - id: "T03"
+    title: "添加 DataStore Preferences 依赖到 Gradle"
+    description: |
+      在 tasker-engine 和 app 模块的 build.gradle 中添加 AndroidX DataStore Preferences 依赖：
+      1. 在根 build.gradle 的 ext 块添加 datastore_version = "1.0.0"
+      2. 在 app/build.gradle 的 dependencies 中添加：
+         implementation "androidx.datastore:datastore-preferences:$datastore_version"
+      3. 验证 Gradle sync 成功
+      4. 不在 tasker-engine 中直接添加 DataStore 依赖（引擎层保持纯净，DataStore 实现放在 app 层）
+
+      注意：tasker-engine 只定义接口，DataStore 实现在 app/ 层。
+    wave: 1
+    agent: gem-implementer
+    prototype: false
+    priority: high
+    status: pending
+    dependencies: []
+    conflicts_with: []
+    context_files:
+      - path: "build.gradle"
+        description: "根构建文件，ext 版本变量定义"
+      - path: "app/build.gradle"
+        description: "app 模块构建文件，添加 DataStore 依赖"
+      - path: "tasker-engine/build.gradle"
+        description: "引擎模块构建文件，确认不直接添加 DataStore"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-09"
+        estimated_effort: small
+        estimated_files: 2
+        estimated_lines: 10
+        focus_area: "Gradle 构建配置"
+        verification:
+          - "运行 ./gradlew app:dependencies | grep datastore 确认依赖存在"
+          - "运行 ./gradlew tasks 确认 sync 成功"
+        acceptance_criteria:
+          - "app/build.gradle 包含 datastore-preferences 依赖"
+          - "根 build.gradle ext 包含 datastore_version 变量"
+          - "Gradle sync 成功无报错"
+        failure_modes:
+          - scenario: "DataStore 版本与现有 AndroidX 库冲突"
+            likelihood: low
+            impact: low
+            mitigation: "使用 1.0.0 稳定版，与 appcompat 1.6.1 兼容"
+        tech_stack:
+          - "Gradle"
+          - "AndroidX DataStore"
+        test_coverage: null
+
+  - id: "T04"
+    title: "Mode 数据模型 + ModeRepository 接口 + InMemoryModeRepository"
+    description: |
+      在 tasker-engine 模块中创建模式系统的基础数据模型：
+      1. 创建 Mode data class：
+         - id: String (UUID)
+         - name: String
+         - icon: String? (可选图标标识)
+         - color: Int? (可选颜色值)
+         - isActive: Boolean
+      2. 创建 ModeChangeEvent sealed class：
+         - data class Activated(val mode: Mode, val previousMode: Mode?)
+         - data class Deactivated(val mode: Mode)
+         - data class Created(val mode: Mode)
+         - data class Deleted(val modeId: String)
+      3. 创建 ModeRepository 接口：
+         - suspend fun getMode(id: String): Mode?
+         - suspend fun getModeByName(name: String): Mode?
+         - suspend fun getActiveMode(): Mode?
+         - suspend fun setActiveMode(modeId: String)
+         - suspend fun deactivateAll()
+         - suspend fun createMode(mode: Mode)
+         - suspend fun deleteMode(id: String): Boolean
+         - suspend fun getAllModes(): List<Mode>
+         - fun observeChanges(): Flow<ModeChangeEvent>
+      4. 创建 InMemoryModeRepository 实现（ConcurrentHashMap + SharedFlow）
+      5. 编写单元测试：创建/激活/去激活/删除模式，验证互斥激活（setActiveMode 自动去激活前一个）
+
+      测试文件：tasker-engine/src/test/java/top/xjunz/tasker/engine/mode/ModeRepositoryTest.kt
+    wave: 1
+    agent: gem-implementer
+    prototype: false
+    priority: high
+    status: pending
+    dependencies: []
+    conflicts_with: []
+    context_files:
+      - path: "docs/plan/variable-mode-system/research_findings_variable_mode_system.yaml"
+        description: "模式系统需求和设计参考（mode_system 小节）"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-09"
+        estimated_effort: medium
+        estimated_files: 3
+        estimated_lines: 200
+        focus_area: "tasker-engine/src/main/java/top/xjunz/tasker/engine/mode/"
+        verification:
+          - "运行 ModeRepositoryTest，所有测试通过"
+          - "创建模式 → getMode 返回正确值"
+          - "setActiveMode 自动去激活前一个活跃模式"
+          - "observeChanges 能收到 Activated/Deactivated/Created/Deleted 事件"
+        acceptance_criteria:
+          - "Mode data class 包含 id/name/icon/color/isActive 字段"
+          - "ModeRepository 接口定义 9 个方法"
+          - "InMemoryModeRepository 实现互斥激活（同时只有一个活跃模式）"
+          - "所有 CRUD + 状态切换测试通过"
+        failure_modes:
+          - scenario: "互斥激活逻辑在并发场景下出现两个同时活跃的模式"
+            likelihood: low
+            impact: medium
+            mitigation: "使用 Mutex 保护 setActiveMode 操作"
+        tech_stack:
+          - "Kotlin Coroutines Flow"
+          - "Kotlin Mutex"
+          - "JUnit 4"
+        test_coverage: "CRUD + 互斥激活 + 事件订阅"
+
+  # ============================================================
+  # Wave 2 — 持久化 + CRUD 动作 + 表达式词法 + 魔术变量 + 事件类型
+  # ============================================================
+
+  - id: "T05"
+    title: "DataStoreVariableRepository 持久化实现"
+    description: |
+      在 app 模块创建基于 DataStore Preferences 的变量持久化 Repository：
+      1. 创建 DataStoreVariableRepository 类：
+         - 实现 VariableRepository 接口
+         - 使用 DataStore<Preferences> 存储 persisted=true 的变量
+         - 变量值序列化策略：将 Variable 序列化为 JSON 字符串存入 DataStore
+           Key 格式："var_{name}" → JSON: {"id":"...", "name":"...", "type":"BOOLEAN", "value":"true", "scope":"GLOBAL"}
+         - 内存层（ConcurrentHashMap）缓存所有变量（含非持久化的局部变量），DataStore 仅持久化 persisted=true 的
+         - init 块从 DataStore 加载已持久化的变量到内存
+      2. 编写单元测试（使用 Robolectric 或 mock DataStore）：
+         - 设置 persisted 变量 → 验证写入 DataStore
+         - 重新初始化 → 验证从 DataStore 恢复
+         - 设置非持久化变量 → 验证不写入 DataStore
+
+      测试文件：app/src/test/kotlin/top/xjunz/tasker/task/variable/DataStoreVariableRepositoryTest.kt
+    wave: 2
+    agent: gem-implementer
+    prototype: false
+    priority: high
+    status: pending
+    dependencies: ["T02", "T03"]
+    conflicts_with: []
+    context_files:
+      - path: "tasker-engine/src/main/java/top/xjunz/tasker/engine/variable/VariableRepository.kt"
+        description: "Repository 接口定义"
+      - path: "app/build.gradle"
+        description: "确认 DataStore 依赖已添加"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-09"
+        estimated_effort: medium
+        estimated_files: 2
+        estimated_lines: 200
+        focus_area: "app/src/main/java/top/xjunz/tasker/task/variable/"
+        verification:
+          - "运行 DataStoreVariableRepositoryTest，所有测试通过"
+          - "persisted 变量存入 DataStore 后可恢复"
+          - "非持久化变量不触发 DataStore 写入"
+        acceptance_criteria:
+          - "DataStoreVariableRepository 实现 VariableRepository 接口"
+          - "persisted=true 的变量写入 DataStore，persisted=false 的仅在内存"
+          - "初始化时自动从 DataStore 加载已持久化变量"
+          - "使用 JSON 字符串序列化变量值"
+        failure_modes:
+          - scenario: "DataStore 写入是异步的，快速连续写入可能丢失"
+            likelihood: medium
+            impact: medium
+            mitigation: "使用 DataStore.edit 的原子写入保证，每次 setVariable 等待写入完成"
+        tech_stack:
+          - "AndroidX DataStore Preferences"
+          - "kotlinx.serialization JSON"
+          - "JUnit 4"
+        test_coverage: "持久化/非持久化变量 CRUD + 重启恢复"
+
+  - id: "T06"
+    title: "SetVariableAction 动作实现 (A-DATA-006)"
+    description: |
+      创建设置变量的 Applet 动作：
+      1. 在 app 模块创建 SetVariableAction 类：
+         - 继承 Action()
+         - 参数 0：变量名（String，ARG_TYPE_TEXT）
+         - 参数 1：变量值（String，ARG_TYPE_TEXT）— 初始版本接受字符串值，W5 集成表达式引擎
+         - apply(runtime)：从 VariableRepository 获取/创建变量，设置新值
+         - 需要通过某种方式获取 VariableRepository 实例（使用应用级单例或 DI）
+      2. 编写单元测试：
+         - 设置已存在变量的值 → 验证值更新
+         - 设置不存在变量 → 创建新变量并设值
+         - 类型不匹配处理
+
+      测试文件：app/src/test/kotlin/top/xjunz/tasker/task/applet/action/SetVariableActionTest.kt
+    wave: 2
+    agent: gem-implementer
+    prototype: false
+    priority: high
+    status: pending
+    dependencies: ["T02"]
+    conflicts_with: ["T07"]
+    context_files:
+      - path: "tasker-engine/src/main/java/top/xjunz/tasker/engine/applet/action/VarRefAction.kt"
+        description: "现有引用变量动作基类，参考 apply 模式"
+      - path: "tasker-engine/src/main/java/top/xjunz/tasker/engine/applet/base/Applet.kt"
+        description: "Applet 基类，了解 values/references/argumentTypes"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-09"
+        estimated_effort: medium
+        estimated_files: 2
+        estimated_lines: 120
+        focus_area: "app/src/main/java/top/xjunz/tasker/task/applet/action/"
+        verification:
+          - "运行 SetVariableActionTest，所有测试通过"
+          - "设置变量后，VariableRepository.getVariable 返回新值"
+        acceptance_criteria:
+          - "SetVariableAction 继承 Action，接受变量名和值两个参数"
+          - "apply() 正确调用 VariableRepository.setVariable()"
+          - "对不存在的变量创建新的默认 GLOBAL STRING 变量"
+          - "单元测试覆盖设置/创建/更新场景"
+        failure_modes:
+          - scenario: "VariableRepository 在 Action 上下文中不可达"
+            likelihood: medium
+            impact: high
+            mitigation: "使用应用全局的 VariableRepository 单例，通过伴生对象或顶层属性访问"
+        tech_stack:
+          - "Kotlin"
+          - "JUnit 4"
+        test_coverage: "设置已有变量/创建新变量/更新值"
+
+  - id: "T07"
+    title: "DeleteVariableAction 动作实现 (A-DATA-007)"
+    description: |
+      创建删除变量的 Applet 动作：
+      1. 在 app 模块创建 DeleteVariableAction 类：
+         - 继承 Action()
+         - 参数 0：变量名（String，ARG_TYPE_TEXT）
+         - apply(runtime)：调用 VariableRepository.deleteVariable(name)
+         - 返回 AppletResult.EMPTY_SUCCESS（删除不存在的变量也视为成功）
+      2. 编写单元测试：
+         - 删除已存在变量 → 验证变量不再存在
+         - 删除不存在变量 → 不报错，返回成功
+
+      测试文件：app/src/test/kotlin/top/xjunz/tasker/task/applet/action/DeleteVariableActionTest.kt
+    wave: 2
+    agent: gem-implementer
+    prototype: false
+    priority: medium
+    status: pending
+    dependencies: ["T02"]
+    conflicts_with: ["T06"]
+    context_files:
+      - path: "tasker-engine/src/main/java/top/xjunz/tasker/engine/applet/action/VarRefAction.kt"
+        description: "现有动作基类参考"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-09"
+        estimated_effort: small
+        estimated_files: 2
+        estimated_lines: 60
+        focus_area: "app/src/main/java/top/xjunz/tasker/task/applet/action/"
+        verification:
+          - "运行 DeleteVariableActionTest，所有测试通过"
+          - "删除后 getVariable 返回 null"
+        acceptance_criteria:
+          - "DeleteVariableAction 继承 Action，接受变量名参数"
+          - "apply() 调用 VariableRepository.deleteVariable()"
+          - "删除不存在的变量不抛异常"
+          - "单元测试覆盖删除存在/不存在变量"
+        failure_modes:
+          - scenario: "删除持久化变量后 DataStore 未清理"
+            likelihood: low
+            impact: medium
+            mitigation: "VariableRepository.deleteVariable 内部负责清理 DataStore"
+        tech_stack:
+          - "Kotlin"
+          - "JUnit 4"
+        test_coverage: "删除已有/不存在变量"
+
+  - id: "T08"
+    title: "Expression Token 类型 + Lexer 词法分析器"
+    description: |
+      创建表达式引擎的词法分析阶段：
+      1. 创建 Token sealed class 层级：
+         - Token.Number(val value: Double)
+         - Token.StringLiteral(val value: String)
+         - Token.BooleanLiteral(val value: Boolean)
+         - Token.Identifier(val name: String) — 变量名或函数名
+         - Token.Operator(val symbol: String) — +, -, *, /, %, ==, !=, <, >, <=, >=, &&, ||, !
+         - Token.LeftParen, Token.RightParen
+         - Token.Comma — 函数参数分隔符
+         - Token.Dot — 成员访问
+         - Token.VariableRef(val name: String) — ${varName} 变量引用语法
+      2. 创建 Lexer 类：
+         - fun tokenize(input: String): List<Token>
+         - 处理空白、数字（整数/小数）、字符串（引号包裹）、布尔字面量（true/false）
+         - 处理运算符（含多字符: ==, !=, <=, >=, &&, ||）
+         - 处理 ${varName} 变量引用语法
+         - 处理标识符（函数名、变量名）
+      3. 编写单元测试：
+         - "1 + 2" → [Number(1), Operator(+), Number(2)]
+         - "${myVar} * 3.14" → [VariableRef(myVar), Operator(*), Number(3.14)]
+         - "len(\"hello\")" → [Identifier(len), LeftParen, StringLiteral(hello), RightParen]
+         - 边界：空输入、非法字符
+
+      测试文件：tasker-engine/src/test/java/top/xjunz/tasker/engine/expression/LexerTest.kt
+    wave: 2
+    agent: gem-implementer
+    prototype: false
+    priority: high
+    status: pending
+    dependencies: ["T01"]
+    conflicts_with: []
+    context_files: []
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-09"
+        estimated_effort: medium
+        estimated_files: 3
+        estimated_lines: 250
+        focus_area: "tasker-engine/src/main/java/top/xjunz/tasker/engine/expression/"
+        verification:
+          - "运行 LexerTest，所有测试通过"
+          - "数字/字符串/布尔/运算符/变量引用/函数调用均正确分词"
+          - "非法字符抛出明确异常"
+        acceptance_criteria:
+          - "Token sealed class 包含 Number, StringLiteral, BooleanLiteral, Identifier, Operator, LeftParen, RightParen, Comma, Dot, VariableRef 10 种类型"
+          - "Lexer.tokenize() 正确处理数字（整数+小数）、字符串、布尔、运算符、变量引用"
+          - "多字符运算符（==, !=, <=, >=, &&, ||）正确识别"
+          - "${varName} 语法正确解析为 VariableRef"
+          - "至少 8 个测试用例覆盖主要场景"
+        failure_modes:
+          - scenario: "多字符运算符与单字符运算符歧义（如 < vs <=）"
+            likelihood: medium
+            impact: medium
+            mitigation: "Lexer 采用最长匹配策略：先尝试双字符，失败回退单字符"
+        tech_stack:
+          - "Kotlin"
+          - "JUnit 4"
+        test_coverage: "10 种 Token 类型各至少 1 个测试 + 前缀歧义 + 边界"
+
+  - id: "T09"
+    title: "MagicVariableProvider 接口 + 5 个内置魔术变量"
+    description: |
+      创建魔术变量系统：
+      1. 在 tasker-engine 创建 MagicVariableProvider 接口：
+         - val name: String
+         - val type: VariableType
+         - fun getValue(): Any?
+         - val isAvailable: Boolean (是否在当前设备可用)
+      2. 在 tasker-engine 创建 MagicVariableRegistry：
+         - fun register(provider: MagicVariableProvider)
+         - fun getProvider(name: String): MagicVariableProvider?
+         - fun getAllProviders(): List<MagicVariableProvider>
+      3. 在 app 模块创建 5 个内置魔术变量 Provider：
+         - CurrentTimeMagicVariable — System.currentTimeMillis() 格式化
+         - BatteryLevelMagicVariable — 通过 BatteryManager 获取电量百分比
+         - DeviceNameMagicVariable — Build.MODEL
+         - WifiSsidMagicVariable — 通过 WifiManager 获取当前 WiFi SSID
+         - ScreenBrightnessMagicVariable — 通过 Settings.System 获取屏幕亮度
+      4. 编写单元测试（CurrentTime 和 DeviceName 可纯 JVM 测试，其余 mock）
+
+      测试文件：
+      - tasker-engine/src/test/java/top/xjunz/tasker/engine/variable/MagicVariableRegistryTest.kt
+      - app/src/test/kotlin/top/xjunz/tasker/task/variable/BuiltinMagicVariablesTest.kt
+    wave: 2
+    agent: gem-implementer
+    prototype: false
+    priority: medium
+    status: pending
+    dependencies: ["T01", "T02"]
+    conflicts_with: []
+    context_files:
+      - path: "tasker-engine/src/main/java/top/xjunz/tasker/engine/variable/VariableType.kt"
+        description: "变量类型枚举"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-09"
+        estimated_effort: medium
+        estimated_files: 3
+        estimated_lines: 200
+        focus_area: "tasker-engine 接口 + app 内置实现"
+        verification:
+          - "运行 MagicVariableRegistryTest，所有测试通过"
+          - "运行 BuiltinMagicVariablesTest，所有测试通过"
+          - "注册后通过名称获取 Provider 成功"
+        acceptance_criteria:
+          - "MagicVariableProvider 接口包含 name, type, getValue(), isAvailable"
+          - "MagicVariableRegistry 支持 register/getProvider/getAllProviders"
+          - "5 个内置 Provider 各自返回正确类型的值"
+          - "单元测试覆盖注册表 CRUD 和至少 2 个 Provider 的值获取"
+        failure_modes:
+          - scenario: "WifiSsid 和 BatteryLevel 在测试环境无法获取真实值"
+            likelihood: high
+            impact: low
+            mitigation: "这两个 Provider 的测试使用 mock Context，仅验证逻辑不验证真实值"
+        tech_stack:
+          - "Kotlin"
+          - "Android SDK (BatteryManager, WifiManager, Settings)"
+          - "JUnit 4"
+        test_coverage: "Registry CRUD + Provider 值获取"
+
+  - id: "T10"
+    title: "Event.kt 新增变量变化和模式变化事件常量"
+    description: |
+      在 tasker-engine 的 Event 类中添加新的事件类型常量：
+      1. 在 Event.companion 中添加：
+         - const val EVENT_ON_VARIABLE_CHANGED = 15 — 变量值变化事件
+         - const val EVENT_ON_MODE_CHANGED = 16 — 模式切换事件
+      2. 在 Event.toString() 中添加对应的名称映射
+      3. 为变量变化事件定义 Extra key 常量：
+         - const val EXTRA_VARIABLE_NAME = 1
+         - const val EXTRA_VARIABLE_OLD_VALUE = 2
+         - const val EXTRA_VARIABLE_NEW_VALUE = 3
+      4. 为模式变化事件定义 Extra key 常量：
+         - const val EXTRA_MODE_ID = 4
+         - const val EXTRA_MODE_NAME = 5
+         - const val EXTRA_PREVIOUS_MODE_ID = 6
+
+      无需单独测试文件，在后续 EventDispatcher 测试中覆盖。
+    wave: 2
+    agent: gem-implementer
+    prototype: false
+    priority: medium
+    status: pending
+    dependencies: ["T01"]
+    conflicts_with: []
+    context_files:
+      - path: "tasker-engine/src/main/java/top/xjunz/tasker/engine/runtime/Event.kt"
+        description: "现有事件定义文件，需要在此添加新常量"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-09"
+        estimated_effort: small
+        estimated_files: 1
+        estimated_lines: 30
+        focus_area: "tasker-engine/src/main/java/top/xjunz/tasker/engine/runtime/Event.kt"
+        verification:
+          - "编译通过，Event.EVENT_ON_VARIABLE_CHANGED = 15"
+          - "编译通过，Event.EVENT_ON_MODE_CHANGED = 16"
+          - "Event.toString() 包含新事件名称"
+        acceptance_criteria:
+          - "EVENT_ON_VARIABLE_CHANGED = 15 常量存在"
+          - "EVENT_ON_MODE_CHANGED = 16 常量存在"
+          - "6 个 Extra key 常量定义"
+          - "toString() 正确映射新事件名称"
+        failure_modes: []
+        tech_stack:
+          - "Kotlin"
+        test_coverage: null
+
+  - id: "T11"
+    title: "VariableConstraint 约束实现 (C-INT-001)"
+    description: |
+      创建变量值匹配约束：
+      1. 在 app 模块创建 VariableConstraint 类：
+         - 继承现有的 Criterion 或直接继承 Applet
+         - 参数 0：变量名（String，ARG_TYPE_TEXT）
+         - 参数 1：期望值（String，ARG_TYPE_TEXT）
+         - 参数 2：比较运算符（Int，编码为 EQUALS=0, NOT_EQUALS=1, CONTAINS=2, REGEX=3）
+         - apply(runtime)：
+           - 从 VariableRepository 获取变量
+           - 根据变量类型和运算符进行比较
+           - Boolean: equals
+           - Integer/Decimal: 数值比较
+           - String: equals/contains/regex
+         - 支持 isInverted（取反）
+      2. 编写单元测试：
+         - Boolean 变量 == true → 匹配
+         - Integer 变量 == 42 → 匹配
+         - String 变量 contains "hello" → 匹配
+         - 变量不存在 → 不匹配
+
+      测试文件：app/src/test/kotlin/top/xjunz/tasker/task/applet/criterion/VariableConstraintTest.kt
+    wave: 2
+    agent: gem-implementer
+    prototype: false
+    priority: high
+    status: pending
+    dependencies: ["T02"]
+    conflicts_with: ["T12"]
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/criterion/EventFilter.kt"
+        description: "现有 Criterion 实现参考"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-09"
+        estimated_effort: medium
+        estimated_files: 2
+        estimated_lines: 150
+        focus_area: "app/src/main/java/top/xjunz/tasker/task/applet/criterion/"
+        verification:
+          - "运行 VariableConstraintTest，所有测试通过"
+          - "Boolean/Integer/Decimal/String 类型比较均正确"
+          - "变量不存在时返回失败"
+        acceptance_criteria:
+          - "VariableConstraint 支持 4 种比较运算符（equals, not_equals, contains, regex）"
+          - "正确处理 4 种变量类型的比较逻辑"
+          - "isInverted 取反功能正常"
+          - "变量不存在时 apply 返回失败"
+        failure_modes:
+          - scenario: "Decimal 比较精度问题（0.1 + 0.2 != 0.3）"
+            likelihood: medium
+            impact: low
+            mitigation: "Decimal 比较使用 BigDecimal 或设定 epsilon 阈值"
+        tech_stack:
+          - "Kotlin"
+          - "JUnit 4"
+        test_coverage: "4 种类型 × 4 种运算符 + 取反 + 缺失变量"
+
+  - id: "T12"
+    title: "CompareValuesConstraint 约束实现 (C-SYS-006)"
+    description: |
+      创建双值比较约束：
+      1. 在 app 模块创建 CompareValuesConstraint 类：
+         - 继承 Applet
+         - 参数 0：左操作数（String，可以是变量引用 ${var} 或字面量）
+         - 参数 1：右操作数（String）
+         - 参数 2：比较运算符（Int，编码为 EQ=0, NEQ=1, LT=2, GT=3, LTE=4, GTE=5）
+         - apply(runtime)：
+           - 解析左右操作数（变量引用 → 从 VariableRepository 取值，字面量 → 直接使用）
+           - 尝试数值比较，如不是数值则字符串比较
+         - 支持 isInverted
+      2. 编写单元测试：
+         - 数值比较："10" > "5" → true
+         - 变量比较：${a} == ${b} → 根据变量值
+         - 字符串比较："abc" < "def" → true（字典序）
+         - 混合：${count} >= "10" → 根据变量值
+
+      测试文件：app/src/test/kotlin/top/xjunz/tasker/task/applet/criterion/CompareValuesConstraintTest.kt
+    wave: 2
+    agent: gem-implementer
+    prototype: false
+    priority: medium
+    status: pending
+    dependencies: ["T02"]
+    conflicts_with: ["T11"]
+    context_files:
+      - path: "tasker-engine/src/main/java/top/xjunz/tasker/engine/applet/base/Applet.kt"
+        description: "Applet 基类 argumentTypes 定义"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-09"
+        estimated_effort: medium
+        estimated_files: 2
+        estimated_lines: 140
+        focus_area: "app/src/main/java/top/xjunz/tasker/task/applet/criterion/"
+        verification:
+          - "运行 CompareValuesConstraintTest，所有测试通过"
+          - "数值比较正确（整数和浮点数）"
+          - "变量引用解析正确"
+        acceptance_criteria:
+          - "CompareValuesConstraint 支持 6 种比较运算符"
+          - "自动识别数值 vs 字符串比较"
+          - "支持 ${varName} 变量引用语法解析"
+          - "单元测试覆盖数值/字符串/变量引用/混合比较"
+        failure_modes:
+          - scenario: "变量引用解析失败（${} 语法不完整）"
+            likelihood: low
+            impact: low
+            mitigation: "解析失败时视为字面量字符串"
+        tech_stack:
+          - "Kotlin"
+          - "JUnit 4"
+        test_coverage: "6 种运算符 × 数值/字符串/变量引用"
+
+  # ============================================================
+  # Wave 3 — AST 解析 + 事件分发 + 注册表 + 模式持久化
+  # ============================================================
+
+  - id: "T13"
+    title: "Expression AST 节点类型 + Parser 语法解析器"
+    description: |
+      创建表达式引擎的语法解析阶段：
+      1. 创建 AstNode sealed class 层级：
+         - AstNode.NumberLiteral(val value: Double)
+         - AstNode.StringLiteral(val value: String)
+         - AstNode.BooleanLiteral(val value: Boolean)
+         - AstNode.VariableRef(val name: String)
+         - AstNode.BinaryOp(val operator: String, val left: AstNode, val right: AstNode)
+         - AstNode.UnaryOp(val operator: String, val operand: AstNode)
+         - AstNode.FunctionCall(val name: String, val arguments: List<AstNode>)
+         - AstNode.MemberAccess(val obj: AstNode, val member: String)
+      2. 创建 Parser 类（Pratt Parser / 运算符优先级解析）：
+         - fun parse(tokens: List<Token>): AstNode
+         - 运算符优先级（从低到高）：||, &&, ==|!=, <|>|<=|>=, +|-, *|/|%, !（一元）
+         - 支持括号分组
+         - 支持函数调用：name(arg1, arg2, ...)
+      3. 编写单元测试：
+         - "1 + 2 * 3" → BinaryOp(+, 1, BinaryOp(*, 2, 3))（优先级正确）
+         - "(1 + 2) * 3" → BinaryOp(*, BinaryOp(+, 1, 2), 3)（括号正确）
+         - "!true && false" → BinaryOp(&&, UnaryOp(!, true), false)
+         - "${x} + 1" → BinaryOp(+, VariableRef(x), 1)
+         - "len(\"hello\")" → FunctionCall(len, [StringLiteral(hello)])
+
+      测试文件：tasker-engine/src/test/java/top/xjunz/tasker/engine/expression/ParserTest.kt
+    wave: 3
+    agent: gem-implementer
+    prototype: false
+    priority: high
+    status: pending
+    dependencies: ["T08"]
+    conflicts_with: []
+    context_files:
+      - path: "tasker-engine/src/main/java/top/xjunz/tasker/engine/expression/Token.kt"
+        description: "Token 类型定义（T08 产出）"
+      - path: "tasker-engine/src/main/java/top/xjunz/tasker/engine/expression/Lexer.kt"
+        description: "Lexer 实现（T08 产出）"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-09"
+        estimated_effort: large
+        estimated_files: 2
+        estimated_lines: 300
+        focus_area: "tasker-engine/src/main/java/top/xjunz/tasker/engine/expression/"
+        verification:
+          - "运行 ParserTest，所有测试通过"
+          - "运算符优先级正确（* 优先于 +）"
+          - "括号分组正确"
+          - "函数调用解析正确"
+        acceptance_criteria:
+          - "AstNode sealed class 包含 8 种节点类型"
+          - "Parser 使用 Pratt Parser 算法处理运算符优先级"
+          - "7 级运算符优先级正确实现"
+          - "括号分组、函数调用、变量引用均正确解析"
+          - "至少 10 个测试用例覆盖优先级、结合性、嵌套"
+        failure_modes:
+          - scenario: "Pratt Parser 实现不正确，优先级/结合性错误"
+            likelihood: medium
+            impact: high
+            mitigation: "使用标准 Pratt Parser 模式，每个优先级级别有明确的 binding power 值"
+        tech_stack:
+          - "Kotlin"
+          - "Pratt Parser"
+          - "JUnit 4"
+        test_coverage: "优先级 + 括号 + 一元运算符 + 函数调用 + 变量引用"
+
+  - id: "T14"
+    title: "VariableChangeEventDispatcher 变量变化触发器 (T-INT-001)"
+    description: |
+      创建变量变化事件分发器，将 VariableRepository 的变化事件转化为引擎 Event：
+      1. 在 app 模块创建 VariableChangeEventDispatcher 类：
+         - 订阅 VariableRepository.observeChanges()
+         - 当收到 VariableChangeEvent.Set 时：
+           - 创建 Event.obtain(EVENT_ON_VARIABLE_CHANGED) 并添加 Extra：
+             EXTRA_VARIABLE_NAME, EXTRA_VARIABLE_OLD_VALUE, EXTRA_VARIABLE_NEW_VALUE
+           - 分发给引擎的事件循环（通过现有的 Event 分发机制）
+         - 当收到 VariableChangeEvent.Deleted 时：也创建并分发事件
+      2. 创建 VariableChangeCriterion 类（事件过滤器）：
+         - 类似 EventFilter，但支持按变量名过滤
+         - 参数 0：变量名模式（String，支持 * 通配符或精确匹配）
+      3. 编写单元测试：
+         - 设置变量 → EventDispatcher 分发 EVENT_ON_VARIABLE_CHANGED
+         - VariableChangeCriterion 按变量名过滤
+
+      测试文件：app/src/test/kotlin/top/xjunz/tasker/task/variable/VariableChangeEventDispatcherTest.kt
+    wave: 3
+    agent: gem-implementer
+    prototype: false
+    priority: high
+    status: pending
+    dependencies: ["T05", "T10"]
+    conflicts_with: []
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/criterion/EventFilter.kt"
+        description: "现有 EventFilter 实现参考"
+      - path: "tasker-engine/src/main/java/top/xjunz/tasker/engine/runtime/Event.kt"
+        description: "Event 类及新增的事件常量"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-09"
+        estimated_effort: medium
+        estimated_files: 3
+        estimated_lines: 180
+        focus_area: "app/src/main/java/top/xjunz/tasker/task/variable/"
+        verification:
+          - "运行 VariableChangeEventDispatcherTest，所有测试通过"
+          - "设置变量后正确分发 EVENT_ON_VARIABLE_CHANGED 事件"
+          - "事件 Extra 包含正确的变量名、旧值、新值"
+        acceptance_criteria:
+          - "VariableChangeEventDispatcher 订阅 VariableRepository.observeChanges()"
+          - "正确创建并分发 Event(EVENT_ON_VARIABLE_CHANGED)"
+          - "VariableChangeCriterion 支持按变量名过滤"
+          - "事件 Extra 包含变量名、旧值、新值"
+        failure_modes:
+          - scenario: "事件分发时 TaskRuntime 尚未就绪，事件丢失"
+            likelihood: medium
+            impact: medium
+            mitigation: "EventDispatcher 使用缓冲通道，事件在没有订阅者时暂存"
+        tech_stack:
+          - "Kotlin Coroutines"
+          - "JUnit 4"
+        test_coverage: "变量设置/删除事件分发 + 变量名过滤"
+
+  - id: "T15"
+    title: "VariableChangeEventFilter 注册到 EventCriterionRegistry"
+    description: |
+      将变量变化事件过滤器注册到现有的 EventCriterionRegistry：
+      1. 在 EventCriterionRegistry 中添加新的 @AppletOrdinal 字段：
+         - variableChanged = eventFilterOption(Event.EVENT_ON_VARIABLE_CHANGED, R.string.on_variable_changed)
+           .withValueArgument<String>(R.string.variable_name, VariantArgType.TEXT_VARIABLE_NAME)
+           .withResult<String>(R.string.changed_variable_name)
+           .withResult<String>(R.string.variable_old_value)
+           .withResult<String>(R.string.variable_new_value)
+      2. 添加对应的字符串资源到 strings.xml：
+         - on_variable_changed, variable_name, changed_variable_name, variable_old_value, variable_new_value
+      3. 验证编译通过
+
+      注意：需要避免 AppletOrdinal 与现有条目冲突（使用 0x0013 或更后的序号）。
+    wave: 3
+    agent: gem-implementer
+    prototype: false
+    priority: medium
+    status: pending
+    dependencies: ["T10", "T14"]
+    conflicts_with: []
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/EventCriterionRegistry.kt"
+        description: "现有事件注册表，需在此添加新事件"
+      - path: "app/src/main/res/values/strings.xml"
+        description: "字符串资源文件"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-09"
+        estimated_effort: small
+        estimated_files: 2
+        estimated_lines: 30
+        focus_area: "EventCriterionRegistry + strings.xml"
+        verification:
+          - "编译通过"
+          - "EventCriterionRegistry 包含 variableChanged 字段"
+          - "strings.xml 包含新增的 5 个字符串资源"
+        acceptance_criteria:
+          - "EventCriterionRegistry 新增 variableChanged 选项"
+          - "AppletOrdinal 序号不冲突"
+          - "字符串资源完整"
+          - "编译通过"
+        failure_modes: []
+        tech_stack:
+          - "Kotlin"
+          - "Android Resources"
+        test_coverage: null
+
+  - id: "T16"
+    title: "DataStoreModeRepository 持久化实现"
+    description: |
+      在 app 模块创建基于 DataStore 的模式持久化 Repository：
+      1. 创建 DataStoreModeRepository 类：
+         - 实现 ModeRepository 接口
+         - 模式列表序列化为 JSON 存入 DataStore
+         - Key: "modes_list" → JSON Array of Mode objects
+         - Key: "active_mode_id" → String (当前活跃模式 ID)
+         - 内存缓存 + DataStore 持久化
+      2. 编写单元测试：
+         - 创建模式 → 持久化 → 重新加载 → 验证
+         - 设置活跃模式 → 重新加载 → 活跃状态保持
+         - 删除模式 → 如果是活跃模式则自动去激活
+
+      测试文件：app/src/test/kotlin/top/xjunz/tasker/task/mode/DataStoreModeRepositoryTest.kt
+    wave: 3
+    agent: gem-implementer
+    prototype: false
+    priority: medium
+    status: pending
+    dependencies: ["T04", "T03"]
+    conflicts_with: []
+    context_files:
+      - path: "tasker-engine/src/main/java/top/xjunz/tasker/engine/mode/ModeRepository.kt"
+        description: "ModeRepository 接口定义"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-09"
+        estimated_effort: medium
+        estimated_files: 2
+        estimated_lines: 180
+        focus_area: "app/src/main/java/top/xjunz/tasker/task/mode/"
+        verification:
+          - "运行 DataStoreModeRepositoryTest，所有测试通过"
+          - "模式创建/删除/激活/持久化均正确"
+        acceptance_criteria:
+          - "DataStoreModeRepository 实现 ModeRepository 全部 9 个方法"
+          - "模式数据持久化到 DataStore"
+          - "活跃模式 ID 持久化到 DataStore"
+          - "删除活跃模式自动去激活"
+        failure_modes:
+          - scenario: "JSON 序列化 Mode 列表过大导致 DataStore 性能问题"
+            likelihood: low
+            impact: low
+            mitigation: "MVP 阶段模式数量有限（<20），DataStore 完全可以处理"
+        tech_stack:
+          - "AndroidX DataStore"
+          - "kotlinx.serialization JSON"
+          - "JUnit 4"
+        test_coverage: "CRUD + 持久化 + 活跃状态管理"
+
+  - id: "T17"
+    title: "VariableActionRegistry 注册 SetVariable + DeleteVariable 动作"
+    description: |
+      创建变量动作注册表并注册到引擎插件系统：
+      1. 在 BootstrapOptionRegistry 中添加新的 ID 常量：
+         - const val ID_VARIABLE_ACTION_REGISTRY = 0x59
+      2. 创建 VariableActionRegistry 类（继承 AppletOptionRegistry）：
+         - @AppletOrdinal(0x0000) val setVariable — 创建 SetVariableAction 选项
+           .withValueArgument<String>(R.string.variable_name)
+           .withValueArgument<String>(R.string.variable_value)
+         - @AppletOrdinal(0x0001) val deleteVariable — 创建 DeleteVariableAction 选项
+           .withValueArgument<String>(R.string.variable_name)
+      3. 在 BootstrapOptionRegistry 中添加 variableActions PhantomFlow 选项：
+         - @AppletOrdinal(对应序号) val variableActions = flowOptionWithId<PhantomFlow>(ID_VARIABLE_ACTION_REGISTRY, R.string.variable_actions)
+      4. 添加字符串资源：variable_actions, variable_name, variable_value
+      5. 验证编译通过
+
+      注意：此任务创建注册表但不注册到 AppletOptionFactory（T24 统一注册）。
+    wave: 3
+    agent: gem-implementer
+    prototype: false
+    priority: high
+    status: pending
+    dependencies: ["T06", "T07"]
+    conflicts_with: ["T18"]
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/BootstrapOptionRegistry.kt"
+        description: "注册表 ID 常量和 Flow 选项定义"
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/GlobalActionRegistry.kt"
+        description: "现有动作注册表参考"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-09"
+        estimated_effort: medium
+        estimated_files: 3
+        estimated_lines: 80
+        focus_area: "app registry layer"
+        verification:
+          - "编译通过"
+          - "VariableActionRegistry 包含 setVariable 和 deleteVariable 两个选项"
+          - "BootstrapOptionRegistry 包含 ID_VARIABLE_ACTION_REGISTRY 常量"
+        acceptance_criteria:
+          - "VariableActionRegistry 继承 AppletOptionRegistry"
+          - "包含 setVariable 和 deleteVariable 两个 @AppletOrdinal 字段"
+          - "BootstrapOptionRegistry 包含 ID_VARIABLE_ACTION_REGISTRY = 0x59"
+          - "字符串资源完整"
+        failure_modes:
+          - scenario: "Registry ID 与现有 ID 冲突"
+            likelihood: low
+            impact: high
+            mitigation: "使用 0x59（紧接 vibration 0x58），确认无冲突"
+        tech_stack:
+          - "Kotlin"
+          - "Android Resources"
+        test_coverage: null
+
+  - id: "T18"
+    title: "VariableCriterionRegistry 注册 Variable + CompareValues 约束"
+    description: |
+      创建变量约束注册表：
+      1. 在 BootstrapOptionRegistry 中添加：
+         - const val ID_VARIABLE_CRITERION_REGISTRY = 0x18
+      2. 创建 VariableCriterionRegistry 类（继承 AppletOptionRegistry）：
+         - @AppletOrdinal(0x0000) val variableConstraint — VariableConstraint 选项
+           .withValueArgument<String>(R.string.variable_name)
+           .withValueArgument<String>(R.string.expected_value)
+           .withValueArgument<Int>(R.string.comparison_operator)
+         - @AppletOrdinal(0x0001) val compareValues — CompareValuesConstraint 选项
+           .withValueArgument<String>(R.string.left_operand)
+           .withValueArgument<String>(R.string.right_operand)
+           .withValueArgument<Int>(R.string.comparison_operator)
+      3. 在 BootstrapOptionRegistry 中添加 variableCriteria PhantomFlow 选项
+      4. 添加字符串资源
+      5. 验证编译通过
+    wave: 3
+    agent: gem-implementer
+    prototype: false
+    priority: high
+    status: pending
+    dependencies: ["T11", "T12"]
+    conflicts_with: ["T17"]
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/GlobalCriterionRegistry.kt"
+        description: "现有约束注册表参考"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-09"
+        estimated_effort: medium
+        estimated_files: 3
+        estimated_lines: 80
+        focus_area: "app registry layer"
+        verification:
+          - "编译通过"
+          - "VariableCriterionRegistry 包含 variableConstraint 和 compareValues 两个选项"
+        acceptance_criteria:
+          - "VariableCriterionRegistry 继承 AppletOptionRegistry"
+          - "包含 variableConstraint 和 compareValues 两个 @AppletOrdinal 字段"
+          - "BootstrapOptionRegistry 包含 ID_VARIABLE_CRITERION_REGISTRY = 0x18"
+          - "字符串资源完整"
+        failure_modes: []
+        tech_stack:
+          - "Kotlin"
+          - "Android Resources"
+        test_coverage: null
+
+  # ============================================================
+  # Wave 4 — 表达式求值器 + 模式 Applet
+  # ============================================================
+
+  - id: "T19"
+    title: "ModeChangeTrigger 模式变化触发器 (T-INT-004)"
+    description: |
+      创建模式变化事件分发和触发器：
+      1. 在 app 模块创建 ModeChangeEventDispatcher 类：
+         - 订阅 ModeRepository.observeChanges()
+         - 当收到 ModeChangeEvent.Activated 时：
+           - 创建 Event.obtain(EVENT_ON_MODE_CHANGED) 并添加 Extra
+           - 分发给引擎事件循环
+      2. 创建 ModeChangeCriterion 类（事件过滤器）：
+         - 参数 0：目标模式名（String，可选，空表示任意模式变化）
+         - apply(runtime)：检查事件 Extra 中的模式名是否匹配
+      3. 编写单元测试：
+         - 激活模式 → EventDispatcher 分发 EVENT_ON_MODE_CHANGED
+         - ModeChangeCriterion 按模式名过滤
+
+      测试文件：app/src/test/kotlin/top/xjunz/tasker/task/mode/ModeChangeEventDispatcherTest.kt
+    wave: 4
+    agent: gem-implementer
+    prototype: false
+    priority: medium
+    status: pending
+    dependencies: ["T16", "T10"]
+    conflicts_with: []
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/task/variable/VariableChangeEventDispatcher.kt"
+        description: "变量变化事件分发器参考（T14 产出）"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-09"
+        estimated_effort: medium
+        estimated_files: 3
+        estimated_lines: 150
+        focus_area: "app/src/main/java/top/xjunz/tasker/task/mode/"
+        verification:
+          - "运行 ModeChangeEventDispatcherTest，所有测试通过"
+          - "模式激活后正确分发 EVENT_ON_MODE_CHANGED"
+          - "ModeChangeCriterion 按模式名过滤正确"
+        acceptance_criteria:
+          - "ModeChangeEventDispatcher 订阅 ModeRepository.observeChanges()"
+          - "正确创建 Event(EVENT_ON_MODE_CHANGED) 并填充 Extra"
+          - "ModeChangeCriterion 支持按模式名过滤（空 = 任意变化）"
+          - "测试覆盖激活/去激活事件"
+        failure_modes:
+          - scenario: "ModeRepository 的 observeChanges 与 VariableRepository 的 observeChanges 生命周期不同步"
+            likelihood: low
+            impact: low
+            mitigation: "两个 Dispatcher 独立启动，各自管理协程作用域"
+        tech_stack:
+          - "Kotlin Coroutines"
+          - "JUnit 4"
+        test_coverage: "事件分发 + 模式名过滤"
+
+  - id: "T20"
+    title: "SetModeAction 模式切换动作 (A-INT-007)"
+    description: |
+      创建设置应用模式的动作：
+      1. 在 app 模块创建 SetModeAction 类：
+         - 继承 Action()
+         - 参数 0：模式名或 ID（String，ARG_TYPE_TEXT）
+         - apply(runtime)：
+           - 通过名称查找模式：ModeRepository.getModeByName(name)
+           - 如果找到：ModeRepository.setActiveMode(mode.id)
+           - 如果未找到：返回失败（AppletResult.failure）
+      2. 编写单元测试：
+         - 设置存在的模式 → 该模式变为活跃
+         - 设置不存在的模式 → 返回失败
+         - 设置已活跃的模式 → 无变化，返回成功
+
+      测试文件：app/src/test/kotlin/top/xjunz/tasker/task/applet/action/SetModeActionTest.kt
+    wave: 4
+    agent: gem-implementer
+    prototype: false
+    priority: medium
+    status: pending
+    dependencies: ["T16"]
+    conflicts_with: ["T21"]
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/action/SetVariableAction.kt"
+        description: "SetVariableAction 参考（T06 产出）"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-09"
+        estimated_effort: small
+        estimated_files: 2
+        estimated_lines: 80
+        focus_area: "app/src/main/java/top/xjunz/tasker/task/applet/action/"
+        verification:
+          - "运行 SetModeActionTest，所有测试通过"
+          - "设置模式后 getActiveMode 返回正确值"
+        acceptance_criteria:
+          - "SetModeAction 继承 Action，接受模式名参数"
+          - "通过名称查找并激活模式"
+          - "不存在的模式返回失败"
+          - "单元测试覆盖成功/失败/重复激活"
+        failure_modes: []
+        tech_stack:
+          - "Kotlin"
+          - "JUnit 4"
+        test_coverage: "成功/失败/重复激活"
+
+  - id: "T21"
+    title: "ModeConstraint 模式约束 (C-INT-005)"
+    description: |
+      创建模式状态约束：
+      1. 在 app 模块创建 ModeConstraint 类：
+         - 继承 Applet
+         - 参数 0：模式名（String，ARG_TYPE_TEXT）
+         - apply(runtime)：
+           - 获取当前活跃模式：ModeRepository.getActiveMode()
+           - 比较活跃模式名称与参数值
+           - 匹配则成功，不匹配则失败
+         - 支持 isInverted（取反 = "不在该模式时"）
+      2. 编写单元测试：
+         - 当前模式为 "工作模式"，约束 "工作模式" → 匹配
+         - 当前模式为 "工作模式"，约束 "睡眠模式" → 不匹配
+         - 无活跃模式，任何约束 → 不匹配
+         - isInverted = true 时取反
+
+      测试文件：app/src/test/kotlin/top/xjunz/tasker/task/applet/criterion/ModeConstraintTest.kt
+    wave: 4
+    agent: gem-implementer
+    prototype: false
+    priority: medium
+    status: pending
+    dependencies: ["T16"]
+    conflicts_with: ["T20"]
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/criterion/VariableConstraint.kt"
+        description: "VariableConstraint 参考（T11 产出）"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-09"
+        estimated_effort: small
+        estimated_files: 2
+        estimated_lines: 70
+        focus_area: "app/src/main/java/top/xjunz/tasker/task/applet/criterion/"
+        verification:
+          - "运行 ModeConstraintTest，所有测试通过"
+        acceptance_criteria:
+          - "ModeConstraint 比较当前活跃模式名与期望值"
+          - "支持 isInverted 取反"
+          - "无活跃模式时返回失败"
+          - "单元测试覆盖匹配/不匹配/无模式/取反"
+        failure_modes: []
+        tech_stack:
+          - "Kotlin"
+          - "JUnit 4"
+        test_coverage: "匹配/不匹配/无模式/取反"
+
+  - id: "T22"
+    title: "Expression Evaluator 表达式求值器"
+    description: |
+      创建表达式引擎的求值阶段：
+      1. 创建 EvaluationContext 类：
+         - variableRepository: VariableRepository — 用于解析变量引用
+         - magicVariableRegistry: MagicVariableRegistry — 用于解析魔术变量
+      2. 创建 BuiltinFunctions 对象：
+         - 注册内置函数：
+           - len(str): Int — 字符串长度
+           - upper(str): String — 大写
+           - lower(str): String — 小写
+           - substr(str, start, end): String — 子字符串
+           - round(num): Int — 四舍五入
+           - floor(num): Int — 向下取整
+           - ceil(num): Int — 向上取整
+           - abs(num): Double — 绝对值
+           - now(): Long — 当前时间戳
+           - str(any): String — 转字符串
+      3. 创建 Evaluator 类：
+         - fun evaluate(node: AstNode, context: EvaluationContext): Any?
+         - NumberLiteral → value
+         - StringLiteral → value
+         - BooleanLiteral → value
+         - VariableRef → context.variableRepository.getVariable(name)?.value
+         - BinaryOp → 根据运算符类型计算（+, -, *, /, %, ==, !=, <, >, <=, >=, &&, ||）
+           - 数值运算：Double 精度
+           - 字符串 +：拼接
+           - 比较运算：支持数值和字符串
+           - 逻辑运算：短路求值
+         - UnaryOp → !（布尔取反）, -（数值取负）
+         - FunctionCall → 从 BuiltinFunctions 查找并调用
+      4. 编写单元测试：
+         - "1 + 2" → 3.0
+         - "\"hello\" + \" world\"" → "hello world"
+         - "${x} * 2" (x=5) → 10.0
+         - "len(\"hello\")" → 5
+         - "1 > 2 && true" → false (短路)
+         - "round(3.7)" → 4
+
+      测试文件：tasker-engine/src/test/java/top/xjunz/tasker/engine/expression/EvaluatorTest.kt
+    wave: 4
+    agent: gem-implementer
+    prototype: false
+    priority: high
+    status: pending
+    dependencies: ["T13"]
+    conflicts_with: []
+    context_files:
+      - path: "tasker-engine/src/main/java/top/xjunz/tasker/engine/expression/Parser.kt"
+        description: "Parser 实现（T13 产出）"
+      - path: "tasker-engine/src/main/java/top/xjunz/tasker/engine/expression/AstNode.kt"
+        description: "AST 节点类型（T13 产出）"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-09"
+        estimated_effort: large
+        estimated_files: 3
+        estimated_lines: 300
+        focus_area: "tasker-engine/src/main/java/top/xjunz/tasker/engine/expression/"
+        verification:
+          - "运行 EvaluatorTest，所有测试通过"
+          - "数学运算、字符串拼接、变量引用、函数调用均正确"
+          - "短路求值正确（&& 左侧 false 不求值右侧）"
+        acceptance_criteria:
+          - "Evaluator 支持 8 种 AstNode 类型的求值"
+          - "数值运算 (+, -, *, /, %) 正确"
+          - "字符串拼接（+ 运算符）正确"
+          - "比较运算 (==, !=, <, >, <=, >=) 支持数值和字符串"
+          - "逻辑运算 (&&, ||) 支持短路求值"
+          - "10 个内置函数均可调用"
+          - "变量引用通过 EvaluationContext 解析"
+          - "至少 12 个测试用例"
+        failure_modes:
+          - scenario: "类型混合运算（数值 + 字符串）导致运行时异常"
+            likelihood: medium
+            impact: medium
+            mitigation: "非数值的 + 运算统一按字符串拼接处理（str(left) + str(right)）"
+        tech_stack:
+          - "Kotlin"
+          - "JUnit 4"
+        test_coverage: "所有运算符 + 类型转换 + 函数调用 + 变量引用 + 短路求值"
+
+  # ============================================================
+  # Wave 5 — 模式注册表 + 全局注册 + 集成
+  # ============================================================
+
+  - id: "T23"
+    title: "ModeRegistry 模式注册表（触发器/动作/约束统一注册）"
+    description: |
+      创建模式系统注册表：
+      1. 在 BootstrapOptionRegistry 中添加：
+         - const val ID_MODE_ACTION_REGISTRY = 0x5A
+         - const val ID_MODE_CRITERION_REGISTRY = 0x19
+      2. 创建 ModeActionRegistry（继承 AppletOptionRegistry）：
+         - @AppletOrdinal(0x0000) val setMode — SetModeAction 选项
+           .withValueArgument<String>(R.string.mode_name)
+      3. 创建 ModeCriterionRegistry（继承 AppletOptionRegistry）：
+         - @AppletOrdinal(0x0000) val modeConstraint — ModeConstraint 选项
+           .withValueArgument<String>(R.string.mode_name)
+      4. 在 EventCriterionRegistry 中添加：
+         - @AppletOrdinal(0x0014) val modeChanged — eventFilterOption(EVENT_ON_MODE_CHANGED, ...)
+           .withValueArgument<String>(R.string.mode_name) — 可选过滤
+           .withResult<String>(R.string.activated_mode_name)
+           .withResult<String>(R.string.previous_mode_name)
+      5. 在 BootstrapOptionRegistry 中添加 modeActions 和 modeCriteria PhantomFlow 选项
+      6. 添加字符串资源
+
+      注意：不在此任务注册到 AppletOptionFactory（T24 统一注册）。
+    wave: 5
+    agent: gem-implementer
+    prototype: false
+    priority: medium
+    status: pending
+    dependencies: ["T19", "T20", "T21"]
+    conflicts_with: []
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/BootstrapOptionRegistry.kt"
+        description: "注册表 ID 常量"
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/EventCriterionRegistry.kt"
+        description: "事件注册表"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-09"
+        estimated_effort: medium
+        estimated_files: 3
+        estimated_lines: 120
+        focus_area: "app registry layer"
+        verification:
+          - "编译通过"
+          - "ModeActionRegistry 包含 setMode 选项"
+          - "ModeCriterionRegistry 包含 modeConstraint 选项"
+          - "EventCriterionRegistry 包含 modeChanged 选项"
+        acceptance_criteria:
+          - "ModeActionRegistry 和 ModeCriterionRegistry 各自创建并注册到 BootstrapOptionRegistry"
+          - "EventCriterionRegistry 新增 modeChanged 选项"
+          - "所有字符串资源完整"
+          - "Registry ID 无冲突"
+        failure_modes: []
+        tech_stack:
+          - "Kotlin"
+          - "Android Resources"
+        test_coverage: null
+
+  - id: "T24"
+    title: "注册所有新 Registry 到 BootstrapOptionRegistry + AppletOptionFactory"
+    description: |
+      将所有新创建的注册表统一注册到引擎插件系统：
+      1. 修改 AppletOptionFactory：
+         a. 添加新 Registry 实例化：
+            - val variableActionRegistry = VariableActionRegistry(BootstrapOptionRegistry.ID_VARIABLE_ACTION_REGISTRY)
+            - val variableCriterionRegistry = VariableCriterionRegistry(BootstrapOptionRegistry.ID_VARIABLE_CRITERION_REGISTRY)
+            - val modeActionRegistry = ModeActionRegistry(BootstrapOptionRegistry.ID_MODE_ACTION_REGISTRY)
+            - val modeCriterionRegistry = ModeCriterionRegistry(BootstrapOptionRegistry.ID_MODE_CRITERION_REGISTRY)
+         b. 将新 Registry 添加到 allRegistries 数组
+      2. 修改 BootstrapOptionRegistry.getRegistryOptions()：
+         - 在 If 分支的 criterionFlowOptions 中添加 variableCriteria 和 modeCriteria
+         - 在 Do 分支的 actionFlowOptions 中添加 variableActions 和 modeActions
+      3. 验证编译通过，确认 AppletOptionFactory.preloadIfNeeded() 能正确初始化所有注册表
+
+      注意：这是关键集成点，所有新功能在此汇入现有插件系统。
+    wave: 5
+    agent: gem-implementer
+    prototype: false
+    priority: high
+    status: pending
+    dependencies: ["T17", "T18", "T23"]
+    conflicts_with: []
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/option/AppletOptionFactory.kt"
+        description: "工厂类，allRegistries 数组是注册入口"
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/BootstrapOptionRegistry.kt"
+        description: "Flow 选项和 Registry 选项映射"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-09"
+        estimated_effort: medium
+        estimated_files: 2
+        estimated_lines: 60
+        focus_area: "AppletOptionFactory + BootstrapOptionRegistry"
+        verification:
+          - "编译通过"
+          - "AppletOptionFactory.allRegistries 包含新增的 4 个 Registry"
+          - "BootstrapOptionRegistry.getRegistryOptions(If) 包含 variableCriteria 和 modeCriteria"
+          - "BootstrapOptionRegistry.getRegistryOptions(Do) 包含 variableActions 和 modeActions"
+        acceptance_criteria:
+          - "AppletOptionFactory 中 4 个新 Registry 实例化并加入 allRegistries"
+          - "BootstrapOptionRegistry 的 criterionFlowOptions 和 actionFlowOptions 更新"
+          - "preloadIfNeeded() 调用后所有新选项可用"
+          - "编译通过无冲突"
+        failure_modes:
+          - scenario: "新旧 Registry 的 AppletOrdinal hashCode 冲突"
+            likelihood: low
+            impact: high
+            mitigation: "每个 Registry 的字段名独立 hash，不同 Registry 之间不会冲突"
+        tech_stack:
+          - "Kotlin"
+        test_coverage: null
+
+  - id: "T25"
+    title: "表达式引擎集成到 SetVariableAction（表达式作为值来源）"
+    description: |
+      将完整的表达式引擎集成到 SetVariableAction 中：
+      1. 修改 SetVariableAction.apply()：
+         - 获取值参数（String）
+         - 判断是否为表达式（包含运算符或 ${} 引用）
+         - 如果是表达式：
+           a. Lexer.tokenize(valueStr)
+           b. Parser.parse(tokens)
+           c. Evaluator.evaluate(ast, context) — context 包含 VariableRepository 和 MagicVariableRegistry
+           d. 将求值结果作为变量值
+         - 如果是简单字面量：直接使用
+      2. 创建辅助函数 ExpressionHelper.evaluateExpression(expr, context): Any?
+         - 封装 Lexer → Parser → Evaluator 管线
+         - 统一异常处理（表达式语法错误返回 null + 日志）
+      3. 编写单元测试：
+         - SetVariable("myVar", "1 + 2") → myVar.value = 3.0
+         - SetVariable("greeting", "\"Hello \" + ${name}") (name="World") → "Hello World"
+         - SetVariable("simple", "42") → 42（直接字面量）
+         - SetVariable("invalid", "###") → 语法错误处理
+
+      测试文件：app/src/test/kotlin/top/xjunz/tasker/task/applet/action/SetVariableExpressionTest.kt
+    wave: 5
+    agent: gem-implementer
+    prototype: false
+    priority: high
+    status: pending
+    dependencies: ["T22", "T06"]
+    conflicts_with: []
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/action/SetVariableAction.kt"
+        description: "SetVariableAction 当前实现（T06 产出）"
+      - path: "tasker-engine/src/main/java/top/xjunz/tasker/engine/expression/Evaluator.kt"
+        description: "Evaluator 实现（T22 产出）"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-09"
+        estimated_effort: medium
+        estimated_files: 2
+        estimated_lines: 100
+        focus_area: "SetVariableAction + ExpressionHelper 集成"
+        verification:
+          - "运行 SetVariableExpressionTest，所有测试通过"
+          - "表达式作为值来源正确求值并存入变量"
+          - "无效表达式不崩溃，有错误处理"
+        acceptance_criteria:
+          - "SetVariableAction 支持表达式作为值参数"
+          - "ExpressionHelper 封装完整 Lexer→Parser→Evaluator 管线"
+          - "语法错误有优雅降级（返回 null + 日志）"
+          - "简单字面量不走表达式引擎"
+          - "测试覆盖表达式求值/字面量/变量引用/错误处理"
+        failure_modes:
+          - scenario: "表达式引擎性能不足，在复杂表达式上阻塞主线程"
+            likelihood: low
+            impact: medium
+            mitigation: "apply() 已在协程中运行，不会阻塞主线程"
+        tech_stack:
+          - "Kotlin"
+          - "JUnit 4"
+        test_coverage: "表达式求值/字面量/变量引用/魔术变量/错误处理"
+
+  # ============================================================
+  # Wave 6 — Referent 桥接 + 端到端测试
+  # ============================================================
+
+  - id: "T26"
+    title: "VariableReferent 适配器（桥接 Referent/Reference 系统）"
+    description: |
+      创建适配器将新变量系统桥接到现有 Referent/Reference 系统：
+      1. 在 tasker-engine 创建 VariableReferent 类：
+         - 实现 Referent 接口
+         - getReferredValue(which, runtime)：
+           - which = 0 时返回变量值
+           - 通过 runtime 上下文找到 VariableRepository 获取变量
+      2. 修改 SetVariableAction 使其实现 Referent：
+         - 在 apply() 成功后，通过 runtime.registerReferent() 注册变量值
+         - 这样后续 Applet 可以通过 Reference 引用 SetVariable 的输出
+      3. 在 VariableActionRegistry 的 setVariable 选项中添加：
+         - .withResult<Any>(R.string.variable_value) — 声明输出引用
+      4. 编写单元测试：
+         - SetVariable("x", "42") 执行后，后续 Applet 可通过 reference 获取 x 的值
+
+      测试文件：tasker-engine/src/test/java/top/xjunz/tasker/engine/variable/VariableReferentTest.kt
+    wave: 6
+    agent: gem-implementer
+    prototype: false
+    priority: medium
+    status: pending
+    dependencies: ["T24", "T02"]
+    conflicts_with: []
+    context_files:
+      - path: "tasker-engine/src/main/java/top/xjunz/tasker/engine/runtime/Referent.kt"
+        description: "Referent 接口定义"
+      - path: "tasker-engine/src/main/java/top/xjunz/tasker/engine/applet/action/VarRefAction.kt"
+        description: "现有引用动作参考"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-09"
+        estimated_effort: medium
+        estimated_files: 3
+        estimated_lines: 100
+        focus_area: "tasker-engine variable 桥接层"
+        verification:
+          - "运行 VariableReferentTest，所有测试通过"
+          - "SetVariableAction 执行后 runtime.getReferenceArgument 可获取变量值"
+        acceptance_criteria:
+          - "VariableReferent 实现 Referent 接口"
+          - "SetVariableAction 执行后注册引用允许后续 Applet 引用"
+          - "与现有 Reference 查找机制兼容"
+          - "单元测试验证引用链路"
+        failure_modes:
+          - scenario: "Referent 注册名冲突（变量名与现有 Applet 产出的 referent name 冲突）"
+            likelihood: low
+            impact: medium
+            mitigation: "变量引用使用 'var:' 前缀命名空间，如 'var:myVariable'"
+        tech_stack:
+          - "Kotlin"
+          - "JUnit 4"
+        test_coverage: "引用注册 + 引用获取 + 链路集成"
+
+  - id: "T27"
+    title: "端到端集成测试"
+    description: |
+      编写端到端集成测试，验证变量系统和模式系统的完整工作流：
+      1. 变量系统集成测试：
+         - 场景 A：SetVariable("count", "0") → SetVariable("count", "${count} + 1") → VariableConstraint("count", "1", EQ) → 验证通过
+         - 场景 B：SetVariable("name", "\"AutoPilot\"") → CompareValues("${name}", "\"AutoPilot\"", EQ) → 验证通过
+         - 场景 C：DeleteVariable("temp") → VariableConstraint("temp", 任意, EQ) → 验证失败
+         - 场景 D：魔术变量 ${__time__} 在表达式中可用
+      2. 模式系统集成测试：
+         - 场景 E：创建 "工作模式" → SetMode("工作模式") → ModeConstraint("工作模式") → 验证通过
+         - 场景 F：SetMode("睡眠模式") → ModeConstraint("工作模式") → 验证失败
+      3. 跨系统集成测试：
+         - 场景 G：SetVariable 触发 EVENT_ON_VARIABLE_CHANGED → VariableChangeCriterion 过滤成功
+         - 场景 H：SetMode 触发 EVENT_ON_MODE_CHANGED → ModeChangeCriterion 过滤成功
+      4. 序列化兼容性测试：
+         - 场景 I：包含 SetVariable 的 Flow → toDTO → fromDTO → 重新执行 → 验证结果一致
+
+      测试文件：app/src/test/kotlin/top/xjunz/tasker/task/integration/VariableModeIntegrationTest.kt
+    wave: 6
+    agent: gem-implementer
+    prototype: false
+    priority: high
+    status: pending
+    dependencies: ["T25", "T26"]
+    conflicts_with: []
+    context_files:
+      - path: "tasker-engine/src/test/java/top/xjunz/tasker/engine/dto/AppletDTOTest.kt"
+        description: "现有 DTO 测试参考"
+      - path: "tasker-engine/src/test/java/top/xjunz/tasker/engine/applet/util/AppletsKtTest.kt"
+        description: "现有 Applet 集成测试参考（DSL 构建流程）"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-09"
+        estimated_effort: large
+        estimated_files: 1
+        estimated_lines: 300
+        focus_area: "集成测试"
+        verification:
+          - "运行 VariableModeIntegrationTest，所有测试通过"
+          - "9 个场景全部验证通过"
+        acceptance_criteria:
+          - "变量 CRUD + 表达式求值 + 约束检查全链路通过（场景 A-D）"
+          - "模式切换 + 约束检查全链路通过（场景 E-F）"
+          - "变量/模式变化事件触发和过滤全链路通过（场景 G-H）"
+          - "DTO 序列化/反序列化兼容（场景 I）"
+          - "所有 9 个场景的测试通过"
+        failure_modes:
+          - scenario: "集成环境中 VariableRepository 和 ModeRepository 的单例初始化顺序问题"
+            likelihood: medium
+            impact: medium
+            mitigation: "测试中手动注入 Repository 实例，不依赖应用全局单例"
+        tech_stack:
+          - "Kotlin"
+          - "JUnit 4"
+          - "kotlinx-coroutines-test"
+        test_coverage: "9 个端到端场景覆盖全功能"
+
+planning_pass: 1
+planning_history:
+  - pass: 1
+    reason: "初始规划——基于 research_findings_variable_mode_system.yaml 和用户设计决策"
+    timestamp: "2026-04-09"
