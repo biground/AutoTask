@@ -1,0 +1,696 @@
+plan_id: autotask-reverse-research
+objective: "深入分析 AutoTask (自动任务) Android 项目的完整架构，输出结构化的研究报告"
+focus_area: "完整项目架构、引擎核心、服务层、UI 层、数据层、功能覆盖"
+created_at: "2026-04-09"
+created_by: gem-researcher
+status: completed
+
+tldr: |
+  - AutoTask 是一款事件驱动的 Android 自动化工具，由 7 个 Gradle 模块构成（app、tasker-engine、ui-automator、coroutine-ui-automator、hidden-apis、shared-library、ssl）
+  - 核心引擎基于 Applet 树模型：Flow(容器) → Applet(叶节点)，支持 If/Else/Loop/WaitFor 等控制流，以 JSON (XTaskDTO) 序列化
+  - 双模式运行：Shizuku（特权 UiAutomation）与 Accessibility Service，通过 MetaEventDispatcher 聚合多种事件源
+  - UI 层使用传统 View 系统 + DataBinding + Material 3，非 Compose
+  - 已实现约 14 种事件触发器、~50+ 种动作/条件/操作，覆盖 UI 自动化、手势、应用管理、Shell 命令、文件操作、振动等
+
+research_metadata:
+  methodology: "多轮文件系统扫描 + 关键源文件逐一阅读（settings.gradle、build.gradle、引擎全部 Kotlin 文件、app 层服务/任务/注册表文件）"
+  scope: "全项目 7 模块、~250+ 核心源文件"
+  confidence: high
+  coverage: 85
+  decision_blockers: 0
+  research_blockers: 0
+
+# ============================================================
+# 1. 模块架构
+# ============================================================
+module_architecture:
+  project_name: "自动任务 (AutoTask)"
+  author: "xjunz"
+  package: "top.xjunz.tasker"
+  min_sdk: 24
+  target_sdk: 34
+  kotlin_version: "1.8.21"
+
+  modules:
+    - name: app
+      type: application
+      description: "主应用模块，包含 UI、服务、事件分发、任务运行时、Applet 选项注册表"
+      key_packages:
+        - path: "top.xjunz.tasker.service"
+          description: "Shizuku / A11y 双模式服务实现"
+        - path: "top.xjunz.tasker.task.applet.option.registry"
+          description: "所有触发器/动作/条件的注册表（18个 Registry 类）"
+        - path: "top.xjunz.tasker.task.runtime"
+          description: "本地/特权任务管理器、调度器"
+        - path: "top.xjunz.tasker.task.event"
+          description: "事件分发器（A11y、网络、轮询、剪贴板）"
+        - path: "top.xjunz.tasker.task.inspector"
+          description: "浮动布局检查器"
+        - path: "top.xjunz.tasker.bridge"
+          description: "系统服务桥接（PackageManager, ActivityManager, 电量, 剪贴板, 振动等）"
+        - path: "top.xjunz.tasker.ui"
+          description: "UI层，传统 View + DataBinding + Material 3"
+        - path: "top.xjunz.tasker.api"
+          description: "网络 API 客户端（Ktor）"
+
+    - name: tasker-engine
+      type: library
+      description: "纯引擎核心，定义 Applet/Flow/XTask 抽象模型、运行时、任务调度、DTO 序列化，不依赖 Android UI"
+      key_packages:
+        - path: "top.xjunz.tasker.engine.applet.base"
+          description: "Applet 树模型：Applet, Flow, ControlFlow, If, Else, Loop, When, Do 等"
+        - path: "top.xjunz.tasker.engine.applet.action"
+          description: "Action 基础实现：Action, Processor, Repeat, Break, Continue, Suspension"
+        - path: "top.xjunz.tasker.engine.applet.criterion"
+          description: "Criterion 基础实现"
+        - path: "top.xjunz.tasker.engine.runtime"
+          description: "TaskRuntime, Event, ValueRegistry, Referent, AppletIndexer"
+        - path: "top.xjunz.tasker.engine.task"
+          description: "XTask, TaskScheduler, TaskManager, EventDispatcher, TaskSnapshot"
+        - path: "top.xjunz.tasker.engine.dto"
+          description: "XTaskDTO, AppletDTO — JSON 序列化/反序列化"
+
+    - name: ui-automator
+      type: library
+      description: "Fork 自 AndroidX UiAutomator 库（androidx.test.uiautomator），自定义修改以支持非 Instrumentation 环境"
+      key_classes:
+        - "UiDevice, UiObject, UiObject2, UiScrollable"
+        - "GestureController, InteractionController"
+        - "UiAutomatorBridge"
+
+    - name: coroutine-ui-automator
+      type: library
+      description: "UiAutomator 的协程封装，提供 Kotlin 协程友好的 UI 自动化接口"
+      key_classes:
+        - "CoroutineUiDevice — 协程版 UiDevice"
+        - "CoroutineUiObject — 协程版 UiObject"
+        - "CoroutineUiScrollable — 协程版滚动操作"
+        - "CoroutineUiAutomatorBridge — 核心桥接，管理事件监听"
+        - "CoroutineGestureController / A11yGestureController / PrivilegedGestureController — 手势控制"
+        - "CoroutineInteractionController / A11yInteractionController / PrivilegedInteractionController — 交互控制"
+        - "GestureGenerator — 手势生成器"
+
+    - name: hidden-apis
+      type: library
+      description: "Android 隐藏 API 声明（编译时 stub），用于 Shizuku 特权模式调用系统非公开接口"
+      key_classes:
+        - "UiAutomationHidden, UiAutomationConnection"
+        - "IActivityManager, IPackageManager, IClipboard, IInputManager"
+        - "AccessibilityServiceHidden"
+        - "BatteryManagerHidden, UserHandleHidden"
+
+    - name: shared-library
+      type: library
+      description: "共享工具库：日志、Kotlin 扩展（集合、Parcel、类型转换、摘要）、异常工具"
+      key_classes:
+        - "Logger (logcat/trace)"
+        - "Collections, Parcel, Any, Digest 扩展"
+        - "Exceptions (runtimeException, illegalArgument 等)"
+
+    - name: ssl
+      type: library
+      description: "SSL/安全相关（混淆后的代码 x.f.java），推测为证书固定或安全校验"
+
+# ============================================================
+# 2. 引擎核心
+# ============================================================
+engine_core:
+
+  ## 2.1 任务/宏模型
+  task_model:
+    top_level_class: "XTask"
+    location: "tasker-engine/.../engine/task/XTask.kt"
+    description: "任务的顶层抽象，继承自 ValueRegistry（值注册表），包含元数据、流程树、运行时状态"
+    fields:
+      - "metadata: XTask.Metadata — 标题、校验和、任务类型(常驻/一次性)、版本"
+      - "flow: RootFlow? — 任务的根流程节点"
+      - "snapshots: ConcurrentLinkedDeque<TaskSnapshot> — 执行快照历史"
+      - "pauseFor / pauseStartTime — 暂停机制"
+    task_types:
+      - name: "TYPE_RESIDENT (0)"
+        description: "常驻任务，持续响应事件"
+      - name: "TYPE_ONESHOT (1)"
+        description: "一次性任务，执行一次后结束"
+
+  ## 2.2 Applet 树模型
+  applet_tree:
+    base_class: "Applet"
+    location: "tasker-engine/.../engine/applet/base/Applet.kt"
+    description: "所有可执行元素的基类，支持关系运算（AND/OR/ANYWAY）、启用/禁用、值/引用参数"
+    key_fields:
+      - "id: Int — 工厂ID+类型ID"
+      - "relation: Int — 与前一节点的关系(AND=0, OR=1, ANYWAY=2)"
+      - "isEnabled: Boolean — 是否启用"
+      - "isInverted: Boolean — 结果取反"
+      - "values: Map<Int, Any?> — 配置值"
+      - "references: Map<Int, String> — 引用变量名"
+      - "referents: Map<Int, String> — 输出变量名"
+      - "parent: Flow? — 父节点"
+    constraints:
+      - "MAX_FLOW_CHILD_COUNT = 127 (2^7 - 1)"
+      - "MAX_FLOW_NESTED_DEPTH = 9 (64/7)"
+
+    flow_class: "Flow"
+    flow_location: "tasker-engine/.../engine/applet/base/Flow.kt"
+    flow_description: "Applet 的容器，本身也是 Applet，实现 MutableList<Applet>，执行时按序遍历子节点"
+
+    hierarchy:
+      - name: "Applet（抽象基类）"
+        children:
+          - "Action — 所有动作的基类"
+          - "Criterion<T,V> — 所有条件的基类"
+          - "Flow — 容器流程"
+      - name: "Flow"
+        children:
+          - "RootFlow — 任务根节点"
+          - "ControlFlow（抽象）"
+          - "ScopeFlow<T> — 带作用域的流程"
+          - "ContainerFlow — 纯容器"
+          - "Loop — 循环"
+      - name: "ControlFlow"
+        children:
+          - "If — 条件分支"
+          - "ElseIf — else-if 分支"
+          - "Else — else 分支"
+          - "When — 事件触发条件（必须后跟 Do）"
+          - "Do — 执行块"
+          - "Then — 后续执行块"
+          - "Anyway — 无论结果都执行"
+          - "WaitUntil — 等待条件满足"
+          - "WaitFor — 等待事件到达"
+
+  ## 2.3 触发器（事件类型）
+  triggers:
+    description: "事件由 EventDispatcher 分发，事件类型定义在 Event.kt"
+    event_types:
+      - id: EVENT_ON_PACKAGE_ENTERED
+        value: 1
+        description: "进入新应用"
+      - id: EVENT_ON_PACKAGE_EXITED
+        value: 2
+        description: "离开当前应用"
+      - id: EVENT_ON_CONTENT_CHANGED
+        value: 3
+        description: "当前窗口内容变化"
+      - id: EVENT_ON_NOTIFICATION_RECEIVED
+        value: 4
+        description: "收到状态栏通知"
+      - id: EVENT_ON_NEW_WINDOW
+        value: 5
+        description: "新窗口出现"
+      - id: EVENT_ON_PRIMARY_CLIP_CHANGED
+        value: 6
+        description: "剪贴板变化（已注释）"
+      - id: EVENT_ON_TICK
+        value: 7
+        description: "定时心跳事件"
+      - id: EVENT_ON_TOAST_RECEIVED
+        value: 8
+        description: "收到 Toast 通知"
+      - id: EVENT_ON_FILE_CREATED
+        value: 9
+        description: "文件创建（需 Shizuku）"
+      - id: EVENT_ON_FILE_DELETED
+        value: 10
+        description: "文件删除（需 Shizuku）"
+      - id: EVENT_ON_WIFI_CONNECTED
+        value: 11
+        description: "WiFi 连接"
+      - id: EVENT_ON_WIFI_DISCONNECTED
+        value: 12
+        description: "WiFi 断开"
+      - id: EVENT_ON_NETWORK_AVAILABLE
+        value: 13
+        description: "网络可用"
+      - id: EVENT_ON_NETWORK_UNAVAILABLE
+        value: 14
+        description: "网络不可用"
+
+  ## 2.4 动作类型
+  actions:
+    registries:
+      - name: GlobalActionRegistry
+        location: "app/.../registry/GlobalActionRegistry.kt"
+        actions:
+          - "waitForIdle — 等待空闲"
+          - "pressBack — 按返回键"
+          - "pressRecents — 按最近任务键"
+          - "pressHome — 按 Home 键"
+          - "openNotificationShade — 打开通知栏"
+          - "lockScreen — 锁屏 (API ≥ P)"
+          - "takeScreenshot — 截屏 (API ≥ P, Premium)"
+          - "setRotation — 旋转屏幕 (Shizuku)"
+          - "wakeUpScreen — 唤醒屏幕"
+
+      - name: UiObjectActionRegistry
+        location: "app/.../registry/UiObjectActionRegistry.kt"
+        actions:
+          - "clickIfExists — 若存在则点击（含子条件）"
+          - "clickButtonWithText — 点击指定文本按钮"
+          - "clickUiObjectWithText — 点击指定文本控件"
+          - "setTextToFirstTextField — 向第一个输入框输入文本"
+          - "click — 点击指定 UI 对象"
+          - "longClick — 长按"
+          - "drag — 拖拽"
+          - "swipe — 滑动"
+          - "setText — 设置文本"
+          - "scrollForward — 列表滚动前进"
+          - "forEachUiScrollable — 遍历可滚动列表"
+          - "scrollIntoUiObject — 滚动到指定控件"
+
+      - name: GestureActionRegistry
+        location: "app/.../registry/GestureActionRegistry.kt"
+        actions:
+          - "click — 坐标点击"
+          - "longClick — 坐标长按"
+          - "performCustomGestures — 执行自定义手势（录制回放）"
+
+      - name: ApplicationActionRegistry
+        location: "app/.../registry/ApplicationActionRegistry.kt"
+        actions:
+          - "forceStopApp — 强制停止应用 (Shizuku)"
+          - "launchApp — 启动应用"
+          - "launchActivity — 启动指定 Activity (Premium)"
+          - "viewUri — 打开 URI"
+          - "viewUriViaPackage — 通过指定应用打开 URI"
+          - "disablePackage — 禁用应用 (Shizuku)"
+          - "enablePackage — 启用应用 (Shizuku)"
+
+      - name: TextActionRegistry
+        location: "app/.../registry/TextActionRegistry.kt"
+        actions:
+          - "logcatText — 记录日志文本（支持变量插值）"
+          - "extractText — 正则提取文本"
+          - "copyText — 复制到剪贴板"
+          - "makeToast — 显示 Toast（支持变量插值）"
+
+      - name: ControlActionRegistry
+        location: "app/.../registry/ControlActionRegistry.kt"
+        actions:
+          - "ifAction — 嵌套 If 条件"
+          - "waitUntilAction — 等待条件成立"
+          - "waitForFlow — 等待事件到达"
+          - "suspension (delay) — 延时"
+          - "repeatFlow (loop) — 循环执行"
+          - "breakAction — 跳出循环"
+          - "continueAction — 继续循环"
+          - "stopshipTask — 终止当前任务"
+          - "disableTask — 禁用当前任务"
+          - "pauseUntilTomorrow — 暂停到明天"
+          - "pauseFor — 暂停指定时长"
+
+      - name: ShellCmdActionRegistry
+        location: "app/.../registry/ShellCmdActionRegistry.kt"
+        actions:
+          - "executeShellCmd — 执行 Shell 命令 (Shizuku + Premium)"
+          - "executeShFile — 执行 .sh 文件 (Shizuku + Premium)"
+
+      - name: FileActionRegistry
+        location: "app/.../registry/FileActionRegistry.kt"
+        actions:
+          - "deleteFile — 删除文件 (Shizuku)"
+          - "copyFile — 复制文件 (Shizuku)"
+          - "moveFile — 移动/重命名文件 (Shizuku)"
+
+      - name: VibrationActionRegistry
+        location: "app/.../registry/VibrationActionRegistry.kt"
+        actions:
+          - "vibrate — 执行振动（自定义波形, API ≥ O）"
+
+  ## 2.5 条件/约束
+  criteria:
+    registries:
+      - name: EventCriterionRegistry
+        description: "事件过滤条件（作为 When 的子节点使用）"
+        criteria:
+          - "pkgEntered — 进入指定应用"
+          - "pkgExited — 离开指定应用"
+          - "contentChanged — 窗口内容变化"
+          - "notificationReceived — 收到通知"
+          - "toastReceived — 收到 Toast"
+          - "newWindow — 新窗口出现"
+          - "timeChanged — 定时心跳触发"
+          - "fileCreated — 文件创建 (Shizuku)"
+          - "fileDeleted — 文件删除 (Shizuku)"
+          - "wifiConnected — WiFi 连接"
+          - "wifiDisconnected — WiFi 断开"
+          - "networkAvailable — 网络可用"
+          - "networkUnavailable — 网络不可用"
+
+      - name: ApplicationCriterionRegistry
+        description: "应用相关条件"
+        criteria:
+          - "isCertainApp — 是否为指定应用"
+          - "appCollection — 是否在应用集合中"
+          - "activityCollection — 是否在 Activity 集合中"
+          - "paneTitle — 面板标题匹配"
+          - "isSystem — 是否为系统应用"
+          - "isLauncher — 是否为桌面"
+
+      - name: UiObjectCriterionRegistry
+        description: "UI 控件属性条件（类型、ID、文本、属性、位置）"
+        criteria:
+          - "isType — 控件类型匹配"
+          - "withId — 控件 ID 匹配"
+          - "textEquals / textStartsWith / textEndsWith / textContains / textPattern — 文本匹配"
+          - "contentDesc — 内容描述"
+          - "textLengthRange — 文本长度范围"
+          - "isClickable / isLongClickable / isEditable / isEnabled / isCheckable / isChecked / isSelected / isScrollable — 布尔属性"
+          - "childCount — 子节点数量范围"
+          - "left / right / top / bottom / width / height — 位置/尺寸（支持 dp/px/屏幕比/父节点比）"
+
+      - name: TimeCriterionRegistry
+        description: "时间相关条件"
+        criteria:
+          - "timeRange — 日期时间范围"
+          - "month — 指定月份"
+          - "dayOfMonth — 每月几号"
+          - "dayOfWeek — 星期几"
+          - "hourMinSec — 时分秒范围"
+          - "isSpecifiedTime — 特定时刻"
+          - "isSpecifiedTimeInDay — 每日特定时间"
+          - "inSpecifiedHours / inSpecifiedMinutes / inSpecifiedSeconds — 指定时/分/秒范围"
+
+      - name: GlobalCriterionRegistry
+        description: "设备全局状态条件"
+        criteria:
+          - "isScreenPortrait — 屏幕方向（竖屏）"
+          - "isBatteryCharging — 是否充电"
+          - "batteryCapacityRange — 电量范围"
+
+      - name: TextCriterionRegistry
+        description: "文本匹配条件（引用变量文本）"
+        criteria:
+          - "equalsTo — 相等"
+          - "startsWith — 前缀匹配"
+          - "endsWith — 后缀匹配"
+          - "contains — 包含"
+          - "matches — 正则匹配"
+
+      - name: NetworkCriterionRegistry
+        description: "网络状态条件"
+        criteria:
+          - "isNetworkActive — 网络可用"
+          - "isWifiNetwork — WiFi 网络"
+          - "isCellularNetwork — 蜂窝网络"
+          - "currentWifiSsidIs — 当前 WiFi SSID (Shizuku)"
+
+      - name: UiObjectFlowRegistry
+        description: "UI 对象流程条件"
+        criteria:
+          - "containsUiObject — 当前窗口包含指定控件"
+          - "uiObjectMatches — UI 对象是否匹配"
+
+  ## 2.6 控制流机制
+  control_flow:
+    description: "通过 ControlFlow 子类实现，嵌入在 Applet 树中"
+    constructs:
+      - name: "When → Do"
+        description: "事件触发：When 中放事件过滤条件，Do 中放执行动作"
+      - name: "If → Do / Else / ElseIf"
+        description: "条件分支"
+      - name: "Loop (Repeat)"
+        description: "循环执行，支持 Break / Continue"
+      - name: "WaitUntil"
+        description: "阻塞等待条件成立（可设超时）"
+      - name: "WaitFor"
+        description: "阻塞等待特定事件到达（可设超时）"
+      - name: "Then"
+        description: "链式后续执行"
+      - name: "Anyway"
+        description: "无论上一步结果如何都执行"
+      - name: "Suspension"
+        description: "延时暂停"
+    logical_relations:
+      - "AND (0) — 前一节点成功时执行"
+      - "OR (1) — 前一节点失败时执行"
+      - "ANYWAY (2) — 无论结果都执行"
+
+  ## 2.7 变量系统
+  variable_system:
+    description: "基于 Referent/Reference 机制的变量系统"
+    components:
+      - name: "Referent"
+        location: "tasker-engine/.../runtime/Referent.kt"
+        description: "接口，Applet 执行后可产生引用值（输出），通过 referents Map 注册"
+      - name: "Reference"
+        description: "Applet 的 references Map 中存储对其他 Applet 输出的引用名"
+      - name: "ValueRegistry"
+        location: "tasker-engine/.../runtime/ValueRegistry.kt"
+        description: "值注册表，支持强引用和弱引用两种存储，XTask 和 Event 各有独立作用域"
+      - name: "TaskRuntime"
+        description: "运行时中管理引用解析、作用域（GLOBAL_SCOPE_TASK=1, GLOBAL_SCOPE_EVENT=2）"
+    variable_types:
+      - "ARG_TYPE_REFERENCE = 0 — 引用其他 Applet 的输出"
+      - "ARG_TYPE_TEXT = 1 — 字符串"
+      - "ARG_TYPE_INT = 3 — 整数"
+      - "ARG_TYPE_FLOAT = 4 — 浮点数"
+      - "ARG_TYPE_LONG = 5 — 长整数"
+      - "支持集合类型 (collectionTypeOf)"
+
+  ## 2.8 任务调度
+  task_scheduling:
+    schedulers:
+      - name: "ResidentTaskScheduler"
+        location: "app/.../runtime/ResidentTaskScheduler.kt"
+        description: "常驻任务调度器，实现 EventDispatcher.Callback，事件到达时调度所有已启用的常驻任务"
+        features:
+          - "协程驱动 (Dispatchers.Default + SupervisorJob)"
+          - "防过热：同一参数哈希短时间内不重复执行"
+          - "支持挂起/恢复（isSuspending → onNewEvents）"
+          - "非 Premium 用户限制最多 3 个常驻任务"
+      - name: "OneshotTaskScheduler"
+        location: "app/.../runtime/OneshotTaskScheduler.kt"
+        description: "一次性任务调度器，单任务串行执行，完成后回调"
+
+# ============================================================
+# 3. 服务层
+# ============================================================
+service_layer:
+
+  service_interface:
+    name: "AutomatorService"
+    location: "app/.../service/AutomatorService.kt"
+    description: "核心服务接口，定义双模式公共 API"
+    members:
+      - "uiAutomatorBridge: CoroutineUiAutomatorBridge"
+      - "eventDispatcher: MetaEventDispatcher"
+      - "residentTaskScheduler: ResidentTaskScheduler"
+      - "oneshotTaskScheduler: OneshotTaskScheduler"
+      - "a11yEventDispatcher: A11yEventDispatcher"
+      - "overlayToastBridge: OverlayToastBridge"
+
+  shizuku_mode:
+    class: "ShizukuAutomatorService"
+    location: "app/.../service/ShizukuAutomatorService.kt"
+    description: "Shizuku 特权模式，通过 AIDL (IRemoteAutomatorService) 跨进程通信"
+    mechanism:
+      - "在 Shizuku 的独立进程中创建 UiAutomationHidden 实例"
+      - "使用 HandlerThread 运行事件循环"
+      - "桥接 PrivilegedUiAutomatorBridge（可直接注入输入事件）"
+      - "Shizuku 注册 UiAutomation 后独占，其他 UiAutomation 不可用"
+
+  a11y_mode:
+    class: "A11yAutomatorService"
+    location: "app/.../service/A11yAutomatorService.kt"
+    description: "辅助功能模式，继承 AccessibilityService"
+    mechanism:
+      - "通过系统辅助功能 API 接收事件"
+      - "实现 IUiAutomationConnection 以提供 UiAutomation 实例"
+      - "桥接 A11yUiAutomatorBridge（通过 StrokeDescription 模拟手势）"
+      - "支持 FloatingInspector 浮窗模式"
+      - "实现 LifecycleOwner 管理生命周期"
+
+  operating_mode:
+    class: "OperatingMode"
+    location: "app/.../service/OperatingMode.kt"
+    description: "密封类定义运行模式：Privilege (Shizuku) / Accessibility"
+
+  event_dispatchers:
+    - name: "MetaEventDispatcher"
+      description: "元事件分发器，聚合多个子分发器"
+    - name: "A11yEventDispatcher"
+      description: "辅助功能事件分发器，处理 TYPE_WINDOW_STATE_CHANGED / TYPE_WINDOW_CONTENT_CHANGED / TYPE_NOTIFICATION_STATE_CHANGED"
+    - name: "PollEventDispatcher"
+      description: "轮询事件分发器（EVENT_ON_TICK）"
+    - name: "NetworkEventDispatcher"
+      description: "网络事件分发器（WiFi连接/断开，网络状态变化）"
+    - name: "ClipboardEventDispatcher"
+      description: "剪贴板事件分发器（已注释掉未启用）"
+
+# ============================================================
+# 4. UI 层
+# ============================================================
+ui_layer:
+  framework: "传统 Android View 系统 + DataBinding + Material 3 (Material You)"
+  note: "不使用 Jetpack Compose，虽然 AGENTS.md 计划使用 Compose，但 AutoTask 实际使用 View 体系"
+  key_activities:
+    - name: "MainActivity"
+      location: "app/.../ui/main/MainActivity.kt"
+      description: "主界面，Fragment 导航"
+  key_dialogs:
+    - "FlowEditorDialog — 流程编辑器（核心编辑 UI）"
+    - "AppletSelectorDialog — Applet 选择器"
+    - "TaskCreatorDialog — 创建任务"
+    - "ServiceStarterDialog — 启动服务"
+    - "TaskListDialog — 任务列表"
+    - "FloatingInspectorDialog — 浮窗检查器"
+    - "PurchaseDialog — 购买对话框"
+    - "各种参数编辑器 Dialog（Coordinate, TimeRange, Enum, Distance 等）"
+  key_fragments:
+    - "ResidentTaskFragment — 常驻任务展示"
+    - "OneshotTaskFragment — 一次性任务展示"
+    - "EnabledTaskFragment — 已启用任务展示"
+    - "AboutFragment — 关于页面"
+  widget_layer:
+    - "FloatingDraggableLayout — 浮窗布局"
+    - "GamePadLayout — 游戏手柄布局"
+    - "GestureRecorderView — 手势录制"
+    - "GesturePlaybackView — 手势回放"
+    - "LayoutInspectorView — 布局检查器"
+    - "DrawBoundsFrameLayout — 边界绘制"
+
+# ============================================================
+# 5. 数据层
+# ============================================================
+data_layer:
+  persistence:
+    format: "JSON (kotlinx.serialization)"
+    dto_classes:
+      - name: "XTaskDTO"
+        location: "tasker-engine/.../dto/XTaskDTO.kt"
+        description: "任务序列化 DTO，包含 AppletDTO + Metadata"
+        serialization: "@Serializable with JSON"
+      - name: "AppletDTO"
+        location: "tasker-engine/.../dto/AppletDTO.kt"
+        description: "Applet 序列化 DTO，递归表示 Applet 树"
+        fields:
+          - "id: Int"
+          - "relation: Int"
+          - "isEnabled: Boolean"
+          - "isInverted: Boolean"
+          - "values: Map<Int, String>? — 序列化后的值"
+          - "referents: Map<Int, String>? — 输出引用名"
+          - "references: Map<Int, String>? — 输入引用名"
+          - "elements: Array<AppletDTO>? — 子节点（仅 Flow）"
+    storage:
+      class: "TaskStorage"
+      location: "app/.../task/storage/TaskStorage.kt"
+      details:
+        - "文件后缀 .xtsk（单任务）/ .xtsks（归档）"
+        - "存储在 app.getExternalFilesDir('xtsk') 下"
+        - "文件名含 '1'/'0' 标记启用/禁用状态"
+        - "Checksum (CRC32) 校验数据完整性"
+        - "预设任务从 assets ZIP 加载"
+        - "支持导入/导出"
+    json_config: "ignoreUnknownKeys=true, encodeDefaults=false"
+
+# ============================================================
+# 6. 功能覆盖清单
+# ============================================================
+feature_coverage:
+
+  triggers_implemented:
+    count: 14
+    items:
+      - "进入/离开应用"
+      - "窗口内容变化"
+      - "收到状态栏通知"
+      - "收到 Toast 通知"
+      - "新窗口出现"
+      - "定时心跳 (tick)"
+      - "文件创建/删除（Shizuku）"
+      - "WiFi 连接/断开"
+      - "网络可用/不可用"
+      # 已注释：剪贴板变化
+
+  actions_implemented:
+    count: 38
+    categories:
+      global_actions:
+        - "等待空闲、按返回键、按最近任务键、按 Home 键"
+        - "打开通知栏、锁屏、截屏、旋转屏幕、唤醒屏幕"
+      ui_object_actions:
+        - "点击/长按/拖拽/滑动 UI 对象"
+        - "设置文本、滚动列表"
+        - "条件点击（存在则点击、按文本点击）"
+        - "向首个输入框输入文本"
+        - "遍历可滚动列表"
+      gesture_actions:
+        - "坐标点击/长按"
+        - "自定义手势录制回放"
+      app_actions:
+        - "启动/强制停止/启用/禁用应用"
+        - "启动 Activity、打开 URI"
+      text_actions:
+        - "日志记录、正则提取、复制到剪贴板、Toast 显示"
+      control_actions:
+        - "If/WaitUntil/WaitFor/延时/循环/Break/Continue"
+        - "终止/禁用/暂停当前任务"
+      shell_actions:
+        - "执行 Shell 命令、执行 .sh 文件（Shizuku+Premium）"
+      file_actions:
+        - "删除/复制/移动文件（Shizuku）"
+      vibration_actions:
+        - "自定义振动波形"
+
+  criteria_implemented:
+    count: 42
+    categories:
+      event_criteria: "14 种事件过滤器"
+      app_criteria: "应用匹配、应用集合、Activity 集合、系统应用、桌面、面板标题"
+      ui_object_criteria: "类型、ID、文本(相等/前缀/后缀/包含/正则)、内容描述、属性(clickable等8种)、子节点数、位置/尺寸(6种边距+宽高)"
+      time_criteria: "时间范围、月/日/星期、时分秒范围、特定时刻、指定时/分/秒"
+      global_criteria: "屏幕方向、是否充电、电量范围"
+      text_criteria: "文本相等/前缀/后缀/包含/正则(引用变量间比较)"
+      network_criteria: "网络可用、WiFi、蜂窝、WiFi SSID"
+
+  variable_expression_system:
+    - "引用 (Reference) — 引用其他 Applet 的输出值"
+    - "格式化字符串 — 支持 ${变量名} 插值（TextActionRegistry 中使用）"
+    - "值类型：String, Int, Float, Long, 集合"
+    - "作用域：Task 级别、Event 级别"
+
+  control_flow_mechanisms:
+    - "If / ElseIf / Else — 条件分支"
+    - "When / Do — 事件触发结构"
+    - "Loop (Repeat) — 循环，支持 Break / Continue"
+    - "WaitUntil — 等待条件"
+    - "WaitFor — 等待事件"
+    - "Then — 链式后续"
+    - "Anyway — 无条件执行"
+    - "Suspension — 延时"
+    - "AND / OR 逻辑关系"
+
+  ui_automation_capabilities:
+    - "查找 UI 控件（AccessibilityNodeInfo 树遍历）"
+    - "控件属性检测（文本、ID、类型、坐标、尺寸等 20+ 种条件）"
+    - "控件操作（点击、长按、拖拽、滑动、输入文本、滚动）"
+    - "手势控制（坐标点击、自定义手势录制/回放）"
+    - "布局检查器（浮窗审查布局树）"
+    - "截屏、屏幕旋转"
+    - "全局操作（返回、Home、最近任务、通知栏、锁屏）"
+
+# ============================================================
+# 模式对比
+# ============================================================
+mode_comparison:
+  shizuku_exclusive_features:
+    - "文件创建/删除事件监听"
+    - "强制停止/启用/禁用应用"
+    - "旋转屏幕"
+    - "Shell 命令执行"
+    - "文件操作（删除/复制/移动）"
+    - "WiFi SSID 查询"
+  a11y_exclusive_features:
+    - "浮窗检查器 (FloatingInspector)"
+  both_modes:
+    - "所有 UI 控件操作"
+    - "手势操作"
+    - "全局操作（返回/Home/最近任务等）"
+    - "通知/Toast 监听"
+    - "应用进入/离开监听"
+    - "时间/网络条件"
+
+open_questions: []
+gaps: []
