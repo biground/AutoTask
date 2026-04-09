@@ -1,0 +1,464 @@
+plan_id: autotask-reverse-research
+objective: "对比 AutoTask 已实现功能 vs AutoPilot feature-taxonomy.md 计划功能，找出差异"
+focus_area: "功能覆盖差异分析"
+created_at: "2026-04-09"
+created_by: gem-researcher
+status: completed
+
+tldr: |
+  - AutoPilot 计划 356 项原子功能，AutoTask 实际实现约 94 项（覆盖率 ~26%）
+  - AutoTask 的核心引擎 + UI 自动化能力较强，但缺失大量设备控制、通讯、传感器、媒体等功能
+  - AutoPilot 独有的关键差异：完整变量系统(Dictionary/Array/持久化)、表达式引擎、自定义 UI Scene、HTTP 网络动作、宏间调用、Action Block
+  - AutoTask 独有能力：浮动布局检查器(Inspector)、手势录制回放、Shizuku 特权模式的深度系统集成
+
+# =============================================================
+# 对照结构：按 feature-taxonomy.md 分类逐项对比
+# =============================================================
+
+# ─────────────────────────────────────────────────────────────
+# 一、核心引擎 (Engine Core)
+# ─────────────────────────────────────────────────────────────
+engine_core_comparison:
+  macro_model:
+    - id: E-001
+      name: "宏定义"
+      autotask: "✅ XTask = RootFlow(事件过滤 + 条件 + 动作)，结构为 When→Do 而非 N触发器+N动作+N约束"
+      gap: "模型差异：AutoTask 是 Flow 树模型，AutoPilot 计划是扁平 触发器+动作+约束 模型"
+    - id: E-002
+      name: "宏启用/禁用"
+      autotask: "✅ 文件名标记 + TaskStorage.toggleTaskFilename"
+    - id: E-003
+      name: "宏分类（Category）"
+      autotask: "❌ 未实现分类系统"
+    - id: E-004
+      name: "宏导入/导出"
+      autotask: "✅ JSON 序列化 XTaskDTO，.xtsk/.xtsks 文件"
+    - id: E-005
+      name: "宏克隆"
+      autotask: "❌ 未发现克隆功能"
+    - id: E-006
+      name: "宏日志"
+      autotask: "✅ TaskSnapshot + logcat 日志记录"
+    - id: E-007
+      name: "宏模板"
+      autotask: "✅ 从 assets ZIP 加载预设任务"
+
+  variable_system:
+    - id: V-001
+      name: "Boolean 变量"
+      autotask: "⚠️ 无独立 Boolean 类型，通过 Applet 结果传递"
+    - id: V-002
+      name: "Integer 变量"
+      autotask: "✅ ARG_TYPE_INT"
+    - id: V-003
+      name: "Decimal 变量"
+      autotask: "✅ ARG_TYPE_FLOAT"
+    - id: V-004
+      name: "String 变量"
+      autotask: "✅ ARG_TYPE_TEXT"
+    - id: V-005
+      name: "Dictionary 变量"
+      autotask: "❌ 未实现"
+    - id: V-006
+      name: "Array 变量"
+      autotask: "⚠️ 支持集合类型(collectionTypeOf)但非通用数组"
+    - id: V-007
+      name: "全局变量"
+      autotask: "✅ GLOBAL_SCOPE_TASK（跨事件共享）"
+    - id: V-008
+      name: "局部变量"
+      autotask: "✅ GLOBAL_SCOPE_EVENT（事件局部）"
+    - id: V-009
+      name: "变量持久化"
+      autotask: "❌ 运行时变量不持久化"
+    - id: V-010
+      name: "魔术变量"
+      autotask: "⚠️ PreloadFlow 提供当前应用/包名/时间等，但远不如计划全面"
+    - id: V-011
+      name: "变量表达式"
+      autotask: "⚠️ 仅支持 ${变量名} 插值，无数学/逻辑表达式"
+
+  control_flow:
+    - id: CF-001
+      name: "If / Else"
+      autotask: "✅ If / ElseIf / Else"
+    - id: CF-002
+      name: "If Confirmed Then"
+      autotask: "❌ 无弹窗确认"
+    - id: CF-003
+      name: "Repeat 循环"
+      autotask: "✅ Repeat/Loop"
+    - id: CF-004
+      name: "Iterate Dictionary/Array"
+      autotask: "⚠️ ForEachUiScrollable 仅迭代 UI 可滚动列表，无通用数组遍历"
+    - id: CF-005
+      name: "Break"
+      autotask: "✅"
+    - id: CF-006
+      name: "Continue"
+      autotask: "✅"
+    - id: CF-007
+      name: "Wait Before Next"
+      autotask: "✅ Suspension（延时）"
+    - id: CF-008
+      name: "Wait Until Trigger"
+      autotask: "✅ WaitFor / WaitUntil"
+    - id: CF-009
+      name: "Action Block"
+      autotask: "❌ 无可复用动作块/函数概念"
+    - id: CF-010
+      name: "Exit Action Block"
+      autotask: "❌"
+    - id: CF-011
+      name: "Macro Run"
+      autotask: "❌ 无宏间调用"
+    - id: CF-012
+      name: "Cancel Macro Actions"
+      autotask: "✅ stopshipTask / disableTask"
+    - id: CF-013
+      name: "Confirm Next"
+      autotask: "❌ 无用户确认机制"
+    - id: CF-014
+      name: "同步/异步执行"
+      autotask: "⚠️ 全部协程驱动，但无用户可控的同步/异步切换"
+
+  expression_engine:
+    - id: EX-001
+      name: "数学运算"
+      autotask: "❌ 无表达式引擎"
+    - id: EX-002
+      name: "字符串操作"
+      autotask: "⚠️ 仅正则提取(extractText)、变量插值"
+    - id: EX-003
+      name: "日期/时间函数"
+      autotask: "❌"
+    - id: EX-004
+      name: "逻辑运算"
+      autotask: "⚠️ 仅 AND/OR 关系，非通用表达式"
+    - id: EX-005
+      name: "JSON 解析"
+      autotask: "❌"
+    - id: EX-006
+      name: "数组操作"
+      autotask: "❌"
+    - id: EX-007
+      name: "文本操作"
+      autotask: "⚠️ 正则提取、复制剪贴板"
+    - id: EX-008
+      name: "OCR 文字识别"
+      autotask: "❌"
+
+# ─────────────────────────────────────────────────────────────
+# 二、触发器 (Triggers)
+# ─────────────────────────────────────────────────────────────
+triggers_comparison:
+  time_and_schedule:
+    planned: 7
+    implemented: 1
+    details:
+      - { id: T-TIME-001, name: "Day/Time Trigger", autotask: "⚠️ 通过 EVENT_ON_TICK + 时间条件实现" }
+      - { id: T-TIME-002, name: "Day of Week/Month", autotask: "⚠️ 通过时间条件过滤" }
+      - { id: T-TIME-003, name: "Regular Interval", autotask: "⚠️ EVENT_ON_TICK 定时心跳" }
+      - { id: T-TIME-004, name: "Stopwatch", autotask: "❌" }
+      - { id: T-TIME-005, name: "Calendar Event", autotask: "❌" }
+      - { id: T-TIME-006, name: "Sunset/Sunrise", autotask: "❌" }
+      - { id: T-TIME-007, name: "Sleep", autotask: "❌" }
+
+  device_state:
+    planned: 13
+    implemented: 0
+    details:
+      - { id: T-DEV-001, name: "Device Boot", autotask: "❌" }
+      - { id: T-DEV-002, name: "Screen On/Off", autotask: "❌" }
+      - { id: T-DEV-003, name: "Screen Unlocked", autotask: "❌" }
+      - { id: T-DEV-004, name: "Screen Orientation", autotask: "❌ (仅作为条件检测)" }
+      - { id: T-DEV-005 to T-DEV-013, name: "其余传感器/设备触发器", autotask: "❌ 全部缺失" }
+
+  connectivity_and_network:
+    planned: 16
+    implemented: 4
+    details:
+      - { id: T-NET-001, name: "WiFi State Change", autotask: "✅ WiFi 连接/断开" }
+      - { id: T-NET-002, name: "WiFi SSID Transition", autotask: "⚠️ 仅事件传递 SSID，无 SSID 切换触发" }
+      - { id: T-NET-003, name: "Bluetooth Event", autotask: "❌" }
+      - { id: T-NET-004, name: "Data Connectivity Change", autotask: "✅ 网络可用/不可用" }
+      - { id: "T-NET-005~016", name: "IP/NFC/飞行模式/热点/USB/VPN/漫游/基站/信标/SIM", autotask: "❌ 全部缺失" }
+
+  phone_and_sms:
+    planned: 8
+    implemented: 0
+    note: "AutoTask 完全不涉及电话/短信触发"
+
+  power:
+    planned: 4
+    implemented: 0
+    note: "仅有充电条件（Criterion），非触发器"
+
+  notification:
+    planned: 2
+    implemented: 2
+    details:
+      - { id: T-NOTIF-001, name: "Notification", autotask: "✅ EVENT_ON_NOTIFICATION_RECEIVED + EVENT_ON_TOAST_RECEIVED" }
+      - { id: T-NOTIF-002, name: "Notification Bar Button", autotask: "❌" }
+
+  app_and_ui:
+    planned: 8
+    implemented: 3
+    details:
+      - { id: T-APP-001, name: "Application Launched/Closed", autotask: "✅ EVENT_ON_PACKAGE_ENTERED / EXITED" }
+      - { id: T-APP-003, name: "Screen Content", autotask: "✅ EVENT_ON_CONTENT_CHANGED" }
+      - { id: T-APP-005, name: "UI Click", autotask: "⚠️ 非触发器，仅动作" }
+      - { id: T-APP-006, name: "Clipboard Change", autotask: "❌ (代码中已注释)" }
+      - { id: T-APP-002, name: "App Install/Remove/Update", autotask: "❌" }
+      - { id: "T-APP-004,007,008", name: "截图内容/最近任务/滑动屏幕", autotask: "❌" }
+
+  sensor_and_activity:
+    planned: 2
+    implemented: 0
+
+  location:
+    planned: 2
+    implemented: 0
+
+  hardware_keys:
+    planned: 9
+    implemented: 0
+
+  media:
+    planned: 4
+    implemented: 0
+
+  system_settings:
+    planned: 10
+    implemented: 0
+
+  autopilot_internal:
+    planned: 18
+    implemented: 0
+    note: "AutoTask 无内部事件触发器系统（变量变化、宏完成、Webhook、Widget 等）"
+
+  trigger_summary:
+    autopilot_planned: 103
+    autotask_implemented: "~10-14 种事件类型"
+    coverage_percent: "~12%"
+
+# ─────────────────────────────────────────────────────────────
+# 三、动作 (Actions)
+# ─────────────────────────────────────────────────────────────
+actions_comparison:
+  device_settings:
+    planned: 33
+    implemented: 3
+    details:
+      - { id: A-SET-002, name: "Auto Rotate", autotask: "❌" }
+      - { id: A-SET-012, name: "Screen On/Off", autotask: "✅ wakeUpScreen (仅唤醒)" }
+      - { id: A-SET-019, name: "Force Screen Rotation", autotask: "✅ setRotation (Shizuku)" }
+      - { id: A-SET-030, name: "Set Wallpaper", autotask: "❌" }
+      - { note: "其余 30 项设备设置动作全部缺失" }
+
+  volume_and_sound:
+    planned: 14
+    implemented: 1
+    details:
+      - { id: A-SND-010, name: "Vibrate", autotask: "✅ 自定义振动" }
+      - { note: "音量控制、铃声、TTS、录音等全部缺失" }
+
+  communication:
+    planned: 9
+    implemented: 0
+    note: "电话/短信/邮件相关动作全部缺失"
+
+  notification_and_ui:
+    planned: 21
+    implemented: 2
+    details:
+      - { id: A-UI-007, name: "Popup Message (Toast)", autotask: "✅ makeToast" }
+      - { id: A-UI-012, name: "Expand Status Bar", autotask: "✅ openNotificationShade" }
+      - { note: "自定义通知、对话框、气泡通知、悬浮文本、自定义 Scene 等全部缺失" }
+
+  app_control:
+    planned: 10
+    implemented: 6
+    details:
+      - { id: A-APP-001, name: "Launch Application", autotask: "✅" }
+      - { id: A-APP-002, name: "Launch Home Screen", autotask: "✅ pressHome" }
+      - { id: A-APP-003, name: "Kill Application", autotask: "✅ forceStopApp (Shizuku)" }
+      - { id: A-APP-005, name: "App Enable/Disable", autotask: "✅ enablePackage/disablePackage (Shizuku)" }
+      - { id: "A-APP-004,006,007,008,009,010", name: "清除后台/数据/快捷方式/闹钟", autotask: "❌" }
+
+  file_and_data:
+    planned: 17
+    implemented: 5
+    details:
+      - { id: A-DATA-001, name: "File Operation", autotask: "✅ delete/copy/move (Shizuku)" }
+      - { id: A-DATA-004, name: "Fill Clipboard", autotask: "✅ copyText" }
+      - { id: A-DATA-013, name: "Log Event", autotask: "✅ logcatText" }
+      - { note: "写文件、变量操作、JSON解析、数组操作、日历事件、翻译等缺失" }
+
+  screen_automation:
+    planned: 13
+    implemented: 7
+    details:
+      - { id: A-SCR-001, name: "Touch Screen", autotask: "✅ 点击/长按/拖拽/滑动/手势回放" }
+      - { id: A-SCR-002, name: "UI Interaction", autotask: "✅ 完整的 UI 对象操作" }
+      - { id: A-SCR-003, name: "Press Back", autotask: "✅ pressBack" }
+      - { id: A-SCR-006, name: "Screenshot", autotask: "✅ takeScreenshot (API≥P)" }
+      - { id: A-SCR-004, name: "Read Screen Contents", autotask: "⚠️ 可读取 UI 文本，非 OCR" }
+      - { id: "A-SCR-005,007,008,009,010,011,012,013", name: "截图OCR/像素检测/禁触", autotask: "❌" }
+
+  network_and_communication:
+    planned: 10
+    implemented: 1
+    details:
+      - { id: A-NET-005, name: "Send Intent", autotask: "✅ viewUri / viewUriViaPackage" }
+      - { note: "HTTP请求、HTTP Server、UDP、分享等全部缺失" }
+
+  script_execution:
+    planned: 2
+    implemented: 1
+    details:
+      - { id: A-SCRIPT-001, name: "Shell Script", autotask: "✅ executeShellCmd/executeShFile (Shizuku+Premium)" }
+      - { id: A-SCRIPT-002, name: "JavaScript Code", autotask: "❌" }
+
+  system_and_power:
+    planned: 8
+    implemented: 0
+    note: "重启/关机、保持唤醒、身份验证等全部缺失"
+
+  media_control:
+    planned: 2
+    implemented: 0
+
+  autopilot_internal:
+    planned: 16
+    implemented: 2
+    details:
+      - { id: A-INT-001, name: "Enable/Disable Macro", autotask: "✅ disableTask" }
+      - { note: "分类管理、触发器管理、导出、设置图标/模式等全部缺失" }
+
+  action_summary:
+    autopilot_planned: 155
+    autotask_implemented: "~38 种动作"
+    coverage_percent: "~25%"
+
+# ─────────────────────────────────────────────────────────────
+# 四、约束条件 (Constraints)
+# ─────────────────────────────────────────────────────────────
+constraints_comparison:
+  device_state:
+    planned: 8
+    implemented: 1
+    details:
+      - { id: C-DEV-004, name: "Device Orientation", autotask: "✅ isScreenPortrait" }
+      - { note: "屏幕亮灭、锁屏、设备朝向、传感器、亮度、手电筒等缺失" }
+
+  connectivity:
+    planned: 11
+    implemented: 4
+    details:
+      - { id: C-NET-001, name: "WiFi State", autotask: "✅ isWifiNetwork + currentWifiSsidIs" }
+      - { id: C-NET-004, name: "Mobile Data", autotask: "✅ isCellularNetwork" }
+      - { note: "蓝牙、NFC、飞行模式、VPN、IP、热点等缺失" }
+
+  power:
+    planned: 4
+    implemented: 2
+    details:
+      - { id: C-PWR-001, name: "Battery Level", autotask: "✅ batteryCapacityRange" }
+      - { id: C-PWR-004, name: "Power Connected", autotask: "✅ isBatteryCharging" }
+      - { note: "电池温度、省电模式缺失" }
+
+  time:
+    planned: 6
+    implemented: 5
+    details:
+      - { id: C-TIME-001, name: "Time of Day", autotask: "✅ hourMinSec" }
+      - { id: C-TIME-002, name: "Day of Week", autotask: "✅ dayOfWeek" }
+      - { id: C-TIME-003, name: "Day of Month", autotask: "✅ dayOfMonth" }
+      - { id: C-TIME-004, name: "Month of Year", autotask: "✅ month" }
+      - { id: C-TIME-005, name: "Sunrise/Sunset", autotask: "❌" }
+      - { id: C-TIME-006, name: "Time Since Boot", autotask: "❌" }
+
+  location:
+    planned: 2
+    implemented: 0
+
+  app_and_audio:
+    planned: 4
+    implemented: 1
+    details:
+      - { id: C-APP-001, name: "Application Running", autotask: "✅ isCertainApp / appCollection (前台应用匹配)" }
+
+  phone_and_notification:
+    planned: 8
+    implemented: 0
+    note: "通话状态、通知存在性、音量级别等全部缺失"
+
+  system:
+    planned: 9
+    implemented: 0
+    note: "剪贴板内容匹配(AutoTask有TextCriterion)、系统设置等未直接作为约束"
+
+  autopilot_internal:
+    planned: 13
+    implemented: 0
+    note: "宏运行状态、触发器类型、悬浮按钮等内部约束全部缺失"
+
+  constraint_summary:
+    autopilot_planned: 65
+    autotask_implemented: "~13 种约束"
+    coverage_percent: "~20%"
+
+# ─────────────────────────────────────────────────────────────
+# 五、自定义 UI 系统
+# ─────────────────────────────────────────────────────────────
+custom_ui_comparison:
+  autopilot_planned: 12
+  autotask_implemented: 0
+  note: "AutoTask 无自定义 UI Scene 系统，但有浮窗布局检查器(Inspector)"
+
+# =============================================================
+# 综合总结
+# =============================================================
+summary:
+  total_autopilot_features: 356
+  total_autotask_matched: "~94"
+  overall_coverage: "~26%"
+
+  autotask_strong_areas:
+    - "UI 自动化操作（控件识别、点击、滑动、文本操作等）"
+    - "控制流（If/Else/Loop/WaitFor/WaitUntil）"
+    - "时间条件系统（月/日/周/时分秒多维度）"
+    - "Shizuku 特权模式（系统级操作）"
+    - "手势录制与回放"
+    - "浮动布局检查器"
+    - "协程驱动的事件分发架构"
+
+  autotask_weak_areas:
+    - "设备控制动作（33 项中仅实现 3 项）"
+    - "触发器多样性（103 项计划仅覆盖 ~12%）"
+    - "通讯能力（电话/短信/邮件全部缺失）"
+    - "传感器/硬件键触发器（全部缺失）"
+    - "位置/地理围栏（全部缺失）"
+    - "音量/声音控制（14 项仅实现振动）"
+    - "网络动作（HTTP 请求等全部缺失）"
+    - "媒体控制（全部缺失）"
+
+  autopilot_unique_requirements:
+    - "完整变量系统（Dictionary/Array/持久化/魔术变量）"
+    - "表达式引擎（数学/字符串/JSON/数组操作）"
+    - "自定义 UI Scene 系统"
+    - "宏间调用 (Macro Run) 和可复用动作块 (Action Block)"
+    - "HTTP 请求/Server/Webhook"
+    - "TTS 语音/录音"
+    - "OCR 文字识别"
+    - "日历/天气/地理围栏集成"
+    - "PC/Web 端宏编辑器同步"
+
+  autotask_unique_capabilities_to_preserve:
+    - "Applet 树模型的灵活嵌套（比扁平模型更强大）"
+    - "Shizuku + A11y 双模式架构"
+    - "浮窗布局检查器 (Inspector)"
+    - "手势录制/回放系统"
+    - "协程+事件驱动的低资源占用架构"
+    - "CRC32 校验 + Parcelable IPC"
