@@ -12,8 +12,9 @@ android {
         xjunz {
             def localProperties = new Properties()
             localProperties.load(new FileInputStream(rootProject.file("local.properties")))
-            if (localProperties != null) {
-                storeFile file(localProperties['storeFile'])
+            def sf = localProperties['storeFile']
+            if (sf != null && !sf.isEmpty()) {
+                storeFile file(sf)
                 storePassword localProperties['storePassword']
                 keyAlias localProperties['keyAlias']
                 keyPassword localProperties['keyPassword']
@@ -47,7 +48,7 @@ android {
         debug {
             debuggable true
             minifyEnabled false
-            signingConfig signingConfigs.xjunz
+            signingConfig signingConfigs.debug
         }
     }
     buildFeatures {
@@ -55,8 +56,8 @@ android {
         aidl true
     }
     compileOptions {
-        sourceCompatibility JavaVersion.VERSION_18
-        targetCompatibility JavaVersion.VERSION_18
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
     }
 
     namespace 'top.xjunz.tasker'
