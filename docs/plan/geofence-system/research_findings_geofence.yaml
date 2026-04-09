@@ -1,0 +1,855 @@
+plan_id: geofence-system
+objective: "研究 AutoPilot 地理围栏（Geofence）触发器和约束器的实现需求"
+focus_area: geofence-trigger-constraint
+created_at: "2026-04-09"
+created_by: researcher
+status: completed
+
+tldr: |
+  - 地理围栏功能包含 7 个功能项（2 触发器 + 1 约束 + 2 系统动作 + 1 位置服务 + 1 分享位置），计划在 V2 阶段实现
+  - 技术选型为高德地图 SDK GeoFence API，需 ACCESS_FINE_LOCATION / ACCESS_BACKGROUND_LOCATION 等权限
+  - 现有代码已有完善的 EventDispatcher + EventFilter + Referent + AppletOptionRegistry 模式，新增地理围栏仅需遵循现有架构扩展
+  - 需新建 LocationEventDispatcher（app 层）+ 新 Event 常量（engine 层）+ GeofenceReferent + 注册表条目
+  - 关键风险：后台持续定位耗电、Android 16 后台位置限制、高德 SDK API Key 管理
+
+research_metadata:
+  methodology: "hybrid retrieval: semantic_search + grep_search + read_file; 3 passes: docs → codebase patterns → integration analysis"
+  scope: "docs/（4 文件）+ app/src/main/ + tasker-engine/src/main/ 核心代码，聚焦触发器/约束/事件系统"
+  confidence: high
+  coverage: 92
+  decision_blockers: 0
+  research_blockers: 0
+
+# ============================================================
+# 一、功能规格
+# ============================================================
+
+feature_items:
+  triggers:
+    - id: T-LOC-001
+      name: Geofence Trigger
+      description: "进入/离开地理围栏区域"
+      marker: "🔴"
+      localization: "使用高德/百度地图 SDK 的 GeoFence API"
+
+    - id: T-LOC-002
+      name: Location Trigger
+      description: "到达指定位置"
+      marker: "🔴"
+      localization: "同 T-LOC-001"
+
+  constraints:
+    - id: C-LOC-001
+      name: "Geofence (Location)"
+      description: "是否在指定地理围栏内"
+      marker: "🔴🌐"
+      localization: "同 T-LOC-001"
+
+    - id: C-LOC-002
+      name: Cell Towers
+      description: "当前连接的基站匹配"
+      marker: "🟢"
+      note: "不依赖地图 SDK，使用 TelephonyManager API"
+
+  actions:
+    - id: A-SYS-003
+      name: Force Location Update
+      description: "强制刷新位置"
+      marker: "🟢🔴"
+
+    - id: A-SYS-004
+      name: Set Location Update Rate
+      description: "设置位置更新频率"
+      marker: "🟢🔴"
+
+    - id: A-NET-008
+      name: Share Location
+      description: "分享位置"
+      marker: "🟢🔴"
+      note: "使用高德/百度坐标系"
+
+    - id: A-SET-009
+      name: Location Mode
+      description: "设置定位模式"
+      marker: "🟡"
+
+  infrastructure:
+    - id: AND-007
+      name: 位置服务
+      description: "前台/后台位置获取"
+      marker: "🟢🔴"
+      localization: "使用高德/百度后台定位"
+
+  related_items:
+    - id: T-TIME-006
+      name: Sunset/Sunrise
+      description: "日出/日落触发（依赖地理位置计算）"
+      marker: "🟢🔴"
+      note: "可使用天文算法本地计算，不强依赖定位 SDK"
+
+    - id: C-TIME-005
+      name: Sunrise/Sunset
+      description: "日出/日落约束"
+      marker: "🟢🔴🌐"
+
+    - id: C-SYS-003
+      name: GPS State
+      description: "GPS 是否开启"
+      marker: "🟢🌐"
+
+    - id: T-SYS-004
+      name: GPS Enabled/Disabled
+      description: "GPS 开关变化触发"
+      marker: "🟢"
+
+roadmap_phase: V2
+roadmap_notes: |
+  V2 阶段（完整版）明确包含：
+  - 触发器：T-LOC-001（Geofence 🔴 高德 GeoFence API）、T-LOC-002（Location 🔴）
+  - 约束：C-LOC-001（Geofence 🔴）、C-LOC-002（Cell Towers）
+  - 基础设施：AND-007（位置服务 🔴）
+  - 动作：A-SYS-003（Force Location Update 🔴）、A-SYS-004（Location Update Rate 🔴）
+  roadmap.md V2 架构工作量第 1 项：
+  "地理围栏系统：集成高德地图 SDK GeoFence API，后台位置持续监听，电量优化"
+
+# ============================================================
+# 二、技术选型
+# ============================================================
+
+tech_stack:
+  sdk:
+    primary: "高德地图 SDK (AMap)"
+    rationale: "AGENTS.md 决策：国内网络环境下 Google Geofencing API 不可用"
+    key_apis:
+      - name: "AMapLocationClient"
+        purpose: "持续/单次定位"
+      - name: "GeoFenceClient / GeoFence"
+        purpose: "地理围栏创建与监听"
+      - name: "AMapLocationListener"
+        purpose: "位置回调"
+    gradle_dependency: "com.amap.api:location:latest"
+    docs_url: "https://lbs.amap.com/api/android-location-sdk/locationsummary"
+
+  permissions:
+    - name: "android.permission.ACCESS_FINE_LOCATION"
+      purpose: "精确定位（GPS + 网络）"
+      type: runtime
+      required: true
+
+    - name: "android.permission.ACCESS_COARSE_LOCATION"
+      purpose: "粗略定位"
+      type: runtime
+      required: true
+
+    - name: "android.permission.ACCESS_BACKGROUND_LOCATION"
+      purpose: "后台定位（Android 10+）"
+      type: runtime
+      required: true
+      note: "Android 10+ 要求先授予前台定位权限后，再请求后台定位权限"
+
+    - name: "android.permission.FOREGROUND_SERVICE_LOCATION"
+      purpose: "前台服务声明位置类型（Android 14+）"
+      type: manifest
+      required: true
+
+    - name: "android.permission.ACCESS_NETWORK_STATE"
+      purpose: "网络状态（已有）"
+      type: manifest
+      required: true
+      status: already_declared
+
+    - name: "android.permission.ACCESS_WIFI_STATE"
+      purpose: "WiFi 辅助定位（已有）"
+      type: manifest
+      required: true
+      status: already_declared
+
+    - name: "android.permission.INTERNET"
+      purpose: "网络请求（已有）"
+      type: manifest
+      required: true
+      status: already_declared
+
+  api_keys:
+    - name: "高德地图 API Key"
+      purpose: "鉴权"
+      config_location: "AndroidManifest.xml <meta-data>"
+      key_name: "com.amap.api.v2.apikey"
+      apply_url: "https://console.amap.com/dev/key/app"
+
+  foreground_service:
+    type: "location"
+    declaration: |
+      <service
+        android:name=".service.LocationService"
+        android:foregroundServiceType="location"
+        android:exported="false" />
+
+# ============================================================
+# 三、现有代码基础
+# ============================================================
+
+existing_code:
+  # --- EventDispatcher 系统 ---
+  event_dispatcher_pattern:
+    description: "抽象 EventDispatcher 基类 → 具体子类 → 注册到 MetaEventDispatcher"
+    base_class:
+      file: "tasker-engine/src/main/java/top/xjunz/tasker/engine/task/EventDispatcher.kt"
+      key_methods:
+        - "abstract fun onRegistered() — 注册时初始化"
+        - "abstract fun destroy() — 销毁清理"
+        - "fun dispatchEvents(vararg events: Event) — 分发事件"
+        - "fun addCallback(callback: Callback) — 注册回调"
+    meta_dispatcher:
+      file: "app/src/main/java/top/xjunz/tasker/task/event/MetaEventDispatcher.kt"
+      description: "组合模式，内部维护 ArrayMap<Class<*>, EventDispatcher>，统一管理所有 dispatcher"
+    existing_dispatchers:
+      - name: A11yEventDispatcher
+        file: "app/src/main/java/top/xjunz/tasker/task/event/A11yEventDispatcher.kt"
+        events: "包/窗口切换、通知、Toast、内容变化"
+      - name: PollEventDispatcher
+        file: "app/src/main/java/top/xjunz/tasker/task/event/PollEventDispatcher.kt"
+        events: "EVENT_ON_TICK (每秒轮询)"
+      - name: NetworkEventDispatcher
+        file: "app/src/main/java/top/xjunz/tasker/task/event/NetworkEventDispatcher.kt"
+        events: "WiFi 连接/断开、网络可用/不可用"
+      - name: ClipboardEventDispatcher
+        file: "app/src/main/java/top/xjunz/tasker/task/event/ClipboardEventDispatcher.kt"
+        events: "剪贴板变化（已注释掉）"
+      - name: VariableChangeEventDispatcher
+        file: "app/src/main/java/top/xjunz/tasker/task/variable/VariableChangeEventDispatcher.kt"
+        events: "EVENT_ON_VARIABLE_CHANGED"
+      - name: ModeChangeEventDispatcher
+        file: "app/src/main/java/top/xjunz/tasker/task/mode/ModeChangeEventDispatcher.kt"
+        events: "EVENT_ON_MODE_CHANGED"
+    registration_point:
+      file: "app/src/main/java/top/xjunz/tasker/service/AutomatorService.kt"
+      method: "initEventDispatcher()"
+      pattern: "eventDispatcher.registerEventDispatcher(XxxEventDispatcher(...))"
+
+  # --- Event 常量 ---
+  event_constants:
+    file: "tasker-engine/src/main/java/top/xjunz/tasker/engine/runtime/Event.kt"
+    current_max_id: 16   # EVENT_ON_MODE_CHANGED = 16
+    pattern: "const val EVENT_ON_XXX = N"
+    next_available_ids:
+      - 17  # EVENT_ON_GEOFENCE_ENTERED
+      - 18  # EVENT_ON_GEOFENCE_EXITED
+      - 19  # EVENT_ON_LOCATION_ARRIVED
+
+  # --- EventFilter (触发器注册) ---
+  event_filter_pattern:
+    file: "app/src/main/java/top/xjunz/tasker/task/applet/criterion/EventFilter.kt"
+    description: "通用事件过滤器，匹配 eventType，根据事件类型返回对应 Referent"
+    pattern: |
+      EventFilter(eventType) → apply() 中 runtime.events?.find { it.type == eventType }
+      根据 hit.type 分支返回不同 Referent（如 NotificationReferent, VariableChangeReferent）
+
+  # --- EventCriterionRegistry (事件注册表) ---
+  event_criterion_registry:
+    file: "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/EventCriterionRegistry.kt"
+    description: "所有事件类型触发器的注册表"
+    current_entries: 15  # 0x0000 ~ 0x0014
+    pattern: |
+      @AppletOrdinal(0xNNNN)
+      val xxxEvent = eventFilterOption(Event.EVENT_ON_XXX, R.string.xxx)
+        .withResult<XxxReferent>(R.string.yyy)
+    next_ordinal: "0x0015"
+
+  # --- Referent 系统 ---
+  referent_pattern:
+    base_interface:
+      file: "tasker-engine/src/main/java/top/xjunz/tasker/engine/runtime/Referent.kt"
+      description: "接口，实现 getReferredValue(which, runtime) 返回引用值"
+    examples:
+      - name: NotificationReferent
+        file: "app/src/main/java/top/xjunz/tasker/task/applet/flow/ref/NotificationReferent.kt"
+        fields: "this(0), paneTitle(1), componentInfo(2), label(3)"
+      - name: VariableChangeReferent
+        file: "app/src/main/java/top/xjunz/tasker/task/applet/flow/ref/VariableChangeReferent.kt"
+        fields: "this(0), variableName(1), oldValue(2), newValue(3)"
+      - name: ModeChangeReferent
+        file: "app/src/main/java/top/xjunz/tasker/task/applet/flow/ref/ModeChangeReferent.kt"
+        fields: "this(0), modeName(1), changeType(2), previousModeName(3)"
+
+  # --- AppletOptionRegistry 系统 ---
+  registry_system:
+    base_class:
+      file: "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/AppletOptionRegistry.kt"
+      description: "抽象注册表，使用反射扫描 @AppletOrdinal 注解字段"
+    bootstrap:
+      file: "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/BootstrapOptionRegistry.kt"
+      description: "根注册表，定义所有子注册表 ID 和 PhantomFlow 入口"
+      current_criterion_ids:
+        eventFilter: "0xF"
+        app: "0x10"
+        time: "0x12"
+        global: "0x13"
+        notification: "0x14"
+        text: "0x15"
+        uiObject: "0x16"
+        network: "0x17"
+        variable: "0x18"
+        mode: "0x19"
+      next_criterion_id: "0x1A  # ID_LOCATION_CRITERION_REGISTRY"
+      current_action_ids:
+        global: "0x50"
+        uiObject: "0x51"
+        control: "0x52"
+        app: "0x53"
+        text: "0x54"
+        gesture: "0x55"
+        shellCmd: "0x56"
+        file: "0x57"
+        vibration: "0x58"
+        variable: "0x59"
+        mode: "0x5A"
+      next_action_id: "0x5B  # ID_LOCATION_ACTION_REGISTRY (if needed)"
+    factory:
+      file: "app/src/main/java/top/xjunz/tasker/task/applet/option/AppletOptionFactory.kt"
+      description: "全局单例工厂，实例化并注册所有 Registry，allRegistries 数组中顺序注册"
+
+  # --- 现有服务 ---
+  services:
+    a11y_service:
+      file: "app/src/main/java/top/xjunz/tasker/service/A11yAutomatorService.kt"
+      manifest: "已注册为 AccessibilityService"
+    shizuku_service:
+      file: "app/src/main/java/top/xjunz/tasker/service/ShizukuAutomatorService.kt"
+      description: "通过 Shizuku 获取 UiAutomation"
+    no_foreground_service:
+      note: "当前无独立的 ForegroundService 声明，A11yAutomatorService 本身就是前台服务"
+
+  # --- AndroidManifest 现状 ---
+  manifest:
+    file: "app/src/main/AndroidManifest.xml"
+    existing_permissions:
+      - RECEIVE_BOOT_COMPLETED
+      - SYSTEM_ALERT_WINDOW
+      - INTERNET
+      - VIBRATE
+      - WAKE_LOCK
+      - ACCESS_NETWORK_STATE
+      - ACCESS_WIFI_STATE
+    missing_for_geofence:
+      - ACCESS_FINE_LOCATION
+      - ACCESS_COARSE_LOCATION
+      - ACCESS_BACKGROUND_LOCATION
+      - FOREGROUND_SERVICE_LOCATION
+
+# ============================================================
+# 四、集成点分析
+# ============================================================
+
+integration_points:
+  engine_layer:
+    module: tasker-engine
+    changes:
+      - file: "tasker-engine/src/main/java/top/xjunz/tasker/engine/runtime/Event.kt"
+        change: "新增 Event 常量"
+        details:
+          - "const val EVENT_ON_GEOFENCE_ENTERED = 17"
+          - "const val EVENT_ON_GEOFENCE_EXITED = 18"
+          - "const val EVENT_ON_LOCATION_ARRIVED = 19  // T-LOC-002 到达指定位置"
+        note: "同时在 toString() 中新增对应分支"
+
+  app_layer:
+    module: app
+    new_classes:
+      # --- EventDispatcher ---
+      - class: LocationEventDispatcher
+        package: "top.xjunz.tasker.task.event"
+        extends: EventDispatcher
+        responsibility: |
+          封装高德地图 SDK 的 AMapLocationClient + GeoFenceClient，
+          监听地理围栏进入/离开事件，分发 EVENT_ON_GEOFENCE_ENTERED/EXITED
+        key_methods:
+          - "onRegistered() — 初始化 AMapLocationClient + GeoFenceClient"
+          - "destroy() — 释放 SDK 资源"
+          - "addGeofence(center: LatLng, radius: Float, name: String)"
+          - "removeGeofence(name: String)"
+          - "内部 BroadcastReceiver 处理高德 GeoFence 回调"
+        extras:
+          - "EXTRA_GEOFENCE_NAME = 0  // 围栏名称"
+          - "EXTRA_GEOFENCE_LAT = 1   // 围栏中心纬度"
+          - "EXTRA_GEOFENCE_LNG = 2   // 围栏中心经度"
+          - "EXTRA_GEOFENCE_RADIUS = 3 // 围栏半径"
+
+      # --- Referent ---
+      - class: GeofenceReferent
+        package: "top.xjunz.tasker.task.applet.flow.ref"
+        implements: Referent
+        responsibility: "地理围栏事件的引用值提供者"
+        fields:
+          - "0: this (GeofenceReferent 自身)"
+          - "1: geofenceName (String)"
+          - "2: latitude (Double)"
+          - "3: longitude (Double)"
+          - "4: transitionType (String: ENTER/EXIT)"
+
+      # --- Registry ---
+      - class: LocationCriterionRegistry
+        package: "top.xjunz.tasker.task.applet.option.registry"
+        extends: AppletOptionRegistry
+        id: "0x1A (ID_LOCATION_CRITERION_REGISTRY)"
+        responsibility: "位置相关约束条件注册"
+        entries:
+          - ordinal: "0x0000"
+            name: geofenceInside
+            description: "C-LOC-001: 是否在指定地理围栏内"
+            type: "invertibleAppletOption (支持取反：不在围栏内)"
+            args:
+              - "纬度 (Double)"
+              - "经度 (Double)"
+              - "半径 (Float, 米)"
+              - "围栏名称 (String)"
+
+      # --- EventCriterionRegistry 新条目 ---
+      - class: EventCriterionRegistry
+        change_type: modify
+        package: "top.xjunz.tasker.task.applet.option.registry"
+        new_entries:
+          - ordinal: "0x0015"
+            name: geofenceEntered
+            event: EVENT_ON_GEOFENCE_ENTERED
+            label: "R.string.on_geofence_entered"
+            results:
+              - "GeofenceReferent (围栏事件详情)"
+              - "String (围栏名称)"
+          - ordinal: "0x0016"
+            name: geofenceExited
+            event: EVENT_ON_GEOFENCE_EXITED
+            label: "R.string.on_geofence_exited"
+            results:
+              - "GeofenceReferent (围栏事件详情)"
+              - "String (围栏名称)"
+          - ordinal: "0x0017"
+            name: locationArrived
+            event: EVENT_ON_LOCATION_ARRIVED
+            label: "R.string.on_location_arrived"
+            results:
+              - "GeofenceReferent (位置事件详情)"
+
+      # --- EventFilter 扩展 ---
+      - class: EventFilter
+        change_type: modify
+        package: "top.xjunz.tasker.task.applet.criterion"
+        changes: |
+          在 apply() 方法的 when(hit.type) 分支中新增：
+          EVENT_ON_GEOFENCE_ENTERED, EVENT_ON_GEOFENCE_EXITED, EVENT_ON_LOCATION_ARRIVED -> {
+              GeofenceReferent(...).asResult()
+          }
+
+      # --- BootstrapOptionRegistry 扩展 ---
+      - class: BootstrapOptionRegistry
+        change_type: modify
+        new_constant: "const val ID_LOCATION_CRITERION_REGISTRY = 0x1A"
+        new_flow_option: |
+          @AppletOrdinal(0x0019)
+          val locationCriteria = flowOptionWithId<PhantomFlow>(
+              ID_LOCATION_CRITERION_REGISTRY, R.string.location_criteria
+          )
+        add_to_arrays:
+          - "criterionFlowOptions 数组中新增 locationCriteria"
+
+      # --- AppletOptionFactory 扩展 ---
+      - class: AppletOptionFactory
+        change_type: modify
+        new_registry: |
+          private val locationCriterionRegistry =
+              LocationCriterionRegistry(BootstrapOptionRegistry.ID_LOCATION_CRITERION_REGISTRY)
+        add_to_allRegistries: "在 modeCriterionRegistry 后面加入 locationCriterionRegistry"
+
+      # --- AutomatorService 扩展 ---
+      - class: AutomatorService
+        change_type: modify
+        file: "app/src/main/java/top/xjunz/tasker/service/AutomatorService.kt"
+        change: |
+          在 initEventDispatcher() 中新增：
+          eventDispatcher.registerEventDispatcher(LocationEventDispatcher())
+
+  android_services:
+    foreground_service:
+      description: |
+        地理围栏需要后台持续监听位置，有两种方案：
+        方案 A：在现有 A11yAutomatorService 中嵌入高德 SDK 定位逻辑
+                优点：无需新建 Service，复用现有保活机制
+                缺点：A11yService 与位置逻辑耦合
+        方案 B：新建独立 LocationForegroundService
+                优点：职责单一、可独立启停
+                缺点：多一个前台通知、多一个需要保活的服务
+      recommendation: |
+        推荐方案 A（嵌入式）：
+        LocationEventDispatcher 作为 EventDispatcher 子类注册到 MetaEventDispatcher，
+        其 onRegistered() 内部初始化高德 SDK，利用已有前台服务保活机制。
+        高德 SDK 的 GeoFenceClient 本身支持后台围栏监听（通过 PendingIntent）。
+
+    broadcast_receiver:
+      description: |
+        高德地理围栏通过 PendingIntent + BroadcastReceiver 回调转场事件。
+        LocationEventDispatcher 内部注册一个动态 BroadcastReceiver，
+        收到围栏事件后转换为 Event 并 dispatchEvents()。
+
+  registry_ids:
+    new_ids:
+      - name: ID_LOCATION_CRITERION_REGISTRY
+        value: "0x1A"
+        purpose: "位置约束注册表"
+
+    new_event_constants:
+      - name: EVENT_ON_GEOFENCE_ENTERED
+        value: 17
+      - name: EVENT_ON_GEOFENCE_EXITED
+        value: 18
+      - name: EVENT_ON_LOCATION_ARRIVED
+        value: 19
+
+    event_criterion_ordinals:
+      - "0x0015 = geofenceEntered"
+      - "0x0016 = geofenceExited"
+      - "0x0017 = locationArrived"
+
+    location_criterion_ordinals:
+      - "0x0000 = geofenceInside (C-LOC-001)"
+
+    bootstrap_ordinals:
+      - "0x0019 = locationCriteria"
+
+# ============================================================
+# 五、MacroDroid 参考（竞品特性）
+# ============================================================
+
+macrodroid_reference:
+  trigger_geofence:
+    name: "Geofence (Location)"
+    transitions:
+      - ENTER  # 进入围栏
+      - EXIT   # 离开围栏
+    config:
+      - "中心点坐标（地图选点或搜索地址）"
+      - "半径（米，默认 100m，可调 50m~5000m）"
+      - "围栏名称"
+      - "触发精度：高/中/低（影响电量消耗）"
+    features:
+      - "支持多个围栏同时监听"
+      - "可在地图上可视化查看所有围栏"
+      - "进入/离开分别可绑定不同宏"
+      - "支持设置触发防抖间隔（防止频繁触发）"
+      - "支持 WiFi 辅助定位（室内场景）"
+
+  trigger_location:
+    name: "Location Trigger"
+    description: "到达指定坐标（无围栏概念，仅精确位置）"
+    note: "实际上 MacroDroid 将此合并到 Geofence 中（小半径围栏）"
+
+  constraint_geofence:
+    name: "Location / Geofence"
+    modes:
+      - "In area — 当前位置在围栏内"
+      - "Not in area — 当前位置不在围栏内"
+    config: "复用触发器的围栏配置"
+
+  ui_features:
+    - "地图选点界面（Google Maps / Mapbox）"
+    - "搜索地址自动填充坐标"
+    - "拖拽调整围栏中心"
+    - "滑块调整围栏半径，实时预览圆圈大小"
+    - "已保存围栏列表管理"
+
+  autopilot_adaptations:
+    - "地图选点用高德地图 MapView 替代 Google Maps"
+    - "地址搜索用高德 POI 搜索 API"
+    - "坐标系统使用 GCJ-02（高德使用的国家加密坐标系）"
+
+# ============================================================
+# 六、已分析文件
+# ============================================================
+
+files_analyzed:
+  - file: Event.kt
+    path: "tasker-engine/src/main/java/top/xjunz/tasker/engine/runtime/Event.kt"
+    purpose: "定义所有事件类型常量和事件对象池"
+    key_elements:
+      - element: "EVENT_ON_XXX 常量"
+        type: variable
+        location: "Event.kt:34-78"
+        description: "当前定义 16 种事件类型（0=undefined, 1~16）"
+      - element: "obtain()"
+        type: function
+        location: "Event.kt:80-88"
+        description: "工厂方法创建 Event 实例"
+      - element: "putExtra() / getExtra()"
+        type: function
+        location: "Event.kt:92-106"
+        description: "SparseArray 存储事件附加数据"
+    language: kotlin
+    lines: 120
+
+  - file: EventDispatcher.kt
+    path: "tasker-engine/src/main/java/top/xjunz/tasker/engine/task/EventDispatcher.kt"
+    purpose: "事件分发器抽象基类"
+    key_elements:
+      - element: "EventDispatcher"
+        type: class
+        location: "EventDispatcher.kt:14"
+        description: "抽象类，子类实现 onRegistered()/destroy()，通过 dispatchEvents() 分发事件"
+    language: kotlin
+    lines: 42
+
+  - file: MetaEventDispatcher.kt
+    path: "app/src/main/java/top/xjunz/tasker/task/event/MetaEventDispatcher.kt"
+    purpose: "组合模式事件分发器，统一管理所有子 Dispatcher"
+    key_elements:
+      - element: "registerEventDispatcher()"
+        type: function
+        location: "MetaEventDispatcher.kt:18"
+        description: "按类注册并立即调用 onRegistered()"
+    language: kotlin
+    lines: 50
+
+  - file: NetworkEventDispatcher.kt
+    path: "app/src/main/java/top/xjunz/tasker/task/event/NetworkEventDispatcher.kt"
+    purpose: "网络事件分发器 — 最接近地理围栏的实现参考"
+    key_elements:
+      - element: "NetworkCallback"
+        type: pattern
+        location: "NetworkEventDispatcher.kt:36-79"
+        description: "使用系统回调 → dispatchEvents(Event.obtain(...)) 模式"
+      - element: "EXTRA_WIFI_SSID"
+        type: variable
+        location: "NetworkEventDispatcher.kt:25"
+        description: "使用 companion object const 定义额外数据 key"
+    language: kotlin
+    lines: 80
+
+  - file: EventFilter.kt
+    path: "app/src/main/java/top/xjunz/tasker/task/applet/criterion/EventFilter.kt"
+    purpose: "事件过滤 Applet，匹配 eventType 并返回 Referent"
+    key_elements:
+      - element: "apply()"
+        type: function
+        location: "EventFilter.kt:30-75"
+        description: "核心逻辑：匹配事件类型，根据类型返回不同 Referent"
+    language: kotlin
+    lines: 75
+
+  - file: EventCriterionRegistry.kt
+    path: "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/EventCriterionRegistry.kt"
+    purpose: "事件类触发器注册表"
+    key_elements:
+      - element: "eventFilterOption()"
+        type: function
+        location: "EventCriterionRegistry.kt:27-29"
+        description: "创建事件过滤选项的辅助方法"
+      - element: "@AppletOrdinal 注解的字段"
+        type: pattern
+        location: "EventCriterionRegistry.kt:31-150"
+        description: "15 个已注册事件（0x0000~0x0014）"
+    language: kotlin
+    lines: 150
+
+  - file: BootstrapOptionRegistry.kt
+    path: "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/BootstrapOptionRegistry.kt"
+    purpose: "根注册表，定义所有子注册表 ID 和分类入口"
+    key_elements:
+      - element: "ID_XXX_REGISTRY 常量"
+        type: variable
+        location: "BootstrapOptionRegistry.kt:40-64"
+        description: "Criterion 0xF~0x19, Action 0x50~0x5A, Flow 0x60"
+      - element: "criterionFlowOptions 数组"
+        type: variable
+        location: "BootstrapOptionRegistry.kt:109-119"
+        description: "If 分支中可用的约束类别列表"
+      - element: "getRegistryOptions()"
+        type: function
+        location: "BootstrapOptionRegistry.kt:130"
+        description: "根据 Flow 类型返回可用的注册表选项"
+    language: kotlin
+    lines: 290
+
+  - file: AppletOptionFactory.kt
+    path: "app/src/main/java/top/xjunz/tasker/task/applet/option/AppletOptionFactory.kt"
+    purpose: "全局 Applet 工厂，实例化所有 Registry"
+    key_elements:
+      - element: allRegistries
+        type: variable
+        location: "AppletOptionFactory.kt:128-155"
+        description: "所有注册表的有序数组"
+    language: kotlin
+    lines: 170
+
+  - file: AutomatorService.kt
+    path: "app/src/main/java/top/xjunz/tasker/service/AutomatorService.kt"
+    purpose: "自动化服务接口，定义 EventDispatcher 注册流程"
+    key_elements:
+      - element: "initEventDispatcher()"
+        type: function
+        location: "AutomatorService.kt:60-66"
+        description: "注册所有 EventDispatcher 到 MetaEventDispatcher"
+    language: kotlin
+    lines: 95
+
+  - file: Referent.kt
+    path: "tasker-engine/src/main/java/top/xjunz/tasker/engine/runtime/Referent.kt"
+    purpose: "引用值提供者接口"
+    key_elements:
+      - element: "getReferredValue()"
+        type: function
+        location: "Referent.kt:15"
+        description: "根据 which 索引返回引用值"
+    language: kotlin
+    lines: 22
+
+  - file: AndroidManifest.xml
+    path: "app/src/main/AndroidManifest.xml"
+    purpose: "应用清单"
+    key_elements:
+      - element: "权限声明"
+        type: pattern
+        location: "AndroidManifest.xml:5-11"
+        description: "当前有 7 个权限，缺少定位相关权限"
+    language: xml
+    lines: 130
+
+# ============================================================
+# 七、模式总结
+# ============================================================
+
+patterns_found:
+  - category: architecture
+    pattern: "EventDispatcher 插件式注册"
+    description: |
+      新增事件源只需：
+      1. 继承 EventDispatcher，实现 onRegistered()/destroy()
+      2. 在 AutomatorService.initEventDispatcher() 中注册
+      3. 通过 dispatchEvents() 分发事件
+    examples:
+      - file: NetworkEventDispatcher.kt
+        location: "app/src/main/java/top/xjunz/tasker/task/event/NetworkEventDispatcher.kt"
+        snippet: "class NetworkEventDispatcher : EventDispatcher() { ... }"
+    prevalence: common
+
+  - category: architecture
+    pattern: "AppletOptionRegistry 注册表模式"
+    description: |
+      新增功能项（触发器/约束/动作）只需：
+      1. 创建/扩展 XXXRegistry(id) : AppletOptionRegistry(id)
+      2. 使用 @AppletOrdinal 注解声明选项
+      3. 在 BootstrapOptionRegistry 注册 PhantomFlow 入口
+      4. 在 AppletOptionFactory 实例化并加入 allRegistries
+    examples:
+      - file: NetworkCriterionRegistry.kt
+        location: "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/NetworkCriterionRegistry.kt"
+        snippet: "class NetworkCriterionRegistry(id: Int) : AppletOptionRegistry(id)"
+    prevalence: common
+
+  - category: architecture
+    pattern: "Referent 引用值传递"
+    description: |
+      事件产生的上下文数据通过 Referent 接口向后续约束/动作传递。
+      每个 Referent 的 getReferredValue(which) 按索引返回不同字段值。
+      在 EventCriterionRegistry 中通过 .withResult<T>() 声明可用引用。
+    examples:
+      - file: ModeChangeReferent.kt
+        location: "app/src/main/java/top/xjunz/tasker/task/applet/flow/ref/ModeChangeReferent.kt"
+        snippet: "class ModeChangeReferent(...) : Referent { override fun getReferredValue(...) }"
+    prevalence: common
+
+  - category: naming
+    pattern: "Event 常量递增编号"
+    description: "Event 类型使用连续递增整数 ID"
+    examples:
+      - file: Event.kt
+        location: "tasker-engine/src/main/java/top/xjunz/tasker/engine/runtime/Event.kt"
+        snippet: "EVENT_ON_VARIABLE_CHANGED = 15; EVENT_ON_MODE_CHANGED = 16"
+    prevalence: common
+
+  - category: naming
+    pattern: "Registry ID 分段策略"
+    description: "Criterion 使用 0x10~0x1F, Action 使用 0x50~0x5F, Flow 使用 0x60+"
+    examples:
+      - file: BootstrapOptionRegistry.kt
+        location: "BootstrapOptionRegistry.kt:40-64"
+        snippet: "ID_EVENT_FILTER_REGISTRY = 0xF; ID_APP_CRITERION_REGISTRY = 0x10; ..."
+    prevalence: common
+
+# ============================================================
+# 八、风险和注意事项
+# ============================================================
+
+gaps_and_risks:
+  - area: "后台定位耗电"
+    description: "高德 SDK 后台位置持续监听 + GeoFence 会显著影响电池续航"
+    impact: decision_blocker
+    mitigation:
+      - "使用 GeoFenceClient 而非持续定位（围栏到达通过 PendingIntent 回调，低功耗）"
+      - "LocationEventDispatcher 仅在有活跃围栏时启动定位"
+      - "提供用户可配置的定位模式：高精度/均衡/低功耗"
+      - "无围栏注册时自动停止 SDK"
+
+  - area: "Android 16 后台位置限制"
+    description: "Android 16 对后台位置访问进一步收紧"
+    impact: research_blocker
+    mitigation:
+      - "必须先获取 ACCESS_BACKGROUND_LOCATION 权限"
+      - "必须声明 foregroundServiceType=\"location\""
+      - "整合到权限引导流程（PERM-001 / PERM-004）"
+      - "在位置权限被撤销时优雅降级（禁用围栏触发器、通知用户）"
+
+  - area: "高德 API Key 安全"
+    description: "API Key 不应硬编码在代码中"
+    impact: nice_to_know
+    mitigation:
+      - "使用 local.properties + BuildConfig 或 Secrets Gradle Plugin"
+      - "API Key 存储在不提交到版本控制的文件中"
+
+  - area: "GCJ-02 坐标系"
+    description: "高德使用 GCJ-02 加密坐标系，Web 端编辑器（如果用其他地图）需注意坐标转换"
+    impact: nice_to_know
+    mitigation:
+      - "Web 端也使用高德 JS API 或确保坐标转换一致"
+      - "存储坐标时明确记录坐标系类型"
+
+  - area: "围栏数量上限"
+    description: "高德 SDK 可能有最大同时监听围栏数量限制（通常 100 个）"
+    impact: nice_to_know
+    mitigation:
+      - "文档中标注限制"
+      - "UI 中限制用户创建围栏数量或提供警告"
+
+  - area: "围栏配置 UI"
+    description: "需要地图选点、地址搜索、半径调整等复杂 UI，工作量较大"
+    impact: nice_to_know
+    mitigation:
+      - "拆分为基础实现（手动输入坐标 + 半径）和增强实现（地图选点）"
+      - "V2 第一版可先实现手动输入，后续迭代加入地图 UI"
+
+  - area: "约束与触发器的实现差异"
+    description: |
+      触发器（T-LOC-001）是事件驱动：围栏进出时收到回调。
+      约束（C-LOC-001）是状态查询：需要当前位置与围栏的包含关系判断。
+      约束实现不能简单复用 EventFilter，需要独立的 Criterion 类主动查询位置。
+    impact: decision_blocker
+    mitigation:
+      - "约束用独立的 LocationCriterion 类实现"
+      - "LocationCriterion.apply() 中调用高德 SDK 获取最后已知位置"
+      - "计算 distanceTo(center) <= radius 判断是否在围栏内"
+      - "或者维护一个 ActiveGeofences 状态表，记录当前所在围栏"
+
+open_questions:
+  - question: "地理围栏的配置数据如何持久化？"
+    context: "围栏定义（名称、坐标、半径）需要跨重启保留，且可能需要云同步"
+    type: research
+    affects: ["geofence-trigger", "geofence-constraint"]
+
+  - question: "LocationEventDispatcher 的生命周期管理方式？"
+    context: |
+      当没有任何宏使用地理围栏触发器时，LocationEventDispatcher 不应启动 SDK。
+      是在 onRegistered() 延迟初始化，还是采用按需启停策略？
+    type: decision_blocker
+    affects: ["geofence-trigger"]
+
+  - question: "是否需要独立的 LocationForegroundService？"
+    context: "roadmap 提到 AND-007 位置服务，但当前架构可在 A11yService 内嵌入"
+    type: research
+    affects: ["geofence-trigger", "android-service"]
