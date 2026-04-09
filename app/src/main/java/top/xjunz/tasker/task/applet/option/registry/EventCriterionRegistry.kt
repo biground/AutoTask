@@ -11,6 +11,7 @@ import top.xjunz.tasker.task.applet.anno.AppletOrdinal
 import top.xjunz.tasker.task.applet.criterion.EventFilter
 import top.xjunz.tasker.task.applet.criterion.FileEventCriterion
 import top.xjunz.tasker.task.applet.flow.ref.ComponentInfoWrapper
+import top.xjunz.tasker.task.applet.flow.ref.ModeChangeReferent
 import top.xjunz.tasker.task.applet.flow.ref.NotificationReferent
 import top.xjunz.tasker.task.applet.flow.ref.VariableChangeReferent
 import top.xjunz.tasker.task.applet.value.VariantArgType
@@ -106,6 +107,14 @@ class EventCriterionRegistry(id: Int) : AppletOptionRegistry(id) {
             .withResult<String>(R.string.changed_variable_name)
             .withResult<String>(R.string.variable_old_value)
             .withResult<String>(R.string.variable_new_value)
+
+    @AppletOrdinal(0x0014)
+    val modeChanged =
+        eventFilterOption(Event.EVENT_ON_MODE_CHANGED, R.string.on_mode_changed)
+            .withResult<ModeChangeReferent>(R.string.on_mode_changed)
+            .withResult<String>(R.string.changed_mode_name)
+            .withResult<String>(R.string.mode_change_type)
+            .withResult<String>(R.string.previous_mode_name)
     /* @AppletOrdinal(0x0005)
      val primaryClipChanged =
          eventFilterOption(Event.EVENT_ON_PRIMARY_CLIP_CHANGED, R.string.on_primary_clip_changed)

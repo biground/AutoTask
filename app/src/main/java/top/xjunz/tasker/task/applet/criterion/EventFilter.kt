@@ -9,10 +9,12 @@ import top.xjunz.tasker.engine.applet.base.AppletResult
 import top.xjunz.tasker.engine.runtime.Event
 import top.xjunz.tasker.engine.runtime.TaskRuntime
 import top.xjunz.tasker.task.applet.flow.ref.ComponentInfoWrapper
+import top.xjunz.tasker.task.applet.flow.ref.ModeChangeReferent
 import top.xjunz.tasker.task.applet.flow.ref.NotificationReferent
 import top.xjunz.tasker.task.applet.flow.ref.VariableChangeReferent
 import top.xjunz.tasker.task.event.ClipboardEventDispatcher
 import top.xjunz.tasker.task.event.NetworkEventDispatcher
+import top.xjunz.tasker.task.mode.ModeChangeEventDispatcher
 import top.xjunz.tasker.task.variable.VariableChangeEventDispatcher
 
 /**
@@ -52,6 +54,14 @@ class EventFilter(private val eventType: Int) : Applet() {
                         hit.getExtra(VariableChangeEventDispatcher.EXTRA_VARIABLE_NAME),
                         hit.getExtra(VariableChangeEventDispatcher.EXTRA_VARIABLE_OLD_VALUE),
                         hit.getExtra(VariableChangeEventDispatcher.EXTRA_VARIABLE_NEW_VALUE)
+                    ).asResult()
+                }
+
+                Event.EVENT_ON_MODE_CHANGED -> {
+                    ModeChangeReferent(
+                        hit.getExtra(ModeChangeEventDispatcher.EXTRA_MODE_NAME),
+                        hit.getExtra(ModeChangeEventDispatcher.EXTRA_CHANGE_TYPE),
+                        hit.getExtra(ModeChangeEventDispatcher.EXTRA_PREVIOUS_MODE_NAME)
                     ).asResult()
                 }
 

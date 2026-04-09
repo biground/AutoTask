@@ -680,4 +680,8 @@
     <string name="changed_variable_name">发生变化的变量名</string>
     <string name="variable_old_value">变量旧值</string>
     <string name="variable_new_value">变量新值</string>
+    <string name="on_mode_changed">当模式发生变化时</string>
+    <string name="changed_mode_name">发生变化的模式名称</string>
+    <string name="mode_change_type">模式变化类型</string>
+    <string name="previous_mode_name">前一个模式名称</string>
 </resources>
