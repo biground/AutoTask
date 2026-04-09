@@ -45,6 +45,7 @@ open class BootstrapOptionRegistry : AppletOptionRegistry(ID_BOOTSTRAP_REGISTRY)
         const val ID_TEXT_CRITERION_REGISTRY = 0x15
         const val ID_UI_OBJECT_CRITERION_REGISTRY = 0x16
         const val ID_NETWORK_CRITERION_REGISTRY = 0x17
+        const val ID_VARIABLE_CRITERION_REGISTRY = 0x18
 
         const val ID_GLOBAL_ACTION_REGISTRY = 0x50
         const val ID_UI_OBJECT_ACTION_REGISTRY = 0x51
@@ -55,6 +56,7 @@ open class BootstrapOptionRegistry : AppletOptionRegistry(ID_BOOTSTRAP_REGISTRY)
         const val ID_SHELL_CMD_ACTION_REGISTRY = 0x56
         const val ID_FILE_ACTION_REGISTRY = 0x57
         const val ID_VIBRATION_ACTION_REGISTRY = 0x58
+        const val ID_VARIABLE_ACTION_REGISTRY = 0x59
 
         const val ID_UI_OBJECT_FLOW_REGISTRY = 0x60
     }
@@ -109,7 +111,8 @@ open class BootstrapOptionRegistry : AppletOptionRegistry(ID_BOOTSTRAP_REGISTRY)
             textCriteria,
             timeCriteria,
             globalCriteria,
-            networkCriteria
+            networkCriteria,
+            variableCriteria
         )
     }
 
@@ -123,7 +126,8 @@ open class BootstrapOptionRegistry : AppletOptionRegistry(ID_BOOTSTRAP_REGISTRY)
             appActions,
             shellCmdActions,
             fileActions,
-            vibrationActions
+            vibrationActions,
+            variableActions
         )
     }
 
@@ -221,6 +225,10 @@ open class BootstrapOptionRegistry : AppletOptionRegistry(ID_BOOTSTRAP_REGISTRY)
     val networkCriteria =
         flowOptionWithId<PhantomFlow>(ID_NETWORK_CRITERION_REGISTRY, R.string.network_status)
 
+    @AppletOrdinal(0x0017)
+    val variableCriteria =
+        flowOptionWithId<PhantomFlow>(ID_VARIABLE_CRITERION_REGISTRY, R.string.variable_criteria)
+
     @AppletOrdinal(0x0020)
     val globalActions =
         flowOptionWithId<PhantomFlow>(ID_GLOBAL_ACTION_REGISTRY, R.string.global_actions)
@@ -260,4 +268,8 @@ open class BootstrapOptionRegistry : AppletOptionRegistry(ID_BOOTSTRAP_REGISTRY)
     @AppletOrdinal(0x0042)
     val vibrationActions =
         flowOptionWithId<PhantomFlow>(ID_VIBRATION_ACTION_REGISTRY, R.string.vibrate)
+
+    @AppletOrdinal(0x0043)
+    val variableActions =
+        flowOptionWithId<PhantomFlow>(ID_VARIABLE_ACTION_REGISTRY, R.string.variable_actions)
 }

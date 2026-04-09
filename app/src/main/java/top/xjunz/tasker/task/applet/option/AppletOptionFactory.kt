@@ -6,6 +6,8 @@ package top.xjunz.tasker.task.applet.option
 
 import top.xjunz.tasker.engine.applet.base.Applet
 import top.xjunz.tasker.engine.applet.factory.AppletFactory
+import top.xjunz.tasker.engine.variable.InMemoryVariableRepository
+import top.xjunz.tasker.engine.variable.VariableRepository
 import top.xjunz.tasker.task.applet.option.registry.AppletOptionRegistry
 import top.xjunz.tasker.task.applet.option.registry.ApplicationActionRegistry
 import top.xjunz.tasker.task.applet.option.registry.ApplicationCriterionRegistry
@@ -24,6 +26,8 @@ import top.xjunz.tasker.task.applet.option.registry.TimeCriterionRegistry
 import top.xjunz.tasker.task.applet.option.registry.UiObjectActionRegistry
 import top.xjunz.tasker.task.applet.option.registry.UiObjectCriterionRegistry
 import top.xjunz.tasker.task.applet.option.registry.UiObjectFlowRegistry
+import top.xjunz.tasker.task.applet.option.registry.VariableActionRegistry
+import top.xjunz.tasker.task.applet.option.registry.VariableCriterionRegistry
 import top.xjunz.tasker.task.applet.option.registry.VibrationActionRegistry
 
 
@@ -35,6 +39,8 @@ import top.xjunz.tasker.task.applet.option.registry.VibrationActionRegistry
 object AppletOptionFactory : AppletFactory {
 
     private var preloaded = false
+
+    private val variableRepository: VariableRepository by lazy { InMemoryVariableRepository() }
 
     val flowRegistry = BootstrapOptionRegistry()
 
@@ -85,6 +91,18 @@ object AppletOptionFactory : AppletFactory {
     private val vibrationActionRegistry =
         VibrationActionRegistry(BootstrapOptionRegistry.ID_VIBRATION_ACTION_REGISTRY)
 
+    private val variableCriterionRegistry =
+        VariableCriterionRegistry(
+            BootstrapOptionRegistry.ID_VARIABLE_CRITERION_REGISTRY,
+            { variableRepository }
+        )
+
+    private val variableActionRegistry =
+        VariableActionRegistry(
+            BootstrapOptionRegistry.ID_VARIABLE_ACTION_REGISTRY,
+            { variableRepository }
+        )
+
     val uiObjectFlowRegistry =
         UiObjectFlowRegistry(BootstrapOptionRegistry.ID_UI_OBJECT_FLOW_REGISTRY)
 
@@ -99,6 +117,7 @@ object AppletOptionFactory : AppletFactory {
         globalInfoRegistry,
         textRegistry,
         networkRegistry,
+        variableCriterionRegistry,
         /* action */
         controlActionRegistry,
         globalActionRegistry,
@@ -109,6 +128,7 @@ object AppletOptionFactory : AppletFactory {
         shellCmdActionRegistry,
         fileActionRegistry,
         vibrationActionRegistry,
+        variableActionRegistry,
         /* control */
         uiObjectFlowRegistry,
     )

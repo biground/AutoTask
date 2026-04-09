@@ -120,4 +120,23 @@
     <string name="on_toast_notification_received">显示吐司通知时</string>
     <string name="open_notification_shade">下拉通知栏</string>
     <string name="lock_screen">熄灭屏幕</string>
+
+    <!-- 变量操作 -->
+    <string name="variable_actions">变量操作</string>
+    <string name="set_variable">设置变量</string>
+    <string name="delete_variable">删除变量</string>
+    <string name="variable_name">变量名</string>
+    <string name="variable_type">变量类型</string>
+    <string name="variable_value">变量值</string>
+
+    <!-- 变量条件 -->
+    <string name="variable_criteria">变量条件</string>
+    <string name="check_variable_value">变量值满足条件</string>
+    <string name="not_check_variable_value">变量值不满足条件</string>
+    <string name="compare_two_values">比较两个值</string>
+    <string name="not_compare_two_values">两个值不满足比较条件</string>
+    <string name="compare_operation">比较操作</string>
+    <string name="expected_value">期望值</string>
+    <string name="left_operand">左操作数</string>
+    <string name="right_operand">右操作数</string>
 </resources>
