@@ -107,6 +107,8 @@ dependencies {
     implementation 'org.lsposed.hiddenapibypass:hiddenapibypass:4.3'
     // app icon loader
     implementation 'me.zhanghai.android.appiconloader:appiconloader:1.5.0'
+    // datastore
+    implementation "androidx.datastore:datastore-preferences:$datastore_version"
     // test
     testImplementation 'junit:junit:4.13.2'
     androidTestImplementation 'androidx.test.ext:junit:1.1.5'
