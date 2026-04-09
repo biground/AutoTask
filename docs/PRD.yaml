@@ -179,4 +179,7 @@ decisions:
   - decision: "地理围栏使用高德地图 SDK"
     rationale: "国内网络环境下 Google Geofencing API 不可用"
 
+  - decision: "全局采用 iOS 风格简约设计语言"
+    rationale: "大圆角卡片、毛玻璃/模糊背景、轻投影、充足留白、弹性动画。统一应用于 App 原生界面和用户自定义场景的预设主题"
+
 changes: []
