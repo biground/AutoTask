@@ -9,6 +9,12 @@ AutoPilot — Android 自动化引擎 + PC/Web 宏编辑器
 - **后端**: Firebase（Auth + Firestore + Cloud Functions）
 - **宏数据格式**: JSON
 
+## 基线项目
+- 基于开源项目 [AutoTask](https://github.com/biground/AutoTask) (Apache-2.0) Fork 改进
+- AutoTask 提供成熟的引擎核心（tasker-engine、控制流、Applet 插件架构、DTO 序列化）
+- AutoTask 提供 UI 自动化能力（Shizuku + Accessibility 双模式）
+- 差距分析见 `docs/gap-analysis.md`
+
 ## 架构决策
 - 引擎核心在 Android 端原生运行，PC/Web 端仅做编辑器
 - 地理围栏/定位使用高德地图 SDK（国内适配）
@@ -24,5 +30,7 @@ AutoPilot — Android 自动化引擎 + PC/Web 宏编辑器
 - PRD 见 `docs/PRD.yaml`
 
 ## 关键文档
-- `docs/feature-taxonomy.md` — 全量 356 项原子功能分类体系
+- `docs/feature-taxonomy.md` — 全量 378 项原子功能分类体系
 - `docs/PRD.yaml` — 产品需求文档
+- `docs/gap-analysis.md` — AutoTask → AutoPilot 差距分析
+- `docs/roadmap.md` — MVP → V1 → V2 实施路线图
