@@ -112,10 +112,8 @@ dependencies {
     implementation 'me.zhanghai.android.appiconloader:appiconloader:1.5.0'
     // datastore
     implementation "androidx.datastore:datastore-preferences:$datastore_version"
-    // 高德地图 SDK
-    implementation 'com.amap.api:3dmap:latest.integration'
-    implementation 'com.amap.api:location:latest.integration'
-    implementation 'com.amap.api:search:latest.integration'
+    // 高德地图 SDK（合并包：3D 地图 + 定位 + 搜索）
+    implementation 'com.amap.api:3dmap-location-search:latest.integration'
     // ML Kit OCR
     implementation 'com.google.mlkit:text-recognition-chinese:16.0.1'
     // test
