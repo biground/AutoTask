@@ -703,4 +703,10 @@
     <string name="geofence_event_details">围栏事件详情</string>
     <string name="geofence_name">围栏名称</string>
     <string name="location_event_details">位置事件详情</string>
+    <string name="geofence_inside">在地理围栏内</string>
+    <string name="geofence_latitude">纬度</string>
+    <string name="geofence_longitude">经度</string>
+    <string name="geofence_radius">半径（米）</string>
+    <string name="geofence_display_name">围栏名称</string>
+    <string name="location_criteria">位置条件</string>
 </resources>
