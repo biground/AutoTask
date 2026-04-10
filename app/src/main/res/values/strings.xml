@@ -709,4 +709,9 @@
     <string name="geofence_radius">半径（米）</string>
     <string name="geofence_display_name">围栏名称</string>
     <string name="location_criteria">位置条件</string>
+    <string name="search_poi_hint">搜索地点</string>
+    <string name="no_poi_results">暂无搜索结果</string>
+    <string name="saved_geofences">已保存的围栏</string>
+    <string name="no_geofences_hint">暂无围栏，点击新建</string>
+    <string name="radius_format">半径：%dm</string>
 </resources>
