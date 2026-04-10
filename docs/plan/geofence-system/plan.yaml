@@ -16,10 +16,11 @@ plan_metrics:
 tldr: |
   20 个原子任务，分 5 波执行：
   W1 基础设施（事件常量 + Gradle 依赖 + Manifest 权限 + 数据模型 + API Key 管理）→
-  W2 核心组件（GeofenceReferent + ConfigRepository + LocationEventDispatcher + GeofenceConstraint + API Key UI）→
-  W3 注册与集成（EventFilter 扩展 + EventCriterionRegistry + LocationCriterionRegistry + AutomatorService 注册 + 地图选点界面）→
-  W4 全局注册 + UI（BootstrapOptionRegistry + AppletOptionFactory + 围栏列表 + POI 搜索 + 围栏可视化）→
+  W2 核心组件（GeofenceReferent + ConfigRepository + GeofenceConstraint + API Key UI）→
+  W3 引擎集成（LocationEventDispatcher + EventCriterionRegistry + LocationCriterionRegistry + 地图选点界面）→
+  W4 全局注册 + 集成 + UI（EventFilter 扩展 + AutomatorService 注册 + BootstrapOptionRegistry + AppletOptionFactory + 围栏列表 + POI 搜索 + 围栏可视化）→
   W5 端到端集成测试。
+  所有 UI 任务使用 Fragment + ViewBinding + XML 模式（与现有代码一致，不使用 Jetpack Compose）。
   核心架构：LocationEventDispatcher 嵌入 MetaEventDispatcher，复用 A11yAutomatorService 保活机制。
   高德 SDK 通过 GeoFenceClient PendingIntent 回调实现低功耗围栏监听。
   API Key 由用户在设置界面自行填写，运行时通过 AMapLocationClient.setApiKey() 配置。
@@ -226,8 +227,8 @@ contracts:
 
   - from_task: "T15"
     to_task: "T18, T19"
-    interface: "GeofencePickerDialog Compose 界面 + ViewModel"
-    format: "Jetpack Compose @Composable + ViewModel"
+    interface: "GeofencePickerDialog 界面 + ViewModel"
+    format: "BaseDialogFragment + ViewBinding + ViewModel"
 
   - from_task: "T17"
     to_task: "T20"
@@ -339,6 +340,7 @@ tasks:
           - "app/build.gradle 包含 com.amap.api:3dmap、com.amap.api:location、com.amap.api:search 三个依赖"
           - "ProGuard 规则包含 com.amap.api 和 com.autonavi 的 keep 规则"
           - "Gradle sync 成功无报错"
+          - "记录实际解析的 SDK 版本号（在构建日志或 task 输出中标注最终锁定版本）"
         failure_modes:
           - scenario: "高德 SDK 版本与 compileSdk/minSdk 不兼容"
             likelihood: low
@@ -541,7 +543,7 @@ tasks:
         review_security_sensitive: true
 
   # ============================================================
-  # Wave 2 — 核心组件 (T06-T10, 5 并行任务)
+  # Wave 2 — 核心组件 (T06, T07, T09, T10, 4 并行任务)
   # ============================================================
 
   - id: "T06"
@@ -699,7 +701,7 @@ tasks:
       1. 创建 app/src/main/java/top/xjunz/tasker/task/location/LocationEventDispatcher.kt：
          class LocationEventDispatcher(
              private val apiKeyManager: AmapApiKeyManager,
-             private val configRepository: GeofenceConfigRepository,
+             private val configRepository: GeofenceConfigRepository,  // 来自 T07
              private val scope: CoroutineScope
          ) : EventDispatcher() {
 
@@ -758,6 +760,7 @@ tasks:
              }
 
              override fun destroy() {
+                 scope.cancel()  // 取消所有协程，避免泄漏
                  geoFenceClient?.removeGeoFence()
                  unregisterGeofenceBroadcastReceiver()
                  locationClient?.onDestroy()
@@ -769,13 +772,13 @@ tasks:
          - handleGeofenceEvent → 正确分发事件
 
       测试文件：app/src/test/kotlin/top/xjunz/tasker/task/location/LocationEventDispatcherTest.kt
-    wave: 2
+    wave: 3
     agent: gem-implementer
     prototype: false
     covers: ["T-LOC-001", "T-LOC-002"]
     priority: high
     status: pending
-    dependencies: ["T01", "T02", "T03", "T05"]
+    dependencies: ["T01", "T02", "T03", "T05", "T07"]
     conflicts_with: []
     context_files:
       - path: "app/src/main/java/top/xjunz/tasker/task/event/NetworkEventDispatcher.kt"
@@ -806,7 +809,8 @@ tasks:
           - "使用 AMapLocationClient.setApiKey() 运行时配置 Key"
           - "GeoFenceClient 注册围栏事件回调"
           - "围栏进入/离开分发对应 Event + 5 个 Extra"
-          - "destroy 释放所有 SDK 资源"
+          - "destroy 中调用 scope.cancel() 取消所有协程"
+          - "destroy 释放所有 SDK 资源（GeoFenceClient + LocationClient + BroadcastReceiver）"
         failure_modes:
           - scenario: "高德 SDK 类在单元测试环境不可用（非 Android 环境）"
             likelihood: high
@@ -870,7 +874,7 @@ tasks:
     covers: ["C-LOC-001"]
     priority: high
     status: pending
-    dependencies: ["T01", "T02"]
+    dependencies: ["T02"]
     conflicts_with: []
     context_files:
       - path: "app/src/main/java/top/xjunz/tasker/task/applet/criterion/EventFilter.kt"
@@ -911,21 +915,22 @@ tasks:
   - id: "T10"
     title: "API Key 设置界面"
     description: |
-      创建高德 API Key 的设置入口界面（Jetpack Compose）：
-      1. 在现有设置界面中添加"地图 API Key"设置项，或创建独立设置页面
-      2. UI 组件：
-         - "高德地图 API Key" 设置项标题
-         - 当前状态显示：已配置 / 未配置
-         - 点击后弹出对话框：TextField 输入 Key + 保存/取消按钮
-         - 帮助提示文本：引导用户去高德开放平台申请 Key
+      创建高德 API Key 的设置入口对话框（Fragment + ViewBinding + XML）：
+      1. 创建布局 res/layout/dialog_amap_api_key.xml：
+         - TextInputLayout + TextInputEditText：输入 API Key
+         - TextView：帮助文本（引导用户去高德开放平台申请 Key）
+         - MaterialButton：保存 / 取消
+         - TextView：当前状态显示（已配置 / 未配置）
+      2. 创建 AmapApiKeyDialog : BaseDialogFragment<DialogAmapApiKeyBinding>()：
+         - onViewCreated 中绑定 AmapApiKeyManager 状态
          - Key 输入验证：非空、长度合理（32 位 hex）
-      3. 调用 AmapApiKeyManager.setApiKey() 保存
-      4. 保存成功后显示 Toast 提示
+         - 保存按钮调用 AmapApiKeyManager.setApiKey()
+         - 保存成功后 Toast 提示并 dismiss
+      3. 在现有设置界面中添加入口，点击弹出 AmapApiKeyDialog
 
-      文件位置：根据现有设置 UI 结构选择合适位置
-      （可能是在 app/src/main/java/top/xjunz/tasker/ui/main/ 下某个设置相关的文件中添加入口）
+      参考：TextEditorDialog / PreferenceHelpDialog 的 BaseDialogFragment 模式
 
-      测试：手动验证 UI 交互（Compose Preview 验证布局）
+      测试：手动验证 UI 交互
     wave: 2
     agent: gem-implementer
     prototype: false
@@ -938,6 +943,10 @@ tasks:
         description: "现有主界面 UI 结构"
       - path: "app/src/main/java/top/xjunz/tasker/task/location/AmapApiKeyManager.kt"
         description: "API Key 管理类（T05 产出）"
+      - path: "app/src/main/java/top/xjunz/tasker/ui/base/BaseDialogFragment.kt"
+        description: "对话框基类"
+      - path: "app/src/main/java/top/xjunz/tasker/ui/common/TextEditorDialog.kt"
+        description: "参考：BaseDialogFragment 的 ViewBinding 对话框模式"
     planning_pass: 1
     planning_history:
       - pass: 1
@@ -948,7 +957,7 @@ tasks:
         estimated_lines: 150
         focus_area: "app/src/main/java/top/xjunz/tasker/ui/"
         verification:
-          - "Compose Preview 显示设置项布局正常"
+          - "对话框正常弹出，布局正确"
           - "输入 API Key 并保存后，AmapApiKeyManager.hasApiKey() 返回 true"
         acceptance_criteria:
           - "设置界面包含高德 API Key 配置入口"
@@ -961,12 +970,13 @@ tasks:
             impact: low
             mitigation: "先 grep 搜索现有设置相关 UI 文件结构，找到合适添加位置"
         tech_stack:
-          - "Jetpack Compose"
-          - "Material Design 3"
+          - "Fragment + ViewBinding"
+          - "XML layout"
+          - "BaseDialogFragment"
         test_coverage: null
 
   # ============================================================
-  # Wave 3 — 注册与集成 (T11-T15, 5 并行任务)
+  # Wave 3 — 引擎集成 (T08, T12, T13, T15, 4 并行任务)
   # ============================================================
 
   - id: "T11"
@@ -991,7 +1001,7 @@ tasks:
          import top.xjunz.tasker.task.location.LocationEventDispatcher
 
       无需单独测试文件，在 T20 端到端测试中覆盖。
-    wave: 3
+    wave: 4
     agent: gem-implementer
     prototype: false
     covers: ["T-LOC-001", "T-LOC-002"]
@@ -1069,7 +1079,7 @@ tasks:
     priority: high
     status: pending
     dependencies: ["T06"]
-    conflicts_with: []
+    conflicts_with: ["T13"]
     context_files:
       - path: "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/EventCriterionRegistry.kt"
         description: "目标文件：当前最后条目 modeChanged @AppletOrdinal(0x0014)"
@@ -1135,7 +1145,7 @@ tasks:
     priority: high
     status: pending
     dependencies: ["T09"]
-    conflicts_with: []
+    conflicts_with: ["T12"]
     context_files:
       - path: "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/NetworkCriterionRegistry.kt"
         description: "同类型 Registry 参考"
@@ -1174,11 +1184,12 @@ tasks:
       在 AutomatorService.initEventDispatcher() 中注册新的 LocationEventDispatcher：
       1. 在 AutomatorService.kt 的 initEventDispatcher() 方法中，
          在 NetworkEventDispatcher() 注册后添加：
+         val locationScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
          eventDispatcher.registerEventDispatcher(
              LocationEventDispatcher(
                  AmapApiKeyManager,
                  GeofenceConfigRepository(ContextBridge.getContext()),
-                 CoroutineScope(Dispatchers.IO + SupervisorJob())
+                 locationScope  // scope 在 LocationEventDispatcher.destroy() 中通过 scope.cancel() 释放
              )
          )
       2. 添加必要的 import：
@@ -1189,7 +1200,7 @@ tasks:
       注意：LocationEventDispatcher 内部检查 API Key，无 Key 时自动跳过初始化，不影响其他 Dispatcher。
 
       无需测试，在 T20 端到端测试中覆盖。
-    wave: 3
+    wave: 4
     agent: gem-implementer
     prototype: false
     covers: ["T-LOC-001", "T-LOC-002"]
@@ -1215,6 +1226,7 @@ tasks:
         acceptance_criteria:
           - "AutomatorService.initEventDispatcher() 注册 LocationEventDispatcher"
           - "LocationEventDispatcher 创建时传入 apiKeyManager、configRepository、scope"
+          - "scope 使用 SupervisorJob()，在 LocationEventDispatcher.destroy() 中由 scope.cancel() 释放"
           - "import 正确"
         failure_modes:
           - scenario: "GeofenceConfigRepository 需要 Context，在 AutomatorService 初始化时可能未就绪"
@@ -1228,34 +1240,32 @@ tasks:
   - id: "T15"
     title: "高德 MapView 地图选点基础界面"
     description: |
-      创建地理围栏配置的地图选点对话框（Jetpack Compose）：
-      1. 创建 app/src/main/java/top/xjunz/tasker/ui/task/selector/argument/GeofencePickerDialog.kt：
-         @Composable
-         fun GeofencePickerDialog(
-             initialConfig: GeofenceConfig?,
-             onConfirm: (GeofenceConfig) -> Unit,
-             onDismiss: () -> Unit
-         ) {
-             // 全屏对话框
-             // 1. 高德 MapView（Compose 中使用 AndroidView 包裹）
-             // 2. 地图中心十字准线
-             // 3. 底部面板：围栏名称输入、地址显示、确认/取消按钮
-             // 4. 长按/拖拽地图选点 → 更新坐标
-             // 5. initialConfig 非空时定位到已有坐标
+      创建地理围栏配置的地图选点对话框（BaseDialogFragment + ViewBinding + XML）：
+      1. 创建布局 res/layout/dialog_geofence_picker.xml：
+         - 全屏 DialogFragment 布局
+         - 高德 MapView（占主体区域）
+         - 地图中心十字准线（ImageView overlay）
+         - 底部面板：TextInputEditText 围栏名称、TextView 地址显示、MaterialButton 确认/取消
+      2. 创建 app/src/main/java/top/xjunz/tasker/ui/task/selector/argument/GeofencePickerDialog.kt：
+         class GeofencePickerDialog : BaseDialogFragment<DialogGeofencePickerBinding>() {
+             // onViewCreated 中初始化 MapView
+             // 地图点击监听 → 更新选点坐标
+             // initialConfig 非空时定位到已有坐标
+             // 确认按钮回调 GeofenceConfig
          }
-      2. 创建 GeofencePickerViewModel：
-         - selectedLatLng: MutableStateFlow<LatLng?>
-         - geofenceName: MutableStateFlow<String>
-         - address: MutableStateFlow<String>
-         - 逆地理编码：坐标→地址描述
-      3. 高德 MapView 初始化：
-         - 使用 AndroidView { mapView -> ... } 包裹
+      3. 创建 GeofencePickerViewModel：
+         - selectedLatLng: MutableLiveData<LatLng?>
+         - geofenceName: MutableLiveData<String>
+         - address: MutableLiveData<String>
+         - 逆地理编码：坐标→地址描述（高德 GeocodeSearch）
+      4. 高德 MapView 生命周期管理：
+         - onResume/onPause/onDestroy/onSaveInstanceState 中调用 mapView 对应方法
          - 设置 GCJ-02 坐标系
-         - 添加地图点击监听
-      4. 在 res/values/strings.xml 添加 UI 字符串
+      5. 在 res/values/strings.xml 添加 UI 字符串
 
-      测试：Compose Preview 验证布局
+      测试：手动验证 UI 交互
 
+      参考：BaseDialogFragment 模式（AppletSelectorDialog）
       注意：高德地图 SDK 需要 API Key 才能显示地图，
       无 Key 时显示提示文本引导用户去设置。
     wave: 3
@@ -1270,6 +1280,8 @@ tasks:
         description: "现有参数选择器 UI 所在目录"
       - path: "app/src/main/java/top/xjunz/tasker/ui/task/selector/AppletSelectorDialog.kt"
         description: "现有对话框 UI 模式参考"
+      - path: "app/src/main/java/top/xjunz/tasker/ui/base/BaseDialogFragment.kt"
+        description: "对话框基类"
     planning_pass: 1
     planning_history:
       - pass: 1
@@ -1280,59 +1292,62 @@ tasks:
         estimated_lines: 280
         focus_area: "app/src/main/java/top/xjunz/tasker/ui/task/selector/argument/"
         verification:
-          - "Compose Preview 显示地图区域 + 底部面板"
+          - "对话框正常弹出，MapView 正确显示"
           - "无 API Key 时显示设置引导提示"
         acceptance_criteria:
-          - "GeofencePickerDialog 使用 AndroidView 包裹高德 MapView"
+          - "GeofencePickerDialog 继承 BaseDialogFragment，使用 ViewBinding 绑定布局"
+          - "高德 MapView 生命周期正确管理（onResume/onPause/onDestroy）"
           - "支持地图点击选点 + 坐标显示"
           - "底部面板包含围栏名称输入 + 地址显示 + 确认/取消"
           - "逆地理编码：选点后自动填充地址"
           - "无 API Key 时显示提示引导设置"
         failure_modes:
-          - scenario: "MapView 在 Compose AndroidView 中生命周期管理不当导致内存泄漏"
+          - scenario: "MapView 生命周期管理不当导致内存泄漏"
             likelihood: medium
             impact: medium
-            mitigation: "在 DisposableEffect 中正确调用 mapView.onResume/onPause/onDestroy"
+            mitigation: "在 Fragment 生命周期回调中正确调用 mapView.onResume/onPause/onDestroy/onSaveInstanceState"
           - scenario: "高德 SDK 初始化在非主线程导致崩溃"
-            likelihood: medium
+            likelihood: low
             impact: high
-            mitigation: "MapView 初始化在 AndroidView factory 中（主线程）；SDK 回调注意线程切换"
+            mitigation: "MapView 在 onViewCreated 中初始化（主线程）；SDK 回调注意线程切换"
         tech_stack:
-          - "Jetpack Compose"
+          - "Fragment + ViewBinding"
+          - "XML layout"
           - "高德地图 SDK (MapView)"
-          - "AndroidView interop"
+          - "BaseDialogFragment"
         test_coverage: null
 
   # ============================================================
-  # Wave 4 — 全局注册 + 高级 UI (T16-T19, 4 任务)
+  # Wave 4 — 全局注册 + 集成 + 高级 UI (T11, T14, T16-T19, 6 任务)
   # ============================================================
 
   - id: "T16"
     title: "围栏列表管理界面"
     description: |
-      创建围栏列表管理对话框（Jetpack Compose）：
-      1. 创建 app/src/main/java/top/xjunz/tasker/ui/task/selector/argument/GeofenceListDialog.kt：
-         @Composable
-         fun GeofenceListDialog(
-             onSelect: (GeofenceConfig) -> Unit,
-             onDismiss: () -> Unit
-         ) {
-             // 1. 标题栏：已保存的围栏 + 新建围栏按钮
-             // 2. LazyColumn 显示围栏列表：
-             //    - 每项：围栏名称 + 地址/坐标 + 半径 + 启用开关
-             //    - 左滑删除
-             //    - 点击选择（填充到参数）
-             //    - 长按编辑
-             // 3. 空状态：无围栏时显示引导
-             // 4. 新建围栏按钮 → 打开 GeofencePickerDialog
+      创建围栏列表管理对话框（BaseDialogFragment + RecyclerView + XML）：
+      1. 创建布局 res/layout/dialog_geofence_list.xml：
+         - Toolbar：标题（已保存的围栏）+ 新建围栏按钮
+         - RecyclerView：围栏列表
+         - ViewStub / emptyView：空状态引导
+      2. 创建列表项布局 res/layout/item_geofence.xml：
+         - TextView：围栏名称 + 地址/坐标 + 半径
+         - SwitchMaterial：启用开关
+      3. 创建 app/src/main/java/top/xjunz/tasker/ui/task/selector/argument/GeofenceListDialog.kt：
+         class GeofenceListDialog : BaseDialogFragment<DialogGeofenceListBinding>() {
+             // RecyclerView + ListAdapter<GeofenceConfig, ViewHolder>
+             // 点击选择围栏 → onSelect 回调
+             // 长按编辑 → 打开 GeofencePickerDialog
+             // ItemTouchHelper 左滑删除
+             // 新建按钮 → 打开 GeofencePickerDialog
          }
-      2. 创建 GeofenceListViewModel：
-         - geofences: StateFlow<List<GeofenceConfig>> from GeofenceConfigRepository.observeGeofences()
+      4. 创建 GeofenceListViewModel：
+         - geofences: LiveData<List<GeofenceConfig>> from GeofenceConfigRepository.observeGeofences()
          - deleteGeofence(id: String)
          - toggleGeofence(id: String, enabled: Boolean)
-      3. 添加 UI 字符串到 strings.xml
+      5. 添加 UI 字符串到 strings.xml
 
-      测试：Compose Preview + 手动验证列表操作
+      参考：AppletSelectorDialog 的 RecyclerView 列表模式
+      测试：手动验证列表操作
     wave: 4
     agent: gem-implementer
     prototype: false
@@ -1345,32 +1360,35 @@ tasks:
         description: "地图选点对话框（T15 产出）"
       - path: "app/src/main/java/top/xjunz/tasker/task/location/GeofenceConfigRepository.kt"
         description: "围栏配置仓库（T07 产出）"
+      - path: "app/src/main/java/top/xjunz/tasker/ui/base/BaseDialogFragment.kt"
+        description: "对话框基类"
     planning_pass: 1
     planning_history:
       - pass: 1
         reason: "初始规划"
         timestamp: "2026-04-09"
         estimated_effort: medium
-        estimated_files: 2
+        estimated_files: 3
         estimated_lines: 200
         focus_area: "app/src/main/java/top/xjunz/tasker/ui/task/selector/argument/"
         verification:
-          - "Compose Preview 显示列表布局"
+          - "对话框正常弹出，RecyclerView 列表正确显示"
           - "新建围栏按钮打开 GeofencePickerDialog"
-          - "删除围栏后列表更新"
+          - "左滑删除围栏后列表更新"
         acceptance_criteria:
-          - "LazyColumn 显示围栏列表（名称 + 坐标 + 半径 + 启用状态）"
-          - "支持新建、删除、启用/禁用操作"
+          - "RecyclerView + ListAdapter 显示围栏列表（名称 + 坐标 + 半径 + 启用状态）"
+          - "支持新建、左滑删除、启用/禁用操作"
           - "空状态引导文本"
           - "点击选择围栏回调 onSelect"
         failure_modes:
           - scenario: "列表状态与 Repository 不同步"
             likelihood: low
             impact: low
-            mitigation: "使用 collectAsState() 订阅 Repository.observeGeofences()"
+            mitigation: "使用 LiveData observe 订阅 Repository.observeGeofences()"
         tech_stack:
-          - "Jetpack Compose"
-          - "Material Design 3"
+          - "Fragment + ViewBinding"
+          - "RecyclerView + ListAdapter"
+          - "BaseDialogFragment"
         test_coverage: null
 
   - id: "T17"
@@ -1441,18 +1459,22 @@ tasks:
   - id: "T18"
     title: "POI 地址搜索功能"
     description: |
-      在地图选点对话框中添加 POI 地址搜索功能：
-      1. 在 GeofencePickerDialog 中新增搜索栏：
-         - 顶部 SearchBar（TextField + 搜索图标）
-         - 输入文字后调用高德 POI 搜索 API
+      在地图选点对话框中添加 POI 地址搜索功能（DialogFragment + SearchView + RecyclerView）：
+      1. 在 GeofencePickerDialog 布局中新增搜索区域：
+         - 顶部 SearchView / TextInputEditText + 搜索图标
+         - RecyclerView 搜索结果列表（覆盖在地图上方）
+      2. 搜索结果列表项布局 res/layout/item_poi_result.xml：
+         - TextView：POI 名称 + 地址 + 距离
+      3. 搜索逻辑：
+         - 输入文字后调用高德 POI 搜索 API（PoiSearch）
          - 显示搜索结果列表（名称 + 地址 + 距离）
          - 选择结果 → 地图定位到该位置 + 填充地址
-      2. 使用高德搜索 SDK：
+      4. 使用高德搜索 SDK：
          PoiSearch.Query(keyword, "", "")
          PoiSearch(context, query).setOnPoiSearchListener { ... }
          结果中取出 LatLonPoint → 转为地图坐标
-      3. 搜索防抖（300ms debounce）
-      4. 搜索结果为空时显示"暂无结果"
+      5. 搜索防抖（300ms debounce，使用 Handler.postDelayed 或 coroutine delay）
+      6. 搜索结果为空时显示"暂无结果"
 
       修改文件：GeofencePickerDialog.kt + GeofencePickerViewModel.kt
     wave: 4
@@ -1475,13 +1497,13 @@ tasks:
         estimated_lines: 150
         focus_area: "app/src/main/java/top/xjunz/tasker/ui/task/selector/argument/"
         verification:
-          - "搜索框输入文字后显示结果列表"
+          - "SearchView 输入文字后 RecyclerView 显示结果列表"
           - "选择结果后地图定位到该位置"
-          - "搜索防抖工作正常"
+          - "搜索防抖工作正常（300ms）"
         acceptance_criteria:
-          - "GeofencePickerDialog 顶部包含搜索栏"
+          - "GeofencePickerDialog 顶部包含 SearchView 搜索栏"
           - "调用高德 POI 搜索 API 获取结果"
-          - "搜索结果列表显示名称 + 地址"
+          - "RecyclerView 搜索结果列表显示名称 + 地址"
           - "选择结果定位地图 + 填充坐标和地址"
           - "300ms 防抖避免过度请求"
         failure_modes:
@@ -1491,7 +1513,7 @@ tasks:
             mitigation: "300ms debounce + 最少 3 字符触发搜索"
         tech_stack:
           - "高德搜索 SDK (PoiSearch)"
-          - "Jetpack Compose"
+          - "SearchView + RecyclerView"
           - "Kotlin Coroutines (debounce)"
         test_coverage: null
 
@@ -1551,7 +1573,7 @@ tasks:
             mitigation: "复用同一个 Circle 对象，调用 setRadius() 更新而非重新创建"
         tech_stack:
           - "高德地图 SDK (Circle, CircleOptions)"
-          - "Jetpack Compose (Slider)"
+          - "SeekBar / Slider (XML)"
         test_coverage: null
 
   # ============================================================
@@ -1629,8 +1651,18 @@ tasks:
         review_depth: standard
         review_security_sensitive: false
 
-planning_pass: 1
+planning_pass: 2
 planning_history:
   - pass: 1
     reason: "初始规划"
     timestamp: "2026-04-09"
+  - pass: 2
+    reason: |
+      审查修复：
+      1. [Critical] T08 补充 T07 依赖，wave 2→3；T11/T14 随之调整至 wave 4
+      2. [Critical] 所有 UI 任务（T10/T15/T16/T18/T19）从 Jetpack Compose 改为 Fragment + ViewBinding + XML 模式
+      3. [Important] T12/T13 添加 conflicts_with 互标（共同修改 strings.xml）
+      4. [Important] T08 destroy() 添加 scope.cancel()，T14 描述补充 scope 生命周期说明
+      5. [Important] T09 移除伪依赖 T01（不使用 Event 常量）
+      6. [Important] T02 acceptance_criteria 添加版本号记录要求
+    timestamp: "2026-04-10"
