@@ -17,10 +17,13 @@ AutoPilot — Android 自动化引擎 + PC/Web 宏编辑器
 
 ## 架构决策
 - 引擎核心在 Android 端原生运行，PC/Web 端仅做编辑器
-- 地理围栏/定位使用高德地图 SDK（国内适配）
+- 地理围栏/定位使用高德地图 SDK（国内适配），必须用合并包 `3dmap-location-search`
 - 天气 API 使用和风天气或彩云天气
-- OCR 使用 ML Kit 或百度 OCR
+- OCR 使用 ML Kit（离线优先）+ CloudOcrProvider（云端扩展）
 - 翻译使用百度翻译或有道翻译 API
+- Applet 注册链路: `*Registry` → `BootstrapOptionRegistry` → `AppletOptionFactory`
+- 事件分发链路: `EventDispatcher` → `EventFilter` → `*Referent`
+- 数据持久化: `DataStore Preferences` + JSON 序列化
 
 ## 命名规范
 - 触发器 ID: `T-{CATEGORY}-{NNN}` (如 T-TIME-001)
@@ -34,3 +37,4 @@ AutoPilot — Android 自动化引擎 + PC/Web 宏编辑器
 - `docs/PRD.yaml` — 产品需求文档
 - `docs/gap-analysis.md` — AutoTask → AutoPilot 差距分析
 - `docs/roadmap.md` — MVP → V1 → V2 实施路线图
+- `docs/PROGRESS.md` — 开发进度、构建知识、已完成模块汇总
