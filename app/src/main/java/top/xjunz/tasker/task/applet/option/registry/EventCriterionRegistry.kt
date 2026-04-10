@@ -11,6 +11,7 @@ import top.xjunz.tasker.task.applet.anno.AppletOrdinal
 import top.xjunz.tasker.task.applet.criterion.EventFilter
 import top.xjunz.tasker.task.applet.criterion.FileEventCriterion
 import top.xjunz.tasker.task.applet.flow.ref.ComponentInfoWrapper
+import top.xjunz.tasker.task.applet.flow.ref.GeofenceReferent
 import top.xjunz.tasker.task.applet.flow.ref.ModeChangeReferent
 import top.xjunz.tasker.task.applet.flow.ref.NotificationReferent
 import top.xjunz.tasker.task.applet.flow.ref.VariableChangeReferent
@@ -115,6 +116,24 @@ class EventCriterionRegistry(id: Int) : AppletOptionRegistry(id) {
             .withResult<String>(R.string.changed_mode_name)
             .withResult<String>(R.string.mode_change_type)
             .withResult<String>(R.string.previous_mode_name)
+
+    @AppletOrdinal(0x0015)
+    val geofenceEntered =
+        eventFilterOption(Event.EVENT_ON_GEOFENCE_ENTERED, R.string.on_geofence_entered)
+            .withResult<GeofenceReferent>(R.string.geofence_event_details)
+            .withResult<String>(R.string.geofence_name)
+
+    @AppletOrdinal(0x0016)
+    val geofenceExited =
+        eventFilterOption(Event.EVENT_ON_GEOFENCE_EXITED, R.string.on_geofence_exited)
+            .withResult<GeofenceReferent>(R.string.geofence_event_details)
+            .withResult<String>(R.string.geofence_name)
+
+    @AppletOrdinal(0x0017)
+    val locationArrived =
+        eventFilterOption(Event.EVENT_ON_LOCATION_ARRIVED, R.string.on_location_arrived)
+            .withResult<GeofenceReferent>(R.string.location_event_details)
+
     /* @AppletOrdinal(0x0005)
      val primaryClipChanged =
          eventFilterOption(Event.EVENT_ON_PRIMARY_CLIP_CHANGED, R.string.on_primary_clip_changed)
