@@ -47,6 +47,7 @@ open class BootstrapOptionRegistry : AppletOptionRegistry(ID_BOOTSTRAP_REGISTRY)
         const val ID_NETWORK_CRITERION_REGISTRY = 0x17
         const val ID_VARIABLE_CRITERION_REGISTRY = 0x18
         const val ID_MODE_CRITERION_REGISTRY = 0x19
+        const val ID_LOCATION_CRITERION_REGISTRY = 0x1A
 
         const val ID_GLOBAL_ACTION_REGISTRY = 0x50
         const val ID_UI_OBJECT_ACTION_REGISTRY = 0x51
@@ -115,7 +116,8 @@ open class BootstrapOptionRegistry : AppletOptionRegistry(ID_BOOTSTRAP_REGISTRY)
             globalCriteria,
             networkCriteria,
             variableCriteria,
-            modeCriteria
+            modeCriteria,
+            locationCriteria
         )
     }
 
@@ -236,6 +238,10 @@ open class BootstrapOptionRegistry : AppletOptionRegistry(ID_BOOTSTRAP_REGISTRY)
     @AppletOrdinal(0x0018)
     val modeCriteria =
         flowOptionWithId<PhantomFlow>(ID_MODE_CRITERION_REGISTRY, R.string.mode_criteria)
+
+    @AppletOrdinal(0x0019)
+    val locationCriteria =
+        flowOptionWithId<PhantomFlow>(ID_LOCATION_CRITERION_REGISTRY, R.string.location_criteria)
 
     @AppletOrdinal(0x0020)
     val globalActions =

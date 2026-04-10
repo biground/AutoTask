@@ -20,6 +20,7 @@ import top.xjunz.tasker.task.applet.option.registry.FileActionRegistry
 import top.xjunz.tasker.task.applet.option.registry.GestureActionRegistry
 import top.xjunz.tasker.task.applet.option.registry.GlobalActionRegistry
 import top.xjunz.tasker.task.applet.option.registry.GlobalCriterionRegistry
+import top.xjunz.tasker.task.applet.option.registry.LocationCriterionRegistry
 import top.xjunz.tasker.task.applet.option.registry.ModeActionRegistry
 import top.xjunz.tasker.task.applet.option.registry.ModeCriterionRegistry
 import top.xjunz.tasker.task.applet.option.registry.NetworkCriterionRegistry
@@ -121,6 +122,12 @@ object AppletOptionFactory : AppletFactory {
             { modeRepository }
         )
 
+    private val locationCriterionRegistry =
+        LocationCriterionRegistry(
+            BootstrapOptionRegistry.ID_LOCATION_CRITERION_REGISTRY,
+            { null }
+        )
+
     val uiObjectFlowRegistry =
         UiObjectFlowRegistry(BootstrapOptionRegistry.ID_UI_OBJECT_FLOW_REGISTRY)
 
@@ -137,6 +144,7 @@ object AppletOptionFactory : AppletFactory {
         networkRegistry,
         variableCriterionRegistry,
         modeCriterionRegistry,
+        locationCriterionRegistry,
         /* action */
         controlActionRegistry,
         globalActionRegistry,
