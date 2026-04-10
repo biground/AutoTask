@@ -5,6 +5,49 @@
 
 ---
 
+## 基线改进清单（AutoTask Fork）
+
+### A. 可直接复用（保持主干不改）
+
+- tasker-engine：Flow / Applet / Runtime / DTO 核心执行链
+- 控制流：If / Else / Loop / Break / Continue / WaitUntil
+- AppletOptionRegistry 注册机制与序列化能力
+- 双模式自动化运行时：Shizuku + Accessibility 基础框架
+
+### B. 需改造（在原有结构上扩展）
+
+- 事件系统：从现有事件集合扩展到 83 类触发器
+- 变量系统：从 Referent 引用模式扩展为强类型变量 + 持久化
+- UI 层：在现有 Android 架构上持续引入 iOS 风格设计与一致交互
+- 数据层：补齐宏分类、模板、版本字段，适配同步元数据
+
+### C. 需新建（基线没有，需要独立实现）
+
+- Web 端宏编辑器（React + TypeScript）
+- Firebase 同步链路（Auth / Firestore / Conflict Resolver）
+- 自定义场景运行时（Scene 渲染 + 事件绑定 + 数据绑定）
+- 国内化模块（高德地理围栏、天气/OCR/翻译替代）
+
+### 当前执行进度（2026-04-10）
+
+| Wave | 状态 | 说明 |
+|---|---|---|
+| Wave 1 | 已完成 | T01+T02+T03+T04 |
+| Wave 2 | 进行中 | T05+T06+T07（核心代码已落地，待收口验证） |
+| Wave 3 | 未开始 | T08+T09 |
+| Wave 4 | 未开始 | T10-T16 |
+| Wave 5 | 未开始 | T17+T18 集成测试 |
+
+已完成里程碑（已提交到 main）：
+- T01：ML Kit 中文 OCR 依赖与 ProGuard 规则
+- T05：MlKitOcrProvider 离线 OCR 引擎
+- T06：OcrManager OCR 管线编排器
+- T07：CloudOcrProvider 抽象层
+- 地理围栏基础：GeofenceConstraint / GeofenceReferent / EventFilter 分支接入
+- 配置入口：高德 API Key 设置对话框
+
+---
+
 ## 阶段一：MVP（最小可行产品）
 
 ### 目标
