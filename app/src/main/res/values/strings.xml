@@ -122,6 +122,7 @@
     <string name="format_px">%d像素</string>
     <string name="no_node_selected">未选中任何节点</string>
     <string name="node_info_overlay_subtitle">请勾选想要指定的规则</string>
+    <string name="component_info">组件信息</string>
     <string name="ui_object">控件</string>
     <string name="child_node">子控件</string>
     <string name="child_node_count_in_range">子控件数量在指定范围</string>

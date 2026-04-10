@@ -9,11 +9,13 @@ import top.xjunz.tasker.engine.applet.base.AppletResult
 import top.xjunz.tasker.engine.runtime.Event
 import top.xjunz.tasker.engine.runtime.TaskRuntime
 import top.xjunz.tasker.task.applet.flow.ref.ComponentInfoWrapper
+import top.xjunz.tasker.task.applet.flow.ref.GeofenceReferent
 import top.xjunz.tasker.task.applet.flow.ref.ModeChangeReferent
 import top.xjunz.tasker.task.applet.flow.ref.NotificationReferent
 import top.xjunz.tasker.task.applet.flow.ref.VariableChangeReferent
 import top.xjunz.tasker.task.event.ClipboardEventDispatcher
 import top.xjunz.tasker.task.event.NetworkEventDispatcher
+import top.xjunz.tasker.task.location.LocationEventDispatcher
 import top.xjunz.tasker.task.mode.ModeChangeEventDispatcher
 import top.xjunz.tasker.task.variable.VariableChangeEventDispatcher
 
@@ -62,6 +64,17 @@ class EventFilter(private val eventType: Int) : Applet() {
                         hit.getExtra(ModeChangeEventDispatcher.EXTRA_MODE_NAME),
                         hit.getExtra(ModeChangeEventDispatcher.EXTRA_CHANGE_TYPE),
                         hit.getExtra(ModeChangeEventDispatcher.EXTRA_PREVIOUS_MODE_NAME)
+                    ).asResult()
+                }
+
+                Event.EVENT_ON_GEOFENCE_ENTERED,
+                Event.EVENT_ON_GEOFENCE_EXITED,
+                Event.EVENT_ON_LOCATION_ARRIVED -> {
+                    GeofenceReferent(
+                        hit.getExtra(LocationEventDispatcher.EXTRA_GEOFENCE_NAME),
+                        hit.getExtra(LocationEventDispatcher.EXTRA_GEOFENCE_LAT),
+                        hit.getExtra(LocationEventDispatcher.EXTRA_GEOFENCE_LNG),
+                        hit.getExtra<Int>(LocationEventDispatcher.EXTRA_TRANSITION_TYPE).toString()
                     ).asResult()
                 }
 
