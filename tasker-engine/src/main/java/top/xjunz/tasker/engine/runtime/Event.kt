@@ -78,6 +78,12 @@ class Event private constructor(
 
         const val EVENT_ON_MODE_CHANGED = 16
 
+        const val EVENT_ON_GEOFENCE_ENTERED = 17
+
+        const val EVENT_ON_GEOFENCE_EXITED = 18
+
+        const val EVENT_ON_LOCATION_ARRIVED = 19
+
         fun obtain(
             eventType: Int,
             pkgName: String? = null,
@@ -104,6 +110,9 @@ class Event private constructor(
             EVENT_ON_TOAST_RECEIVED -> "toastNotificationReceived"
             EVENT_ON_VARIABLE_CHANGED -> "variableChanged"
             EVENT_ON_MODE_CHANGED -> "modeChanged"
+            EVENT_ON_GEOFENCE_ENTERED -> "geofenceEntered"
+            EVENT_ON_GEOFENCE_EXITED -> "geofenceExited"
+            EVENT_ON_LOCATION_ARRIVED -> "locationArrived"
             else -> "undefined"
         }
         return "Event(type=$typeName, compInfo=$componentInfo)"
