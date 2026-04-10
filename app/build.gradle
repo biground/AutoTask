@@ -116,6 +116,8 @@ dependencies {
     implementation 'com.amap.api:3dmap:latest.integration'
     implementation 'com.amap.api:location:latest.integration'
     implementation 'com.amap.api:search:latest.integration'
+    // ML Kit OCR
+    implementation 'com.google.mlkit:text-recognition-chinese:16.0.1'
     // test
     testImplementation "org.jetbrains.kotlinx:kotlinx-coroutines-test:$coroutine_version"
     testImplementation 'junit:junit:4.13.2'
