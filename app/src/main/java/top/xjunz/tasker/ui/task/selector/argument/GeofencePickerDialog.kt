@@ -1,23 +1,33 @@
 package top.xjunz.tasker.ui.task.selector.argument
 
 import android.os.Bundle
+import android.view.LayoutInflater
 import android.view.View
+import android.view.ViewGroup
+import android.widget.TextView
 import androidx.core.view.isVisible
+import androidx.core.widget.doAfterTextChanged
 import androidx.lifecycle.lifecycleScope
+import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.recyclerview.widget.RecyclerView
 import com.amap.api.maps.AMap
 import com.amap.api.maps.CameraUpdateFactory
 import com.amap.api.maps.model.LatLng
 import com.amap.api.services.core.LatLonPoint
+import com.amap.api.services.core.PoiItemV2
 import com.amap.api.services.geocoder.GeocodeResult
 import com.amap.api.services.geocoder.GeocodeSearch
 import com.amap.api.services.geocoder.RegeocodeQuery
 import com.amap.api.services.geocoder.RegeocodeResult
+import com.amap.api.services.poisearch.PoiResultV2
+import com.amap.api.services.poisearch.PoiSearchV2
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import top.xjunz.tasker.R
 import top.xjunz.tasker.app
 import top.xjunz.tasker.databinding.DialogGeofencePickerBinding
 import top.xjunz.tasker.ktx.textString
-import top.xjunz.tasker.ktx.toast
 import top.xjunz.tasker.task.location.AmapApiKeyManager
 import top.xjunz.tasker.task.location.GeofenceConfig
 import top.xjunz.tasker.ui.base.BaseDialogFragment
@@ -50,11 +60,27 @@ class GeofencePickerDialog : BaseDialogFragment<DialogGeofencePickerBinding>() {
 
     private var geocodeSearch: GeocodeSearch? = null
 
+    // POI 搜索防抖
+    private var searchJob: Job? = null
+
+    // POI 搜索结果适配器
+    private val poiAdapter = PoiResultAdapter { poi ->
+        val latLng = LatLng(poi.latLonPoint.latitude, poi.latLonPoint.longitude)
+        aMap?.animateCamera(CameraUpdateFactory.newLatLngZoom(latLng, 16f))
+        binding.etName.setText(poi.title)
+        currentAddress = poi.snippet
+        binding.tvAddress.text = poi.snippet
+        hidePoiResults()
+        binding.etSearch.text?.clear()
+    }
+
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
 
         binding.btnCancel.setOnClickListener { dismiss() }
         binding.btnConfirm.setOnClickListener { onConfirm() }
+
+        setupSearchView()
 
         lifecycleScope.launch {
             apiKeyManager.initialize()
@@ -64,6 +90,63 @@ class GeofencePickerDialog : BaseDialogFragment<DialogGeofencePickerBinding>() {
             }
             initMap(savedInstanceState)
         }
+    }
+
+    private fun setupSearchView() {
+        binding.rvPoiResults.layoutManager = LinearLayoutManager(requireContext())
+        binding.rvPoiResults.adapter = poiAdapter
+
+        binding.etSearch.doAfterTextChanged { editable ->
+            val keyword = editable?.toString()?.trim().orEmpty()
+            searchJob?.cancel()
+            if (keyword.length < 2) {
+                hidePoiResults()
+                return@doAfterTextChanged
+            }
+            searchJob = lifecycleScope.launch {
+                delay(300)
+                searchPoi(keyword)
+            }
+        }
+    }
+
+    private fun searchPoi(keyword: String) {
+        val query = PoiSearchV2.Query(keyword, "", "")
+        query.pageSize = 20
+        val poiSearch = PoiSearchV2(requireContext(), query)
+        poiSearch.setOnPoiSearchListener(object : PoiSearchV2.OnPoiSearchListener {
+            override fun onPoiSearched(result: PoiResultV2?, rCode: Int) {
+                if (rCode == 1000 && result != null) {
+                    val items = result.pois.orEmpty()
+                    if (items.isEmpty()) {
+                        showNoResults()
+                    } else {
+                        showPoiResults(items)
+                    }
+                } else {
+                    showNoResults()
+                }
+            }
+
+            override fun onPoiItemSearched(item: PoiItemV2?, rCode: Int) {}
+        })
+        poiSearch.searchPOIAsyn()
+    }
+
+    private fun showPoiResults(items: List<PoiItemV2>) {
+        poiAdapter.updateData(items)
+        binding.rvPoiResults.isVisible = true
+        binding.tvNoResults.isVisible = false
+    }
+
+    private fun showNoResults() {
+        binding.rvPoiResults.isVisible = false
+        binding.tvNoResults.isVisible = true
+    }
+
+    private fun hidePoiResults() {
+        binding.rvPoiResults.isVisible = false
+        binding.tvNoResults.isVisible = false
     }
 
     private fun showNoApiKeyState() {
@@ -169,5 +252,39 @@ class GeofencePickerDialog : BaseDialogFragment<DialogGeofencePickerBinding>() {
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         binding.mapView.onSaveInstanceState(outState)
+    }
+
+    // --- POI 搜索结果适配器 ---
+
+    private class PoiResultAdapter(
+        private val onItemClick: (PoiItemV2) -> Unit
+    ) : RecyclerView.Adapter<PoiResultAdapter.ViewHolder>() {
+
+        private var items: List<PoiItemV2> = emptyList()
+
+        fun updateData(newItems: List<PoiItemV2>) {
+            items = newItems
+            notifyDataSetChanged()
+        }
+
+        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ViewHolder {
+            val view = LayoutInflater.from(parent.context)
+                .inflate(R.layout.item_poi_result, parent, false)
+            return ViewHolder(view)
+        }
+
+        override fun onBindViewHolder(holder: ViewHolder, position: Int) {
+            val poi = items[position]
+            holder.tvName.text = poi.title
+            holder.tvAddress.text = poi.snippet
+            holder.itemView.setOnClickListener { onItemClick(poi) }
+        }
+
+        override fun getItemCount(): Int = items.size
+
+        class ViewHolder(view: View) : RecyclerView.ViewHolder(view) {
+            val tvName: TextView = view.findViewById(R.id.tv_poi_name)
+            val tvAddress: TextView = view.findViewById(R.id.tv_poi_address)
+        }
     }
 }
