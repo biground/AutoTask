@@ -12,6 +12,8 @@ import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.amap.api.maps.AMap
 import com.amap.api.maps.CameraUpdateFactory
+import com.amap.api.maps.model.Circle
+import com.amap.api.maps.model.CircleOptions
 import com.amap.api.maps.model.LatLng
 import com.amap.api.services.core.LatLonPoint
 import com.amap.api.services.core.PoiItemV2
@@ -43,6 +45,12 @@ class GeofencePickerDialog : BaseDialogFragment<DialogGeofencePickerBinding>() {
 
     private var aMap: AMap? = null
 
+    // 圆形覆盖物
+    private var circleOverlay: Circle? = null
+
+    // 当前半径（米）
+    private var currentRadius: Float = 200f
+
     // 当前选中的坐标
     private var selectedLat: Double = 39.908823
     private var selectedLng: Double = 116.397470
@@ -66,7 +74,7 @@ class GeofencePickerDialog : BaseDialogFragment<DialogGeofencePickerBinding>() {
     // POI 搜索结果适配器
     private val poiAdapter = PoiResultAdapter { poi ->
         val latLng = LatLng(poi.latLonPoint.latitude, poi.latLonPoint.longitude)
-        aMap?.animateCamera(CameraUpdateFactory.newLatLngZoom(latLng, 16f))
+        aMap?.animateCamera(CameraUpdateFactory.newLatLngZoom(latLng, calculateZoomForRadius(currentRadius)))
         binding.etName.setText(poi.title)
         currentAddress = poi.snippet
         binding.tvAddress.text = poi.snippet
@@ -81,6 +89,7 @@ class GeofencePickerDialog : BaseDialogFragment<DialogGeofencePickerBinding>() {
         binding.btnConfirm.setOnClickListener { onConfirm() }
 
         setupSearchView()
+        setupRadiusSlider()
 
         lifecycleScope.launch {
             apiKeyManager.initialize()
@@ -89,6 +98,53 @@ class GeofencePickerDialog : BaseDialogFragment<DialogGeofencePickerBinding>() {
                 return@launch
             }
             initMap(savedInstanceState)
+        }
+    }
+
+    private fun setupRadiusSlider() {
+        // 编辑模式：使用已有半径
+        initialConfig?.let { currentRadius = it.radius }
+        binding.sliderRadius.value = currentRadius.coerceIn(50f, 5000f)
+        binding.tvRadiusValue.text = getString(R.string.radius_format, currentRadius.toInt())
+
+        binding.sliderRadius.addOnChangeListener { _, value, _ ->
+            currentRadius = value
+            binding.tvRadiusValue.text = getString(R.string.radius_format, value.toInt())
+            updateCircleOverlay(LatLng(selectedLat, selectedLng), value.toDouble())
+            aMap?.animateCamera(
+                CameraUpdateFactory.newLatLngZoom(
+                    LatLng(selectedLat, selectedLng),
+                    calculateZoomForRadius(value)
+                )
+            )
+        }
+
+        // 快捷预设按钮
+        binding.btnPreset100.setOnClickListener { binding.sliderRadius.value = 100f }
+        binding.btnPreset500.setOnClickListener { binding.sliderRadius.value = 500f }
+        binding.btnPreset1000.setOnClickListener { binding.sliderRadius.value = 1000f }
+    }
+
+    private fun updateCircleOverlay(center: LatLng, radius: Double) {
+        circleOverlay?.remove()
+        circleOverlay = aMap?.addCircle(
+            CircleOptions()
+                .center(center)
+                .radius(radius)
+                .fillColor(0x200000FF)
+                .strokeColor(0xFF4285F4.toInt())
+                .strokeWidth(2f)
+        )
+    }
+
+    private fun calculateZoomForRadius(radius: Float): Float {
+        return when {
+            radius <= 100 -> 17f
+            radius <= 300 -> 16f
+            radius <= 600 -> 15f
+            radius <= 1500 -> 14f
+            radius <= 3000 -> 13f
+            else -> 12f
         }
     }
 
@@ -186,7 +242,11 @@ class GeofencePickerDialog : BaseDialogFragment<DialogGeofencePickerBinding>() {
 
         // 移动相机到选中位置
         val target = LatLng(selectedLat, selectedLng)
-        aMap?.moveCamera(CameraUpdateFactory.newLatLngZoom(target, 15f))
+        val initialZoom = calculateZoomForRadius(currentRadius)
+        aMap?.moveCamera(CameraUpdateFactory.newLatLngZoom(target, initialZoom))
+
+        // 绘制初始圆形覆盖物
+        updateCircleOverlay(target, currentRadius.toDouble())
 
         // 地图移动停止时取中心坐标并逆地理编码
         aMap?.setOnCameraChangeListener(object : AMap.OnCameraChangeListener {
@@ -198,6 +258,7 @@ class GeofencePickerDialog : BaseDialogFragment<DialogGeofencePickerBinding>() {
                     selectedLng = center.longitude
                     binding.tvAddress.text = getString(R.string.address_loading)
                     reverseGeocode(center.latitude, center.longitude)
+                    updateCircleOverlay(center, currentRadius.toDouble())
                 }
             }
         })
@@ -224,7 +285,7 @@ class GeofencePickerDialog : BaseDialogFragment<DialogGeofencePickerBinding>() {
             name = name,
             latitude = selectedLat,
             longitude = selectedLng,
-            radius = initialConfig?.radius ?: 200f,
+            radius = currentRadius,
             enabled = initialConfig?.enabled ?: true,
             address = currentAddress
         )
