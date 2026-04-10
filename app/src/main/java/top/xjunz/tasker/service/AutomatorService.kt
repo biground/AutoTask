@@ -13,10 +13,17 @@ import top.xjunz.tasker.engine.applet.base.AppletResult
 import top.xjunz.tasker.engine.runtime.TaskRuntime
 import top.xjunz.tasker.engine.task.XTask
 import top.xjunz.tasker.task.applet.flow.ref.ComponentInfoWrapper
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import top.xjunz.tasker.bridge.ContextBridge
 import top.xjunz.tasker.task.event.A11yEventDispatcher
 import top.xjunz.tasker.task.event.MetaEventDispatcher
 import top.xjunz.tasker.task.event.NetworkEventDispatcher
 import top.xjunz.tasker.task.event.PollEventDispatcher
+import top.xjunz.tasker.task.location.AmapApiKeyManager
+import top.xjunz.tasker.task.location.GeofenceConfigRepository
+import top.xjunz.tasker.task.location.LocationEventDispatcher
 import top.xjunz.tasker.task.runtime.ITaskCompletionCallback
 import top.xjunz.tasker.task.runtime.OneshotTaskScheduler
 import top.xjunz.tasker.task.runtime.ResidentTaskScheduler
@@ -61,6 +68,13 @@ interface AutomatorService {
         eventDispatcher.registerEventDispatcher(a11yEventDispatcher)
         eventDispatcher.registerEventDispatcher(PollEventDispatcher(looper))
         eventDispatcher.registerEventDispatcher(NetworkEventDispatcher())
+        eventDispatcher.registerEventDispatcher(
+            LocationEventDispatcher(
+                AmapApiKeyManager(ContextBridge.getContext()),
+                GeofenceConfigRepository(ContextBridge.getContext()),
+                CoroutineScope(Dispatchers.IO + SupervisorJob())
+            )
+        )
         //eventDispatcher.registerEventDispatcher(ClipboardEventDispatcher())
         eventDispatcher.addCallback(residentTaskScheduler)
         eventDispatcher.addCallback(oneshotTaskScheduler)
