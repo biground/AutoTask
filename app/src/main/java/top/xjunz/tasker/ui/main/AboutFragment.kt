@@ -58,6 +58,7 @@ import top.xjunz.tasker.ui.base.inlineAdapter
 import top.xjunz.tasker.ui.main.MainViewModel.Companion.peekMainViewModel
 import top.xjunz.tasker.ui.purchase.PurchaseDialog
 import top.xjunz.tasker.ui.purchase.PurchaseDialog.Companion.showPurchaseDialog
+import top.xjunz.tasker.ui.task.selector.argument.AmapApiKeyDialog
 import top.xjunz.tasker.util.ClickListenerUtil.setNoDoubleClickListener
 import top.xjunz.tasker.util.Feedbacks
 import top.xjunz.tasker.util.formatCurrentTime
@@ -251,6 +252,10 @@ class AboutFragment : BaseFragment<FragmentAboutBinding>(), ScrollTarget,
                         formatCurrentTime(), X_TASK_FILE_ARCHIVE_SUFFIX
                     )
                 )
+            }
+
+            MainOption.AmapApiKey -> {
+                AmapApiKeyDialog().show(childFragmentManager)
             }
         }
     }

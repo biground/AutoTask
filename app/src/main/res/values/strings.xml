@@ -684,4 +684,12 @@
     <string name="changed_mode_name">发生变化的模式名称</string>
     <string name="mode_change_type">模式变化类型</string>
     <string name="previous_mode_name">前一个模式名称</string>
+    <string name="amap_api_key_config">高德地图 API Key 配置</string>
+    <string name="amap_api_key_hint">高德地图 API Key</string>
+    <string name="amap_api_key_help">请前往高德开放平台（lbs.amap.com）申请 Android 平台 Key</string>
+    <string name="amap_api_key_save">保存</string>
+    <string name="amap_api_key_configured">已配置 ✓</string>
+    <string name="amap_api_key_not_configured">未配置</string>
+    <string name="amap_api_key_saved">API Key 已保存</string>
+    <string name="amap_api_key_empty_error">API Key 不能为空</string>
 </resources>

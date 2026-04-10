@@ -82,11 +82,16 @@ sealed class MainOption(
         longDesc = R.string.more_to_say
     )
 
+    object AmapApiKey : MainOption(
+        R.string.amap_api_key_config,
+        R.drawable.ic_baseline_my_location_24
+    )
+
     companion object {
         val ALL_OPTIONS = if (upForGrabs) {
-            arrayOf(ExportTasks, AutoStart, WakeLock, NightMode, Feedback, VersionInfo, About)
+            arrayOf(ExportTasks, AutoStart, WakeLock, AmapApiKey, NightMode, Feedback, VersionInfo, About)
         } else {
-            arrayOf(PremiumStatus, ExportTasks, AutoStart, NightMode, Feedback, VersionInfo, About)
+            arrayOf(PremiumStatus, ExportTasks, AutoStart, AmapApiKey, NightMode, Feedback, VersionInfo, About)
         }
     }
 }
