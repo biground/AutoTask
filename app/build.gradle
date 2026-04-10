@@ -112,6 +112,10 @@ dependencies {
     implementation 'me.zhanghai.android.appiconloader:appiconloader:1.5.0'
     // datastore
     implementation "androidx.datastore:datastore-preferences:$datastore_version"
+    // 高德地图 SDK
+    implementation 'com.amap.api:3dmap:latest.integration'
+    implementation 'com.amap.api:location:latest.integration'
+    implementation 'com.amap.api:search:latest.integration'
     // test
     testImplementation "org.jetbrains.kotlinx:kotlinx-coroutines-test:$coroutine_version"
     testImplementation 'junit:junit:4.13.2'

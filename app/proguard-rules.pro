@@ -92,3 +92,9 @@ top.xjunz.tasker.engine.dto.XTaskDTO # <-- List serializable classes with named 
 -keepclassmembers,allowobfuscation class top.xjunz.tasker.premium.PremiumContext {
     *;
 }
+
+# 高德地图 SDK
+-keep class com.amap.api.** { *; }
+-keep class com.autonavi.** { *; }
+-dontwarn com.amap.api.**
+-dontwarn com.autonavi.**
