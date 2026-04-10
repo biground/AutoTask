@@ -1,0 +1,1472 @@
+plan_id: ocr-screen-recognition
+objective: "实现屏幕 OCR 识别功能（ML Kit 离线 + 可插拔云端增强），支持全屏/区域识别、包含/正则/精确匹配，集成为约束器和动作"
+created_at: "2026-04-10"
+created_by: gem-planner
+status: pending_approval
+research_confidence: high
+
+plan_metrics:
+  total_tasks: 18
+  total_waves: 5
+  wave_1_task_count: 4
+  total_dependencies: 26
+  risk_score: medium
+
+tldr: |
+  实现 OCR 屏幕识别功能分 5 个阶段、18 个任务：
+  Wave 1 — 基础设施：ML Kit 依赖 + ProGuard、数据模型（OcrResult/TextBlock/OcrTextMatchMode）、OcrProvider 可插拔接口、ScreenshotProvider 统一截图封装
+  Wave 2 — 核心引擎：MlKitOcrProvider 实现、OcrManager 编排器（引擎选择/区域裁剪/缓存）
+  Wave 3 — Applet 实现：OcrTextConstraint（3 种匹配模式）+ OcrRecognizeAction（文字→变量）
+  Wave 4 — 注册与 UI：ScreenOcrCriterionRegistry + ScreenOcrActionRegistry、BootstrapOptionRegistry/AppletOptionFactory 全局注册、OCR 设置 UI（引擎选择/云端配置）、区域选择器 UI
+  Wave 5 — 集成验证：编译验证 + 端到端单元测试
+  关键风险：ML Kit 中文识别首次模型加载延迟 (~1-2s)、截图→OCR 管线性能、bundled 模型增加 APK 体积 (~26 MB)
+
+open_questions:
+  - "云端 OCR Provider（腾讯 OCR / Google Cloud Vision / PaddleOCR Lite）的具体选型和集成优先级——Wave 4 仅定义接口，实际云端实现留后续迭代"
+
+pre_mortem:
+  overall_risk_level: medium
+  critical_failure_modes:
+    - scenario: "ML Kit bundled 中文模型首次加载耗时 1-2s，在 Applet apply() 中导致宏执行超时"
+      likelihood: medium
+      impact: medium
+      mitigation: "OcrManager 采用单例模式预加载 TextRecognizer；首次调用时 lazy 初始化；后续调用无加载开销"
+    - scenario: "截图→OCR 全管线耗时 >500ms，频繁触发场景中积压"
+      likelihood: medium
+      impact: medium
+      mitigation: "OcrManager 提供 lastResult 缓存（TTL 可配），支持区域裁剪减少识别面积"
+    - scenario: "A11y 模式下截图时浮窗未隐藏，导致 OCR 识别到 overlay 文字"
+      likelihood: low
+      impact: high
+      mitigation: "ScreenshotProvider A11y 实现中截图前隐藏浮窗 rootView（参考 InspectorViewOverlay 已有逻辑）"
+    - scenario: "APK 体积因 bundled 中文模型增加 ~26 MB，用户投诉安装包过大"
+      likelihood: low
+      impact: low
+      mitigation: "使用 Android App Bundle (AAB) 按需分发；后续可提供仅拉丁文轻量模式 (~4 MB)"
+  assumptions:
+    - "ML Kit text-recognition-chinese 16.0.1 bundled 版不依赖 GMS，国内设备可直接运行"
+    - "项目最低 API 为 Android 9 (API 28)，Shizuku 截图和 A11y 截图 (API 30+) 至少有一条路径可用"
+    - "现有 Applet 参数体系 (values map + withValueArgument) 足以承载 OCR 参数"
+    - "参考 TextCriterionRegistry 模式，为每种匹配模式注册独立选项（而非 enum 参数选择）"
+
+implementation_specification:
+  code_structure: |
+    新增代码组织为三层：
+    1. OCR 基础层：ocr/ 目录 — OcrProvider 接口 + 数据模型 + ScreenshotProvider + MlKitOcrProvider + OcrManager
+    2. Applet 层：criterion/ 和 action/ — OcrTextConstraint + OcrRecognizeAction
+    3. 注册层：registry/ — ScreenOcrCriterionRegistry + ScreenOcrActionRegistry + BootstrapOptionRegistry/AppletOptionFactory 修改
+    4. UI 层：ui/task/ — OCR 设置对话框 + 区域选择器
+  affected_areas:
+    - "app/build.gradle — 新增 ML Kit 依赖"
+    - "app/proguard-rules.pro — ML Kit ProGuard 规则"
+    - "app/src/main/java/top/xjunz/tasker/task/ocr/ — 新目录：基础设施"
+    - "app/src/main/java/top/xjunz/tasker/task/applet/criterion/ — 新增 OcrTextConstraint"
+    - "app/src/main/java/top/xjunz/tasker/task/applet/action/ — 新增 OcrRecognizeAction"
+    - "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/ — 新增 OCR Registry + 修改 BootstrapOptionRegistry"
+    - "app/src/main/java/top/xjunz/tasker/task/applet/option/AppletOptionFactory.kt — 注册 OCR Registry"
+    - "app/src/main/res/values/strings.xml — OCR 相关字符串资源"
+    - "app/src/main/res/layout/ — OCR 设置和区域选择器布局"
+    - "app/src/test/ — OCR 单元测试"
+  component_details:
+    - component: "OcrResult / TextBlock / OcrTextMatchMode"
+      responsibility: "OCR 结果数据模型和文字匹配模式枚举"
+      interfaces:
+        - "data class OcrResult(val fullText: String, val blocks: List<TextBlock>, val processingTimeMs: Long)"
+        - "data class TextBlock(val text: String, val boundingBox: Rect, val confidence: Float)"
+        - "enum class OcrTextMatchMode { CONTAINS, REGEX, EXACT }"
+    - component: "OcrProvider"
+      responsibility: "可插拔 OCR 引擎接口，支持 ML Kit/云端等多种实现"
+      interfaces:
+        - "suspend fun recognize(bitmap: Bitmap, region: Rect?): OcrResult?"
+        - "fun isAvailable(): Boolean"
+        - "val name: String"
+    - component: "ScreenshotProvider"
+      responsibility: "统一截图封装，自动选择 A11y/Shizuku 路径，支持区域裁剪"
+      interfaces:
+        - "suspend fun takeScreenshot(crop: Rect?): Bitmap?"
+    - component: "MlKitOcrProvider"
+      responsibility: "ML Kit 离线 OCR 实现（中文 bundled）"
+      interfaces:
+        - "suspend fun recognize(bitmap: Bitmap, region: Rect?): OcrResult?"
+    - component: "OcrManager"
+      responsibility: "OCR 编排器：管理引擎选择、执行识别、缓存结果"
+      interfaces:
+        - "suspend fun recognizeScreen(region: Rect?): OcrResult?"
+        - "fun setProvider(provider: OcrProvider)"
+        - "fun getLastResult(): OcrResult?"
+    - component: "OcrTextConstraint"
+      responsibility: "Criterion Applet：判断屏幕文字是否包含/精确/正则匹配指定文本"
+      interfaces:
+        - "override suspend fun apply(runtime: TaskRuntime): AppletResult"
+    - component: "OcrRecognizeAction"
+      responsibility: "Action Applet：执行 OCR 识别并将结果输出到变量引用"
+      interfaces:
+        - "override suspend fun apply(runtime: TaskRuntime): AppletResult"
+    - component: "ScreenOcrCriterionRegistry"
+      responsibility: "注册 OCR 约束选项（包含/精确/正则 三种匹配模式）"
+      interfaces:
+        - "@AppletOrdinal 注册 ocrTextContains / ocrTextEquals / ocrTextMatches"
+    - component: "ScreenOcrActionRegistry"
+      responsibility: "注册 OCR 动作选项（识别屏幕文字→输出到变量）"
+      interfaces:
+        - "@AppletOrdinal 注册 recognizeScreenText"
+  dependencies:
+    - component: "OcrTextConstraint"
+      relationship: "调用 OcrManager.recognizeScreen() → 获取 OcrResult → 匹配文字"
+    - component: "OcrRecognizeAction"
+      relationship: "调用 OcrManager.recognizeScreen() → 返回 AppletResult.succeeded(fullText)"
+    - component: "OcrManager"
+      relationship: "组合 ScreenshotProvider + OcrProvider，截图→裁剪→OCR 管线"
+    - component: "MlKitOcrProvider"
+      relationship: "实现 OcrProvider 接口，内部持有 TextRecognizer 单例"
+    - component: "ScreenshotProvider"
+      relationship: "通过 Environment 访问 a11yAutomatorService / uiAutomation"
+    - component: "ScreenOcrCriterionRegistry"
+      relationship: "创建 OcrTextConstraint 实例并注册参数，依赖 OcrManager"
+    - component: "ScreenOcrActionRegistry"
+      relationship: "创建 OcrRecognizeAction 实例并注册输出引用，依赖 OcrManager"
+  integration_points:
+    - "BootstrapOptionRegistry companion: 添加 ID_SCREEN_OCR_CRITERION_REGISTRY=0x1B, ID_SCREEN_OCR_ACTION_REGISTRY=0x5B"
+    - "BootstrapOptionRegistry: 添加 @AppletOrdinal(0x001A) screenOcrCriteria + @AppletOrdinal(0x0045) screenOcrActions"
+    - "BootstrapOptionRegistry: criterionFlowOptions 数组和 actionFlowOptions 数组加入新入口"
+    - "AppletOptionFactory: 创建 screenOcrCriterionRegistry + screenOcrActionRegistry 实例，加入 allRegistries"
+    - "strings.xml: 添加 OCR 相关字符串 (screen_ocr_criteria, screen_ocr_actions, ocr_screen_contains_text 等)"
+
+contracts:
+  - from_task: "T01"
+    to_task: "T05"
+    interface: "ML Kit 依赖可用，TextRecognition.getClient 可调用"
+    format: "Gradle 依赖已编译通过"
+  - from_task: "T02"
+    to_task: "T05"
+    interface: "OcrResult / TextBlock / OcrTextMatchMode 数据类"
+    format: "Kotlin data class + enum"
+  - from_task: "T03"
+    to_task: "T05"
+    interface: "OcrProvider 接口定义"
+    format: "Kotlin interface: suspend fun recognize(Bitmap, Rect?): OcrResult?"
+  - from_task: "T04"
+    to_task: "T06"
+    interface: "ScreenshotProvider: suspend fun takeScreenshot(Rect?): Bitmap?"
+    format: "Kotlin interface + 实现类"
+  - from_task: "T05"
+    to_task: "T06"
+    interface: "MlKitOcrProvider: OcrProvider 实现"
+    format: "Kotlin class implementing OcrProvider"
+  - from_task: "T04"
+    to_task: "T07"
+    interface: "ScreenshotProvider 可用"
+    format: "同上"
+  - from_task: "T05"
+    to_task: "T07"
+    interface: "OcrProvider 实现可用"
+    format: "同上"
+  - from_task: "T07"
+    to_task: "T08"
+    interface: "OcrManager.recognizeScreen() 可调用"
+    format: "suspend fun returning OcrResult?"
+  - from_task: "T07"
+    to_task: "T09"
+    interface: "OcrManager.recognizeScreen() 可调用"
+    format: "suspend fun returning OcrResult?"
+  - from_task: "T08"
+    to_task: "T10"
+    interface: "OcrTextConstraint 类可实例化"
+    format: "Kotlin class"
+  - from_task: "T09"
+    to_task: "T11"
+    interface: "OcrRecognizeAction 类可实例化"
+    format: "Kotlin class"
+  - from_task: "T10"
+    to_task: "T12"
+    interface: "ScreenOcrCriterionRegistry 存在"
+    format: "Kotlin class extending AppletOptionRegistry"
+  - from_task: "T11"
+    to_task: "T12"
+    interface: "ScreenOcrActionRegistry 存在"
+    format: "Kotlin class extending AppletOptionRegistry"
+  - from_task: "T12"
+    to_task: "T18"
+    interface: "全局注册完成，编译通过"
+    format: "compiledDebugKotlin exit 0"
+
+tasks:
+  # ═══════════════════════════════════════════
+  # Wave 1 — 基础设施
+  # ═══════════════════════════════════════════
+  - id: "T01"
+    title: "添加 ML Kit text-recognition-chinese 依赖 + ProGuard 规则"
+    description: |
+      在 app/build.gradle 的 dependencies 块中添加：
+        implementation 'com.google.mlkit:text-recognition-chinese:16.0.1'
+      
+      在 app/proguard-rules.pro 中添加 ML Kit 保留规则：
+        -keep class com.google.mlkit.** { *; }
+        -keep class com.google.android.gms.internal.mlkit_vision_** { *; }
+        -dontwarn com.google.mlkit.**
+      
+      验证方式：运行 `./gradlew :app:compileDebugKotlin` 编译通过。
+    wave: 1
+    agent: gem-implementer
+    prototype: false
+    priority: high
+    status: pending
+    dependencies: []
+    conflicts_with: []
+    context_files:
+      - path: "app/build.gradle"
+        description: "当前依赖配置，在 dependencies 块末尾添加 ML Kit"
+      - path: "app/proguard-rules.pro"
+        description: "当前 ProGuard 规则，末尾追加 ML Kit 规则"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始创建"
+        timestamp: "2026-04-10"
+        estimated_effort: small
+        estimated_files: 2
+        estimated_lines: 10
+        focus_area: "构建配置"
+        verification:
+          - "`./gradlew :app:compileDebugKotlin` 编译成功 (exit 0)"
+          - "`./gradlew :app:dependencies --configuration debugCompileClasspath | grep mlkit` 显示 text-recognition-chinese"
+        acceptance_criteria:
+          - "app/build.gradle 包含 com.google.mlkit:text-recognition-chinese:16.0.1 依赖"
+          - "app/proguard-rules.pro 包含 ML Kit 保留规则"
+          - "编译通过"
+        failure_modes:
+          - scenario: "ML Kit 版本冲突或仓库不可达"
+            likelihood: low
+            impact: high
+            mitigation: "检查 repositories 配置包含 google()；确认版本号正确"
+        tech_stack:
+          - "Gradle"
+          - "Google ML Kit"
+        test_coverage: null
+        requires_review: false
+        review_depth: null
+        review_security_sensitive: false
+
+  - id: "T02"
+    title: "创建 OCR 数据模型：OcrResult + TextBlock + OcrTextMatchMode"
+    description: |
+      创建 app/src/main/java/top/xjunz/tasker/task/ocr/OcrModels.kt:
+      
+      ```kotlin
+      package top.xjunz.tasker.task.ocr
+      
+      import android.graphics.Rect
+      
+      /**
+       * OCR 识别结果
+       * @param fullText 完整识别文本
+       * @param blocks 文本块列表（含位置和置信度）
+       * @param processingTimeMs 处理耗时（毫秒）
+       */
+      data class OcrResult(
+          val fullText: String,
+          val blocks: List<TextBlock>,
+          val processingTimeMs: Long = 0
+      )
+      
+      /**
+       * 单个文本块
+       */
+      data class TextBlock(
+          val text: String,
+          val boundingBox: Rect,
+          val confidence: Float
+      )
+      
+      /**
+       * OCR 文字匹配模式
+       */
+      enum class OcrTextMatchMode {
+          CONTAINS,
+          REGEX,
+          EXACT
+      }
+      ```
+      
+      编写单元测试 OcrModelsTest.kt 验证 data class 行为（equals/hashCode/copy）。
+    wave: 1
+    agent: gem-implementer
+    prototype: false
+    priority: high
+    status: pending
+    dependencies: []
+    conflicts_with: []
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/criterion/GeofenceConstraint.kt"
+        description: "参考数据模型放置位置和命名规范"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始创建"
+        timestamp: "2026-04-10"
+        estimated_effort: small
+        estimated_files: 2
+        estimated_lines: 60
+        focus_area: "数据模型"
+        verification:
+          - "文件存在于 app/src/main/java/top/xjunz/tasker/task/ocr/OcrModels.kt"
+          - "单元测试通过"
+          - "编译通过"
+        acceptance_criteria:
+          - "OcrResult 包含 fullText: String, blocks: List<TextBlock>, processingTimeMs: Long"
+          - "TextBlock 包含 text: String, boundingBox: Rect, confidence: Float"
+          - "OcrTextMatchMode 包含 CONTAINS, REGEX, EXACT 三个枚举值"
+          - "data class 的 equals/copy 行为正确"
+        failure_modes: []
+        tech_stack:
+          - "Kotlin"
+        test_coverage: "data class 基本行为测试"
+        requires_review: false
+        review_depth: null
+        review_security_sensitive: false
+
+  - id: "T03"
+    title: "创建 OcrProvider 可插拔接口"
+    description: |
+      创建 app/src/main/java/top/xjunz/tasker/task/ocr/OcrProvider.kt:
+      
+      ```kotlin
+      package top.xjunz.tasker.task.ocr
+      
+      import android.graphics.Bitmap
+      import android.graphics.Rect
+      
+      /**
+       * 可插拔 OCR 引擎接口
+       * 
+       * 实现方：MlKitOcrProvider（离线）、未来的云端 Provider（腾讯OCR/Cloud Vision）
+       */
+      interface OcrProvider {
+          /** 引擎名称（用于 UI 显示和持久化选择） */
+          val name: String
+          
+          /** 当前引擎是否可用（如 ML Kit 是否初始化成功） */
+          fun isAvailable(): Boolean
+          
+          /**
+           * 执行 OCR 识别
+           * @param bitmap 输入图像
+           * @param region 识别区域（null 表示全图）
+           * @return 识别结果，失败返回 null
+           */
+          suspend fun recognize(bitmap: Bitmap, region: Rect? = null): OcrResult?
+          
+          /** 释放资源 */
+          fun release()
+      }
+      ```
+      
+      编写接口契约测试（使用 mock 实现验证接口签名）。
+    wave: 1
+    agent: gem-implementer
+    prototype: false
+    priority: high
+    status: pending
+    dependencies: ["T02"]
+    conflicts_with: []
+    context_files:
+      - path: "docs/plan/ocr-screen-recognition/research_findings_ocr_technical_detail.yaml"
+        description: "推荐的接口设计"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始创建"
+        timestamp: "2026-04-10"
+        estimated_effort: small
+        estimated_files: 2
+        estimated_lines: 50
+        focus_area: "接口定义"
+        verification:
+          - "文件存在于 app/src/main/java/top/xjunz/tasker/task/ocr/OcrProvider.kt"
+          - "接口声明 recognize / isAvailable / release / name"
+          - "编译通过"
+        acceptance_criteria:
+          - "OcrProvider 接口包含 recognize(Bitmap, Rect?): OcrResult? 签名"
+          - "OcrProvider 接口包含 isAvailable(): Boolean"
+          - "OcrProvider 接口包含 name: String 属性"
+          - "OcrProvider 接口包含 release() 方法"
+        failure_modes: []
+        tech_stack:
+          - "Kotlin"
+        test_coverage: "接口契约 mock 测试"
+        requires_review: false
+        review_depth: null
+        review_security_sensitive: false
+
+  - id: "T04"
+    title: "创建 ScreenshotProvider 统一截图封装"
+    description: |
+      创建 app/src/main/java/top/xjunz/tasker/task/ocr/ScreenshotProvider.kt:
+      
+      ```kotlin
+      package top.xjunz.tasker.task.ocr
+      
+      import android.graphics.Bitmap
+      import android.graphics.Rect
+      
+      /**
+       * 统一截图接口，封装 A11y 和 Shizuku 两种截图路径
+       */
+      interface ScreenshotProvider {
+          suspend fun takeScreenshot(crop: Rect? = null): Bitmap?
+      }
+      ```
+      
+      创建 app/src/main/java/top/xjunz/tasker/task/ocr/DefaultScreenshotProvider.kt:
+      
+      实现逻辑：
+      1. 检测当前运行模式（OperatingMode）
+      2. Shizuku 模式：uiAutomation.takeScreenshot()（同步，withContext(IO)）
+      3. A11y 模式：suspendCancellableCoroutine 包装 AccessibilityService.takeScreenshot()
+      4. 如果 crop != null，对 Bitmap 做 Bitmap.createBitmap(src, x, y, w, h) 裁剪
+      
+      参考 InspectorViewOverlay.kt:209-244 中的 A11y 截图实现。
+      
+      编写单元测试（mock ScreenshotProvider 接口验证裁剪逻辑）。
+    wave: 1
+    agent: gem-implementer
+    prototype: false
+    priority: high
+    status: pending
+    dependencies: []
+    conflicts_with: []
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/task/inspector/overlay/InspectorViewOverlay.kt"
+        description: "A11y 截图实现参考 (行 209-244)"
+      - path: "ui-automator/src/main/java/androidx/test/uiautomator/bridge/UiAutomatorBridge.java"
+        description: "Shizuku 截图实现参考 (行 132-148)"
+      - path: "docs/plan/ocr-screen-recognition/research_findings_ocr_technical_detail.yaml"
+        description: "统一截图服务设计建议"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始创建"
+        timestamp: "2026-04-10"
+        estimated_effort: medium
+        estimated_files: 3
+        estimated_lines: 120
+        focus_area: "截图基础设施"
+        verification:
+          - "ScreenshotProvider 接口存在"
+          - "DefaultScreenshotProvider 实现 A11y + Shizuku 双路径"
+          - "区域裁剪逻辑正确（Bitmap.createBitmap 边界检查）"
+          - "编译通过"
+        acceptance_criteria:
+          - "ScreenshotProvider 接口定义 takeScreenshot(crop: Rect?): Bitmap?"
+          - "DefaultScreenshotProvider 根据 OperatingMode 自动选择截图路径"
+          - "A11y 模式使用 suspendCancellableCoroutine 包装异步截图"
+          - "Shizuku 模式调用 uiAutomation.takeScreenshot() 同步获取"
+          - "crop 参数非 null 时正确裁剪 Bitmap"
+          - "Shizuku 截图返回 null 时安全处理（返回 null 而非崩溃）"
+        failure_modes:
+          - scenario: "A11y 截图回调未触发导致协程挂起"
+            likelihood: low
+            impact: medium
+            mitigation: "添加超时（withTimeoutOrNull(5000)）"
+        tech_stack:
+          - "Kotlin"
+          - "Android AccessibilityService API"
+          - "Kotlin Coroutines"
+        test_coverage: "mock 测试裁剪逻辑和接口契约"
+        requires_review: false
+        review_depth: null
+        review_security_sensitive: false
+
+  # ═══════════════════════════════════════════
+  # Wave 2 — 核心引擎
+  # ═══════════════════════════════════════════
+  - id: "T05"
+    title: "实现 MlKitOcrProvider（ML Kit 离线识别）"
+    description: |
+      创建 app/src/main/java/top/xjunz/tasker/task/ocr/MlKitOcrProvider.kt:
+      
+      实现 OcrProvider 接口：
+      1. 持有 TextRecognizer 单例（lazy 初始化）：
+         TextRecognition.getClient(ChineseTextRecognizerOptions.Builder().build())
+      2. recognize(): 
+         - 如果 region != null，先裁剪 bitmap
+         - 创建 InputImage.fromBitmap(bitmap, 0)
+         - 使用 suspendCancellableCoroutine 包装 recognizer.process(inputImage)
+         - 将 ML Kit Text 对象转换为项目 OcrResult/TextBlock
+         - 记录 processingTimeMs
+      3. isAvailable(): 永远返回 true（bundled 模型不依赖 GMS）
+      4. release(): recognizer.close()
+      
+      编写单元测试（mock TextRecognizer，验证转换逻辑和错误处理）。
+    wave: 2
+    agent: gem-implementer
+    prototype: false
+    priority: high
+    status: pending
+    dependencies: ["T01", "T02", "T03"]
+    conflicts_with: []
+    context_files:
+      - path: "docs/plan/ocr-screen-recognition/research_findings_ocr_technical_detail.yaml"
+        description: "ML Kit API 使用模式（行 140-210）"
+      - path: "app/src/main/java/top/xjunz/tasker/task/ocr/OcrProvider.kt"
+        description: "实现的接口"
+      - path: "app/src/main/java/top/xjunz/tasker/task/ocr/OcrModels.kt"
+        description: "OcrResult/TextBlock 数据类"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始创建"
+        timestamp: "2026-04-10"
+        estimated_effort: medium
+        estimated_files: 2
+        estimated_lines: 120
+        focus_area: "ML Kit 集成"
+        verification:
+          - "MlKitOcrProvider 实现 OcrProvider 接口"
+          - "recognize() 成功将 ML Kit Text 转换为 OcrResult"
+          - "区域裁剪后传入 ML Kit 处理"
+          - "单元测试 mock TextRecognizer 验证转换逻辑"
+          - "编译通过"
+        acceptance_criteria:
+          - "MlKitOcrProvider 实现 OcrProvider 所有方法"
+          - "TextRecognizer 使用 ChineseTextRecognizerOptions (bundled)"
+          - "ML Kit Text → OcrResult 转换正确（blocks/boundingBox/confidence 映射）"
+          - "recognize() 失败时返回 null 而非抛异常"
+          - "release() 正确关闭 recognizer"
+        failure_modes:
+          - scenario: "ML Kit Text 对象中 confidence 为 null（V1 API 不返回）"
+            likelihood: low
+            impact: low
+            mitigation: "使用 confidence ?: 0f 添加默认值"
+        tech_stack:
+          - "Kotlin"
+          - "Google ML Kit Text Recognition"
+          - "Kotlin Coroutines"
+        test_coverage: "ML Kit Text -> OcrResult 转换 + 错误处理"
+        requires_review: false
+        review_depth: null
+        review_security_sensitive: false
+
+  - id: "T06"
+    title: "实现 OcrManager 编排器（截图→OCR 管线）"
+    description: |
+      创建 app/src/main/java/top/xjunz/tasker/task/ocr/OcrManager.kt:
+      
+      ```kotlin
+      object OcrManager {
+          private var provider: OcrProvider = MlKitOcrProvider()
+          private var screenshotProvider: ScreenshotProvider? = null
+          private var lastResult: OcrResult? = null
+          private var lastResultTimestamp: Long = 0
+          private const val RESULT_TTL_MS = 2000L  // lastResult 缓存 TTL
+          
+          /** lazy init：首次调用 recognizeScreen() 时自动通过 OperatingMode 检测并创建 ScreenshotProvider */
+          fun init(screenshotProvider: ScreenshotProvider) { ... }
+          fun setProvider(provider: OcrProvider) { ... }
+          
+          suspend fun recognizeScreen(region: Rect? = null): OcrResult? {
+              val bitmap = screenshotProvider?.takeScreenshot(region) 
+                  ?: return null
+              try {
+                  val result = provider.recognize(bitmap, null) // region 已在截图时裁剪
+                  lastResult = result
+                  lastResultTimestamp = System.currentTimeMillis()
+                  return result
+              } finally {
+                  bitmap.recycle()
+              }
+          }
+          
+          fun getLastResult(): OcrResult? {
+              // TTL 检查：超过 2000ms 的缓存返回 null
+              if (System.currentTimeMillis() - lastResultTimestamp > RESULT_TTL_MS) return null
+              return lastResult
+          }
+          
+          fun release() {
+              provider.release()
+              lastResult = null
+          }
+      }
+      ```
+      
+      编写单元测试（mock ScreenshotProvider 和 OcrProvider）。
+    wave: 2
+    agent: gem-implementer
+    prototype: false
+    priority: high
+    status: pending
+    # 注意：T06 依赖 T05（同属 Wave 2），Wave 2 实际最大并行度为 2（T05+T07 可并行，T06 需等 T05）
+    dependencies: ["T04", "T05"]
+    conflicts_with: []
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/task/ocr/ScreenshotProvider.kt"
+        description: "截图接口"
+      - path: "app/src/main/java/top/xjunz/tasker/task/ocr/OcrProvider.kt"
+        description: "OCR 引擎接口"
+      - path: "app/src/main/java/top/xjunz/tasker/task/ocr/MlKitOcrProvider.kt"
+        description: "ML Kit 实现"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始创建"
+        timestamp: "2026-04-10"
+        estimated_effort: medium
+        estimated_files: 2
+        estimated_lines: 100
+        focus_area: "OCR 管线编排"
+        verification:
+          - "OcrManager.recognizeScreen() 成功执行截图→OCR 管线"
+          - "lastResult 缓存正确更新"
+          - "bitmap 在 finally 中正确回收"
+          - "provider 可通过 setProvider() 切换"
+          - "单元测试通过"
+        acceptance_criteria:
+          - "OcrManager 是 object 单例"
+          - "recognizeScreen() 调用 screenshotProvider.takeScreenshot → provider.recognize"
+          - "Bitmap 在使用后正确回收（finally 块）"
+          - "lastResult 缓存最近一次识别结果，有 2000ms TTL（超过 TTL 的缓存视为过期）"
+          - "setProvider() 可切换 OCR 引擎"
+          - "OcrManager 使用 lazy init 自动检测 ScreenshotProvider，或在 Service 初始化时显式调用 init()"
+        failure_modes:
+          - scenario: "截图返回 null 但未正确处理"
+            likelihood: low
+            impact: medium
+            mitigation: "null 检查后直接 return null"
+        tech_stack:
+          - "Kotlin"
+          - "Kotlin Coroutines"
+        test_coverage: "mock 截图 + mock OCR → 验证管线行为"
+        requires_review: false
+        review_depth: null
+        review_security_sensitive: false
+
+  - id: "T07"
+    title: "创建云端 OcrProvider 占位接口文档和抽象基类"
+    description: |
+      创建 app/src/main/java/top/xjunz/tasker/task/ocr/CloudOcrProvider.kt:
+      
+      定义云端 OCR Provider 的抽象基类（当前不实现具体云端引擎，仅定义扩展点）：
+      
+      ```kotlin
+      abstract class CloudOcrProvider : OcrProvider {
+          /** API Key 配置 */
+          abstract val apiKey: String
+          /** API 端点 URL */
+          abstract val endpoint: String
+          
+          override fun isAvailable(): Boolean = apiKey.isNotBlank()
+      }
+      ```
+      
+      添加注释文档说明后续支持的云端引擎：Google Cloud Vision、腾讯 OCR、PaddleOCR Lite。
+      
+      这是一个占位实现，确保架构可扩展，不做具体网络调用。
+    wave: 2
+    agent: gem-implementer
+    prototype: true
+    priority: low
+    status: pending
+    dependencies: ["T03"]
+    conflicts_with: []
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/task/ocr/OcrProvider.kt"
+        description: "OcrProvider 接口定义"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始创建"
+        timestamp: "2026-04-10"
+        estimated_effort: small
+        estimated_files: 1
+        estimated_lines: 40
+        focus_area: "可扩展性"
+        verification:
+          - "CloudOcrProvider 抽象类存在"
+          - "编译通过"
+        acceptance_criteria:
+          - "CloudOcrProvider 继承 OcrProvider"
+          - "定义 apiKey 和 endpoint 抽象属性"
+          - "文档注释说明后续云端引擎扩展方式"
+        failure_modes: []
+        tech_stack:
+          - "Kotlin"
+        test_coverage: null
+        requires_review: false
+        review_depth: null
+        review_security_sensitive: false
+
+  # ═══════════════════════════════════════════
+  # Wave 3 — Applet 实现
+  # ═══════════════════════════════════════════
+  - id: "T08"
+    title: "实现 OcrTextConstraint（OCR 文字约束 Applet）"
+    description: |
+      创建 app/src/main/java/top/xjunz/tasker/task/applet/criterion/OcrTextConstraint.kt:
+      
+      参考 GeofenceConstraint 模式，直接继承 Applet()：
+      
+      ```kotlin
+      class OcrTextConstraint(
+          private val matchMode: OcrTextMatchMode,
+          private val ocrManager: OcrManager = OcrManager
+      ) : Applet() {
+      
+          override suspend fun apply(runtime: TaskRuntime): AppletResult {
+              // values[0]: 匹配文本/正则（String）
+              // values[1]: 区域左边界百分比（Float，可选）
+              // values[2]: 区域上边界百分比（Float，可选）
+              // values[3]: 区域右边界百分比（Float，可选）
+              // values[4]: 区域下边界百分比（Float，可选）
+              
+              val matchText = values[0] as? String ?: return AppletResult.EMPTY_FAILURE
+              val region = OcrUtils.buildRegionFromValues(values)  // 从 values[1..4] 构建 Rect? (null = 全屏)，T09 复用此方法
+              
+              val result = ocrManager.recognizeScreen(region) ?: return AppletResult.EMPTY_FAILURE
+              
+              val matched = when (matchMode) {
+                  CONTAINS -> result.fullText.contains(matchText)
+                  EXACT -> result.fullText == matchText
+                  REGEX -> {
+                      // ReDoS 防护：用户输入的正则有 200ms 超时保护
+                      kotlinx.coroutines.withTimeoutOrNull(200) {
+                          matchText.toRegex().containsMatchIn(result.fullText)
+                      } ?: false
+                  }
+              }
+              
+              return if (isInverted) AppletResult.emptyResult(!matched)
+              else AppletResult.emptyResult(matched)
+          }
+      }
+      ```
+      
+      编写单元测试（mock OcrManager）：
+      - 测试 CONTAINS 匹配成功/失败
+      - 测试 EXACT 匹配
+      - 测试 REGEX 匹配
+      - 测试 isInverted 取反
+      - 测试 OCR 返回 null 时返回 FAILURE
+    wave: 3
+    agent: gem-implementer
+    prototype: false
+    priority: high
+    status: pending
+    dependencies: ["T06"]
+    conflicts_with: []
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/criterion/GeofenceConstraint.kt"
+        description: "Applet 继承模式参考（values 读取、isInverted 处理）"
+      - path: "app/src/main/java/top/xjunz/tasker/task/ocr/OcrManager.kt"
+        description: "OcrManager 调用"
+      - path: "app/src/main/java/top/xjunz/tasker/task/ocr/OcrModels.kt"
+        description: "OcrTextMatchMode 枚举"
+      - path: "tasker-engine/src/main/java/top/xjunz/tasker/engine/applet/base/Applet.kt"
+        description: "Applet 基类 (values, isInverted)"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始创建"
+        timestamp: "2026-04-10"
+        estimated_effort: medium
+        estimated_files: 2
+        estimated_lines: 120
+        focus_area: "OCR 约束 Applet"
+        verification:
+          - "OcrTextConstraint 继承 Applet"
+          - "支持 CONTAINS / EXACT / REGEX 三种匹配模式"
+          - "isInverted 取反正确"
+          - "OcrManager 返回 null 时返回 EMPTY_FAILURE"
+          - "单元测试全部通过"
+        acceptance_criteria:
+          - "OcrTextConstraint 从 values[0] 读取匹配文本"
+          - "matchMode=CONTAINS: fullText.contains(keyword)"
+          - "matchMode=EXACT: fullText == keyword"
+          - "matchMode=REGEX: regex.containsMatchIn(fullText)"
+          - "REGEX 匹配有 200ms 超时保护（withTimeoutOrNull），防止 ReDoS"
+          - "isInverted=true 时结果取反"
+          - "正则表达式非法时安全返回 FAILURE（try-catch）"
+        failure_modes:
+          - scenario: "用户输入非法正则表达式导致 PatternSyntaxException"
+            likelihood: medium
+            impact: medium
+            mitigation: "try-catch 包裹 toRegex()，非法正则返回 EMPTY_FAILURE"
+          - scenario: "用户输入恶意正则表达式导致 ReDoS（灾难性回溯）"
+            likelihood: medium
+            impact: medium
+            mitigation: "withTimeoutOrNull(200) 包裹正则匹配，超时返回 false"
+        tech_stack:
+          - "Kotlin"
+        test_coverage: "6+ 用例：3 匹配模式 × 成功/失败 + 取反 + null 处理"
+        requires_review: false
+        review_depth: null
+        review_security_sensitive: false
+
+  - id: "T09"
+    title: "实现 OcrRecognizeAction（OCR 识别动作 Applet）"
+    description: |
+      创建 app/src/main/java/top/xjunz/tasker/task/applet/action/OcrRecognizeAction.kt:
+      
+      继承 Action()：
+      
+      ```kotlin
+      class OcrRecognizeAction(
+          private val ocrManager: OcrManager = OcrManager
+      ) : Action() {
+      
+          override suspend fun apply(runtime: TaskRuntime): AppletResult {
+              // values[0..3]: 可选区域参数（百分比）
+              val region = OcrUtils.buildRegionFromValues(values)  // 复用 T08 中实现的 OcrUtils
+              
+              val result = ocrManager.recognizeScreen(region)
+                  ?: return AppletResult.EMPTY_FAILURE
+              
+              // 将识别文本作为结果输出，供下游通过 withResult 引用
+              return AppletResult.succeeded(result.fullText)
+          }
+      }
+      ```
+      
+      编写单元测试（mock OcrManager）：
+      - 测试正常识别返回 succeeded(fullText)
+      - 测试 OCR 失败返回 EMPTY_FAILURE
+      - 测试区域参数构建
+    wave: 3
+    agent: gem-implementer
+    prototype: false
+    priority: high
+    status: pending
+    dependencies: ["T06"]
+    conflicts_with: []
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/action/SetVariableAction.kt"
+        description: "Action 动作模式参考"
+      - path: "app/src/main/java/top/xjunz/tasker/task/ocr/OcrManager.kt"
+        description: "OcrManager 调用"
+      - path: "tasker-engine/src/main/java/top/xjunz/tasker/engine/applet/action/Action.kt"
+        description: "Action 基类"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始创建"
+        timestamp: "2026-04-10"
+        estimated_effort: small
+        estimated_files: 2
+        estimated_lines: 80
+        focus_area: "OCR 动作 Applet"
+        verification:
+          - "OcrRecognizeAction 继承 Action"
+          - "返回 AppletResult.succeeded(fullText)"
+          - "OCR 失败时返回 EMPTY_FAILURE"
+          - "单元测试通过"
+        acceptance_criteria:
+          - "OcrRecognizeAction 调用 OcrManager.recognizeScreen()"
+          - "成功时返回 AppletResult.succeeded(result.fullText)"
+          - "失败时返回 AppletResult.EMPTY_FAILURE"
+          - "支持可选区域参数"
+        failure_modes: []
+        tech_stack:
+          - "Kotlin"
+        test_coverage: "3 用例：正常/OCR 失败/区域参数"
+        requires_review: false
+        review_depth: null
+        review_security_sensitive: false
+
+  # ═══════════════════════════════════════════
+  # Wave 4 — 注册与 UI
+  # ═══════════════════════════════════════════
+  - id: "T10"
+    title: "创建 ScreenOcrCriterionRegistry（OCR 约束注册表）"
+    description: |
+      创建 app/src/main/java/top/xjunz/tasker/task/applet/option/registry/ScreenOcrCriterionRegistry.kt:
+      
+      参考 LocationCriterionRegistry 模式：
+      
+      ```kotlin
+      class ScreenOcrCriterionRegistry(id: Int) : AppletOptionRegistry(id) {
+      
+          @AppletOrdinal(0x0000)
+          val ocrTextContains = invertibleAppletOption(R.string.ocr_screen_contains_text) {
+              OcrTextConstraint(OcrTextMatchMode.CONTAINS)
+          }.withValueArgument<String>(R.string.ocr_match_text)
+      
+          @AppletOrdinal(0x0001)
+          val ocrTextEquals = invertibleAppletOption(R.string.ocr_screen_text_equals) {
+              OcrTextConstraint(OcrTextMatchMode.EXACT)
+          }.withValueArgument<String>(R.string.ocr_match_text)
+      
+          @AppletOrdinal(0x0002)
+          val ocrTextMatches = invertibleAppletOption(R.string.ocr_screen_text_matches_regex) {
+              OcrTextConstraint(OcrTextMatchMode.REGEX)
+          }.withValueArgument<String>(R.string.ocr_regex_pattern)
+      }
+      ```
+      
+      在 app/src/main/res/values/strings.xml 添加字符串资源：
+      - ocr_screen_contains_text: "屏幕文字包含"
+      - ocr_screen_text_equals: "屏幕文字等于"
+      - ocr_screen_text_matches_regex: "屏幕文字匹配正则"
+      - ocr_match_text: "匹配文本"
+      - ocr_regex_pattern: "正则表达式"
+      - screen_ocr_criteria: "屏幕 OCR 识别"
+    wave: 4
+    agent: gem-implementer
+    prototype: false
+    priority: high
+    status: pending
+    dependencies: ["T08"]
+    conflicts_with: ["T11", "T12", "T13"]
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/LocationCriterionRegistry.kt"
+        description: "注册表模式参考"
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/TextCriterionRegistry.kt"
+        description: "文本匹配注册参考（每种模式独立选项）"
+      - path: "app/src/main/res/values/strings.xml"
+        description: "字符串资源文件"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始创建"
+        timestamp: "2026-04-10"
+        estimated_effort: small
+        estimated_files: 2
+        estimated_lines: 50
+        focus_area: "OCR Criterion 注册"
+        verification:
+          - "ScreenOcrCriterionRegistry 存在并注册 3 个选项"
+          - "strings.xml 包含对应字符串"
+          - "编译通过"
+        acceptance_criteria:
+          - "ScreenOcrCriterionRegistry 继承 AppletOptionRegistry"
+          - "注册 ocrTextContains (0x0000), ocrTextEquals (0x0001), ocrTextMatches (0x0002)"
+          - "每个选项使用 invertibleAppletOption 支持取反"
+          - "字符串资源添加完整"
+        failure_modes: []
+        tech_stack:
+          - "Kotlin"
+          - "Android Resources"
+        test_coverage: null
+        requires_review: false
+        review_depth: null
+        review_security_sensitive: false
+
+  - id: "T11"
+    title: "创建 ScreenOcrActionRegistry（OCR 动作注册表）"
+    description: |
+      创建 app/src/main/java/top/xjunz/tasker/task/applet/option/registry/ScreenOcrActionRegistry.kt:
+      
+      ```kotlin
+      class ScreenOcrActionRegistry(id: Int) : AppletOptionRegistry(id) {
+      
+          @AppletOrdinal(0x0000)
+          val recognizeScreenText = appletOption(R.string.ocr_recognize_screen_text) {
+              OcrRecognizeAction()
+          }.withResult<String>(R.string.ocr_recognized_text)
+      }
+      ```
+      
+      在 strings.xml 添加：
+      - ocr_recognize_screen_text: "识别屏幕文字"
+      - ocr_recognized_text: "OCR 识别文本"
+      - screen_ocr_actions: "屏幕 OCR 操作"
+    wave: 4
+    agent: gem-implementer
+    prototype: false
+    priority: high
+    status: pending
+    dependencies: ["T09"]
+    conflicts_with: ["T10", "T12", "T13"]
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/LocationCriterionRegistry.kt"
+        description: "注册表模式参考"
+      - path: "app/src/main/res/values/strings.xml"
+        description: "字符串资源文件"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始创建"
+        timestamp: "2026-04-10"
+        estimated_effort: small
+        estimated_files: 2
+        estimated_lines: 30
+        focus_area: "OCR Action 注册"
+        verification:
+          - "ScreenOcrActionRegistry 存在并注册 recognizeScreenText 选项"
+          - "withResult<String> 声明输出引用"
+          - "strings.xml 包含对应字符串"
+          - "编译通过"
+        acceptance_criteria:
+          - "ScreenOcrActionRegistry 继承 AppletOptionRegistry"
+          - "注册 recognizeScreenText (0x0000)"
+          - "使用 .withResult<String> 声明输出引用"
+          - "字符串资源添加完整"
+        failure_modes: []
+        tech_stack:
+          - "Kotlin"
+          - "Android Resources"
+        test_coverage: null
+        requires_review: false
+        review_depth: null
+        review_security_sensitive: false
+
+  - id: "T12"
+    title: "BootstrapOptionRegistry + AppletOptionFactory 全局注册"
+    description: |
+      修改 BootstrapOptionRegistry.kt:
+      
+      1. companion object 添加 ID 常量：
+         const val ID_SCREEN_OCR_CRITERION_REGISTRY = 0x1B
+         const val ID_SCREEN_OCR_ACTION_REGISTRY = 0x5B
+      
+      2. 添加入口选项（criterionFlowOptions）：
+         @AppletOrdinal(0x001A)
+         val screenOcrCriteria = flowOptionWithId<PhantomFlow>(
+             ID_SCREEN_OCR_CRITERION_REGISTRY, R.string.screen_ocr_criteria
+         )
+      
+      3. 添加入口选项（actionFlowOptions）：
+         @AppletOrdinal(0x0045)
+         val screenOcrActions = flowOptionWithId<PhantomFlow>(
+             ID_SCREEN_OCR_ACTION_REGISTRY, R.string.screen_ocr_actions
+         )
+      
+      4. criterionFlowOptions 数组添加 screenOcrCriteria
+      5. actionFlowOptions 数组添加 screenOcrActions
+      
+      修改 AppletOptionFactory.kt:
+      
+      1. 添加 import ScreenOcrCriterionRegistry、ScreenOcrActionRegistry
+      2. 创建 Registry 实例：
+         private val screenOcrCriterionRegistry = ScreenOcrCriterionRegistry(
+             BootstrapOptionRegistry.ID_SCREEN_OCR_CRITERION_REGISTRY
+         )
+         private val screenOcrActionRegistry = ScreenOcrActionRegistry(
+             BootstrapOptionRegistry.ID_SCREEN_OCR_ACTION_REGISTRY
+         )
+      3. allRegistries 数组中添加 screenOcrCriterionRegistry, screenOcrActionRegistry
+      
+      验证：`./gradlew :app:compileDebugKotlin` 编译通过。
+    wave: 4
+    agent: gem-implementer
+    prototype: false
+    priority: high
+    status: pending
+    dependencies: ["T10", "T11"]
+    conflicts_with: ["T10", "T11"]
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/BootstrapOptionRegistry.kt"
+        description: "需修改：添加 ID 常量 + AppletOrdinal 入口 + 数组注册"
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/option/AppletOptionFactory.kt"
+        description: "需修改：创建 Registry 实例 + allRegistries 注册"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始创建"
+        timestamp: "2026-04-10"
+        estimated_effort: medium
+        estimated_files: 2
+        estimated_lines: 40
+        focus_area: "全局注册集成"
+        verification:
+          - "`./gradlew :app:compileDebugKotlin` 编译成功"
+          - "BootstrapOptionRegistry 包含 ID_SCREEN_OCR_CRITERION_REGISTRY=0x1B 和 ID_SCREEN_OCR_ACTION_REGISTRY=0x5B"
+          - "AppletOptionFactory.allRegistries 包含两个新 Registry"
+          - "criterionFlowOptions 和 actionFlowOptions 数组包含 OCR 入口"
+        acceptance_criteria:
+          - "BootstrapOptionRegistry companion 定义 0x1B 和 0x5B ID"
+          - "@AppletOrdinal(0x001A) screenOcrCriteria 注册"
+          - "@AppletOrdinal(0x0045) screenOcrActions 注册"
+          - "AppletOptionFactory 创建并注册两个 OCR Registry 实例"
+          - "编译通过"
+        failure_modes:
+          - scenario: "AppletOrdinal 冲突导致运行时 crash"
+            likelihood: low
+            impact: high
+            mitigation: "确认 0x001A 和 0x0045 未被占用（研究已确认可用）"
+        tech_stack:
+          - "Kotlin"
+        test_coverage: null
+        requires_review: true
+        review_depth: standard
+        review_security_sensitive: false
+
+  - id: "T13"
+    title: "添加 OCR 相关字符串资源"
+    description: |
+      在 app/src/main/res/values/strings.xml 中统一添加所有 OCR 相关字符串（如果 T10/T11 未添加的部分）：
+      
+      ```xml
+      <!-- OCR 屏幕识别 -->
+      <string name="screen_ocr_criteria">屏幕 OCR 识别</string>
+      <string name="screen_ocr_actions">屏幕 OCR 操作</string>
+      <string name="ocr_screen_contains_text">屏幕文字包含</string>
+      <string name="ocr_screen_text_equals">屏幕文字等于</string>
+      <string name="ocr_screen_text_matches_regex">屏幕文字匹配正则</string>
+      <string name="ocr_match_text">匹配文本</string>
+      <string name="ocr_regex_pattern">正则表达式</string>
+      <string name="ocr_recognize_screen_text">识别屏幕文字</string>
+      <string name="ocr_recognized_text">OCR 识别文本</string>
+      <string name="ocr_settings">OCR 设置</string>
+      <string name="ocr_engine_selection">识别引擎</string>
+      <string name="ocr_engine_mlkit">ML Kit 离线识别</string>
+      <string name="ocr_engine_cloud">云端识别</string>
+      <string name="ocr_cloud_api_key">API Key</string>
+      <string name="ocr_test_recognize">测试识别</string>
+      <string name="ocr_region_select">选择识别区域</string>
+      <string name="ocr_region_full_screen">全屏</string>
+      <string name="ocr_result_preview">识别结果预览</string>
+      ```
+      
+      注意：如果 T10/T11 已添加部分字符串，此任务仅补充遗漏的 UI 相关字符串。
+    wave: 4
+    agent: gem-implementer
+    prototype: false
+    priority: medium
+    status: pending
+    dependencies: ["T10", "T11"]
+    conflicts_with: ["T10", "T11"]
+    context_files:
+      - path: "app/src/main/res/values/strings.xml"
+        description: "字符串资源文件"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始创建"
+        timestamp: "2026-04-10"
+        estimated_effort: small
+        estimated_files: 1
+        estimated_lines: 25
+        focus_area: "字符串资源"
+        verification:
+          - "strings.xml 包含所有 OCR 相关字符串"
+          - "编译通过"
+        acceptance_criteria:
+          - "所有 OCR 相关 R.string.* 引用在 strings.xml 中有定义"
+          - "无重复键名"
+        failure_modes: []
+        tech_stack:
+          - "Android Resources"
+        test_coverage: null
+        requires_review: false
+        review_depth: null
+        review_security_sensitive: false
+
+  - id: "T14"
+    title: "创建 OCR 设置对话框 UI（引擎选择 + 云端配置 + 结果预览）"
+    description: |
+      创建布局 app/src/main/res/layout/dialog_ocr_settings.xml:
+      - 引擎选择 RadioGroup（ML Kit 离线 / 云端）
+      - 云端 API Key 输入区域（TextInputLayout，仅云端模式显示）
+      - 测试识别按钮
+      - 识别结果预览 TextView
+      
+      创建 app/src/main/java/top/xjunz/tasker/ui/task/OcrSettingsDialog.kt:
+      - 继承 BaseDialogFragment
+      - 使用 ViewBinding (DialogOcrSettingsBinding)
+      - 从 DataStore 读取/保存 OCR 引擎选择和云端 API Key
+      - 测试识别：调用 OcrManager.recognizeScreen() → 显示结果
+      
+      参考 AmapApiKeyDialog 实现模式。
+    wave: 4
+    agent: gem-implementer
+    prototype: false
+    priority: medium
+    status: pending
+    dependencies: ["T06", "T13"]
+    conflicts_with: []
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/ui/task/AmapApiKeyDialog.kt"
+        description: "设置对话框 UI 模式参考"
+      - path: "app/src/main/res/layout/dialog_amap_api_key.xml"
+        description: "布局参考"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始创建"
+        timestamp: "2026-04-10"
+        estimated_effort: medium
+        estimated_files: 2
+        estimated_lines: 200
+        focus_area: "OCR 设置 UI"
+        verification:
+          - "dialog_ocr_settings.xml 布局文件存在"
+          - "OcrSettingsDialog 继承 BaseDialogFragment + 使用 ViewBinding"
+          - "引擎切换 RadioGroup 正常工作"
+          - "API Key 输入仅在云端模式显示"
+          - "编译通过"
+        acceptance_criteria:
+          - "UI 布局包含引擎选择 RadioGroup"
+          - "云端 API Key 输入区域（TextInputLayout）"
+          - "测试识别按钮 + 结果预览 TextView"
+          - "DataStore 持久化引擎选择和 API Key"
+          - "使用 ViewBinding 模式"
+        failure_modes:
+          - scenario: "测试识别需要截图权限但 UI 无法提示"
+            likelihood: medium
+            impact: low
+            mitigation: "测试识别按钮添加权限检查提示"
+        tech_stack:
+          - "Kotlin"
+          - "Android XML Layout"
+          - "ViewBinding"
+          - "DataStore"
+        test_coverage: null
+        requires_review: false
+        review_depth: null
+        review_security_sensitive: false
+
+  - id: "T15"
+    title: "创建区域选择器 UI（矩形选区对话框）"
+    description: |
+      创建布局 app/src/main/res/layout/dialog_ocr_region_selector.xml:
+      - 截图预览 ImageView（全屏截图作为背景）
+      - 可拖拽矩形选区 View（4 个百分比参数：left/top/right/bottom）
+      - 确认/取消按钮
+      
+      创建 app/src/main/java/top/xjunz/tasker/ui/task/OcrRegionSelectorDialog.kt:
+      - 继承 BaseDialogFragment
+      - 显示当前屏幕截图
+      - 用户通过拖拽四边/四角设置识别区域
+      - 返回 Rect（百分比值 0.0-1.0 × 屏幕尺寸）
+      
+      创建自定义 View: RegionSelectorView.kt
+      - 继承 View
+      - 绘制半透明遮罩 + 选区矩形
+      - 支持拖拽调整选区
+      - onRegionChanged 回调返回百分比值
+    wave: 4
+    agent: gem-implementer
+    prototype: true
+    priority: medium
+    status: pending
+    dependencies: ["T04", "T13"]
+    conflicts_with: []
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/task/ocr/ScreenshotProvider.kt"
+        description: "截图接口（用于预览截图）"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始创建"
+        timestamp: "2026-04-10"
+        estimated_effort: large
+        estimated_files: 3
+        estimated_lines: 300
+        focus_area: "区域选择器 UI"
+        verification:
+          - "RegionSelectorView 可拖拽选区"
+          - "OcrRegionSelectorDialog 显示截图预览 + 选区"
+          - "返回百分比 Rect"
+          - "编译通过"
+        acceptance_criteria:
+          - "截图预览显示在对话框中"
+          - "矩形选区可通过拖拽四边/四角调整"
+          - "选区以百分比形式（0.0-1.0）输出"
+          - "半透明遮罩覆盖选区外区域"
+          - "确认/取消按钮正常工作"
+        failure_modes:
+          - scenario: "高分辨率截图导致 OOM"
+            likelihood: medium
+            impact: medium
+            mitigation: "预览时缩放截图至 View 尺寸（BitmapFactory.Options.inSampleSize）"
+        tech_stack:
+          - "Kotlin"
+          - "Android Custom View"
+          - "Canvas 绘制"
+          - "Touch Event 处理"
+        test_coverage: null
+        requires_review: false
+        review_depth: null
+        review_security_sensitive: false
+
+  - id: "T16"
+    title: "MainOption 添加 OCR 设置入口"
+    description: |
+      参考地理围栏设置入口（AmapApiKey），在 AboutFragment 或 MainOption 中添加 OCR 设置入口：
+      
+      1. MainOption 枚举或列表中添加 OcrSettings 项
+      2. 点击时弹出 OcrSettingsDialog
+      3. 添加图标资源（使用现有 Material Icon 或 drawable）
+      
+      具体文件需要根据现有代码确认入口位置。
+    wave: 4
+    agent: gem-implementer
+    prototype: false
+    priority: low
+    status: pending
+    dependencies: ["T14"]
+    conflicts_with: []
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/ui/main/MainOption.kt"
+        description: "主菜单选项定义"
+      - path: "app/src/main/java/top/xjunz/tasker/ui/main/AboutFragment.kt"
+        description: "设置页面，可能的入口位置"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始创建"
+        timestamp: "2026-04-10"
+        estimated_effort: small
+        estimated_files: 2
+        estimated_lines: 20
+        focus_area: "UI 入口"
+        verification:
+          - "OCR 设置入口存在于设置页"
+          - "点击可弹出 OcrSettingsDialog"
+          - "编译通过"
+        acceptance_criteria:
+          - "设置页显示 OCR 设置入口项"
+          - "点击弹出 OcrSettingsDialog"
+        failure_modes: []
+        tech_stack:
+          - "Kotlin"
+          - "Android Fragment"
+        test_coverage: null
+        requires_review: false
+        review_depth: null
+        review_security_sensitive: false
+
+  # ═══════════════════════════════════════════
+  # Wave 5 — 集成验证
+  # ═══════════════════════════════════════════
+  - id: "T17"
+    title: "代码审查：安全性 + 架构一致性"
+    description: |
+      审查所有新增代码：
+      
+      1. **安全性**：
+         - OcrTextConstraint REGEX 模式：ReDoS 风险检查（用户输入的正则是否可能导致灾难性回溯）
+         - 云端 API Key 存储：确认使用 EncryptedSharedPreferences 或 Android Keystore
+         - Bitmap 内存安全：所有截图路径都有 recycle()/try-finally
+      
+      2. **架构一致性**：
+         - OcrProvider 接口契约完整
+         - Registry ID 无冲突
+         - AppletOrdinal 值无冲突
+         - strings.xml 无重复键
+      
+      3. **性能**：
+         - TextRecognizer 单例复用，不重复创建
+         - OcrManager lastResult 缓存策略合理
+         - 截图 Bitmap 及时回收
+    wave: 5
+    agent: gem-reviewer
+    prototype: false
+    priority: high
+    status: pending
+    dependencies: ["T12"]
+    conflicts_with: []
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/task/ocr/"
+        description: "所有 OCR 基础设施代码"
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/criterion/OcrTextConstraint.kt"
+        description: "OCR 约束 Applet"
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/action/OcrRecognizeAction.kt"
+        description: "OCR 动作 Applet"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始创建"
+        timestamp: "2026-04-10"
+        estimated_effort: medium
+        estimated_files: 0
+        estimated_lines: 0
+        focus_area: "安全审查"
+        verification:
+          - "无明显 ReDoS 风险（或已添加超时保护）"
+          - "API Key 使用安全存储"
+          - "Bitmap 生命周期管理正确"
+          - "Registry ID/AppletOrdinal 无冲突"
+        acceptance_criteria:
+          - "安全审查通过，无 OWASP Top 10 相关问题"
+          - "架构与现有代码风格一致"
+          - "内存管理正确（无泄漏）"
+        failure_modes:
+          - scenario: "审查发现 ReDoS 风险"
+            likelihood: medium
+            impact: medium
+            mitigation: "为正则匹配添加超时（withTimeoutOrNull(100)）"
+        tech_stack: []
+        test_coverage: null
+        requires_review: false
+        review_depth: full
+        review_security_sensitive: true
+
+  - id: "T18"
+    title: "编译验证 + 全量单元测试"
+    description: |
+      1. 全量编译验证：
+         ```bash
+         ./gradlew :app:clean :app:compileDebugKotlin
+         ```
+         确认 exit 0。
+      
+      2. 运行所有 OCR 相关单元测试：
+         ```bash
+         ./gradlew :app:testDebugUnitTest --tests "*.OcrModelsTest"
+         ./gradlew :app:testDebugUnitTest --tests "*.MlKitOcrProviderTest"
+         ./gradlew :app:testDebugUnitTest --tests "*.OcrManagerTest"
+         ./gradlew :app:testDebugUnitTest --tests "*.OcrTextConstraintTest"
+         ./gradlew :app:testDebugUnitTest --tests "*.OcrRecognizeActionTest"
+         ```
+      
+      3. 运行全量单元测试确认无回归：
+         ```bash
+         ./gradlew :app:testDebugUnitTest
+         ```
+      
+      4. 输出测试报告摘要（总数 / 通过 / 失败）。
+    wave: 5
+    agent: gem-implementer
+    prototype: false
+    priority: high
+    status: pending
+    dependencies: ["T12", "T17"]
+    conflicts_with: []
+    context_files: []
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始创建"
+        timestamp: "2026-04-10"
+        estimated_effort: small
+        estimated_files: 0
+        estimated_lines: 0
+        focus_area: "集成验证"
+        verification:
+          - "`./gradlew :app:clean :app:compileDebugKotlin` exit 0"
+          - "OCR 相关单元测试全部通过"
+          - "全量单元测试无回归"
+        acceptance_criteria:
+          - "编译通过（零错误）"
+          - "OCR 单元测试全部通过（预期 15+ 用例）"
+          - "已有测试无回归（失败数 = 0 或与基线一致）"
+        failure_modes:
+          - scenario: "编译或测试失败"
+            likelihood: medium
+            impact: high
+            mitigation: "定位失败原因，修复后重新执行"
+        tech_stack:
+          - "Gradle"
+          - "JUnit"
+        test_coverage: "全量验证"
+        requires_review: false
+        review_depth: null
+        review_security_sensitive: false
+
+planning_pass: 2
+planning_history:
+  - pass: 1
+    reason: "基于两份研究报告 + 现有代码分析，初始创建完整 DAG 计划"
+    timestamp: "2026-04-10"
+  - pass: 2
+    reason: |
+      修复审查问题：
+      CI-01: T03 添加 T02 依赖（recognize() 返回 OcrResult? 依赖 T02 数据模型）
+      CI-02: T08 REGEX 匹配添加 withTimeoutOrNull(200) ReDoS 防护 + acceptance_criteria 补充
+      II-01: T06 注释标注 Wave 2 内部依赖（T06→T05），实际最大并行度为 2
+      II-03: T06 acceptance_criteria 添加 lazy init 说明
+      S-02: T06 acceptance_criteria 添加 lastResult 2000ms TTL
+      S-03: T08/T09 共享 OcrUtils.buildRegionFromValues() 方法
+      S-06: T04 acceptance_criteria 补充 Shizuku 截图返回 null 安全处理
+    timestamp: "2026-04-10"
