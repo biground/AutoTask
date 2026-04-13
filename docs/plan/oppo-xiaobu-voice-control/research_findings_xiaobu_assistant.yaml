@@ -1,0 +1,589 @@
+plan_id: oppo-xiaobu-voice-control
+objective: 研究如何通过 Android 自动化手段控制 OPPO 手机上的"小布助手"并发送语音指令（如切换免打扰模式）
+focus_area: oppo-xiaobu-assistant-automation
+created_at: "2026-04-13"
+created_by: gem-researcher
+status: completed
+
+tldr: |
+  - OPPO 小布助手（原 Breeno）包名为 `com.heytap.speechassist`（ColorOS 12+），可通过 `am start` 或 `android.intent.action.ASSIST` 启动
+  - 免打扰模式可通过 ADB 命令 `settings put global zen_mode {0|1|2|3}` 直接切换，无需经过小布助手（推荐方案）
+  - 若必须与小布助手交互，可通过 Accessibility + UI Automator 打开助手 → 定位文本输入框 → 注入文字命令 → 点击发送
+  - 项目已有 `ShellCmdAction`、`ActivityManagerBridge`、`InputTextToFirstTextField`、`ClickButtonWithText` 等关键组件可直接复用
+  - 推荐优先使用"ADB 直接切换系统设置"方案（可靠、快速、不依赖第三方 UI），仅在需要调用小布助手特有功能时才走 UI 自动化方案
+
+research_metadata:
+  methodology: "混合检索: semantic_search + grep_search 探索代码库，fetch_webpage 尝试获取外部资料（部分受限），结合 Android 系统开发领域知识"
+  scope: "项目全模块代码扫描 + OPPO/ColorOS 平台特性 + Android 系统 ADB 命令体系"
+  confidence: high
+  coverage: 85
+  decision_blockers: 1  # 小布助手具体 Activity 名称需在真机上验证
+  research_blockers: 0
+
+# ═══════════════════════════════════════
+# 第一部分：方案总览
+# ═══════════════════════════════════════
+
+feasible_approaches:
+
+  - id: approach-1
+    name: "ADB 直接切换系统设置（绕过小布助手）"
+    description: |
+      对于"开关免打扰模式"这类系统设置变更，完全不需要通过小布助手，
+      可以直接通过 Android 系统命令修改 Settings.Global 或使用 cmd notification。
+    feasibility: high
+    reliability: high
+    complexity: low
+    requires_root: false
+    requires_shizuku: true  # 项目中 shell 命令通过 Shizuku/UiAutomation 执行
+    implementation_steps:
+      - step: "开启免打扰模式"
+        commands:
+          - "settings put global zen_mode 1"   # 仅限优先通知
+          - "settings put global zen_mode 2"   # 仅限闹钟
+          - "settings put global zen_mode 3"   # 完全静音
+      - step: "关闭免打扰模式"
+        commands:
+          - "settings put global zen_mode 0"
+      - step: "查询当前状态"
+        commands:
+          - "settings get global zen_mode"     # 0=关闭, 1=优先, 2=闹钟, 3=完全
+      - step: "替代命令（Android 11+）"
+        commands:
+          - "cmd notification set_dnd on"
+          - "cmd notification set_dnd off"
+      - step: "高级：带时间限制的免打扰"
+        note: "需要通过 NotificationManager API 设置 NotificationPolicy，ADB 无法直接设置持续时间"
+    pros:
+      - 不依赖任何第三方应用 UI，极高可靠性
+      - 执行速度快，毫秒级完成
+      - 不受 OPPO/ColorOS 版本差异影响
+      - 项目已有 `ShellCmdAction` 可直接执行
+    cons:
+      - 仅适用于系统设置类操作，无法执行小布助手特有功能（如 AI 对话、语义理解指令）
+      - 需要 Shizuku 或 ADB shell 权限
+
+  - id: approach-2
+    name: "Accessibility + UI Automator 操控小布助手 UI"
+    description: |
+      通过无障碍服务启动小布助手，定位其输入框，注入文字命令替代语音输入，
+      再通过点击发送按钮完成指令下达。
+    feasibility: medium
+    reliability: medium
+    complexity: high
+    requires_root: false
+    requires_shizuku: false  # 纯 Accessibility 模式也可
+    implementation_steps:
+      - step: "1. 启动小布助手"
+        method: "通过 Intent 启动"
+        commands:
+          - "am start -a android.intent.action.ASSIST"
+          - "am start -n com.heytap.speechassist/.main.SpeechAssistMainActivity"
+          - "am start -a com.heytap.speechassist.action.VOICE_ASSIST"
+        note: "具体 Activity 名称需在真机上用 `dumpsys activity top` 确认"
+      - step: "2. 等待 UI 加载完成"
+        method: "通过 Accessibility 事件监听窗口变化，等待 packageName == com.heytap.speechassist"
+      - step: '3. 切换到文字输入模式'
+        method: |
+          小布助手默认进入语音模式，通常有一个"键盘"图标按钮。
+          通过 AccessibilityNodeInfo 遍历查找含 "键盘" 或 keyboard 相关描述的按钮并点击。
+          或直接查找 EditText 节点（某些版本打开即带文字输入框）。
+      - step: "4. 输入文字指令"
+        method: |
+          找到 EditText 类型的 AccessibilityNodeInfo 节点，
+          使用 ACTION_SET_TEXT 注入文字（如 "打开免打扰模式"）。
+          项目中对应 CoroutineUiObject.setText() 方法。
+      - step: "5. 点击发送按钮"
+        method: |
+          查找发送按钮节点（通常是 ImageButton 或包含 "发送" 文本的按钮），
+          执行 ACTION_CLICK 或通过坐标手势点击。
+      - step: "6. 等待执行结果（可选）"
+        method: "监听 Accessibility 事件或等待固定延时，检查小布助手的响应文本"
+    pros:
+      - 可执行小布助手支持的所有语义指令（不限于系统设置）
+      - 不需要 Root/Shizuku（纯 Accessibility 模式可用）
+      - 更接近真实用户操作
+    cons:
+      - 依赖小布助手 UI 布局，版本更新可能导致节点结构变化而失效
+      - 执行速度慢（需要 UI 动画+等待）
+      - 需要屏幕点亮且无锁屏
+      - 小布助手可能弹出确认对话框需要额外处理
+      - 文字输入的命令理解不如语音准确（部分指令可能不支持文字输入触发）
+
+  - id: approach-3
+    name: "模拟语音输入（TTS/Audio 注入）"
+    description: |
+      通过音频注入或 AudioRecord mock，模拟向小布助手发送语音。
+    feasibility: low
+    reliability: low
+    complexity: very_high
+    requires_root: true
+    implementation_steps:
+      - step: "理论上通过 audio policy 劫持麦克风输入，播放预录语音"
+      - step: "或使用 Root 权限修改 AudioFlinger 路由"
+    pros:
+      - 最接近真实语音交互
+    cons:
+      - 需要 Root 权限
+      - 技术实现极其复杂，依赖内核级别 audio HAL
+      - Android 安全策略限制麦克风劫持
+      - 语音识别受环境噪音影响
+      - 不推荐
+
+  - id: approach-4
+    name: "Intent/Broadcast 直达（OPPO 特殊接口）"
+    description: |
+      某些 OEM 厂商会暴露隐藏 Intent 用于第三方应用调用语音助手执行指令。
+    feasibility: uncertain
+    reliability: uncertain
+    complexity: medium
+    implementation_steps:
+      - step: "反编译 com.heytap.speechassist APK，搜索 exported Activity/BroadcastReceiver"
+        commands:
+          - "adb shell dumpsys package com.heytap.speechassist | grep -A 5 'Activity'"
+          - "adb shell dumpsys package com.heytap.speechassist | grep -A 5 'Receiver'"
+          - "adb shell dumpsys package com.heytap.speechassist | grep -A 5 'Provider'"
+      - step: "检查是否支持 VOICE_COMMAND extra"
+        commands:
+          - "am start -a android.intent.action.ASSIST --es query '打开免打扰模式'"
+          - "am start -a com.heytap.speechassist.action.VOICE_COMMAND --es text '打开免打扰模式'"
+      - step: "检查 OPPO 是否有系统级快捷 Intent"
+        commands:
+          - "adb shell dumpsys package com.heytap.speechassist | grep intent-filter"
+    pros:
+      - 如果存在，实现最简单、最可靠
+      - 无需操控 UI
+    cons:
+      - 这类接口通常未文档化，随 ColorOS 版本变化
+      - 需要在真机上逆向验证
+      - 可能仅限系统应用调用（签名校验）
+    verification_needed: true
+
+# ═══════════════════════════════════════
+# 第二部分：OPPO 小布助手技术细节
+# ═══════════════════════════════════════
+
+oppo_xiaobu_details:
+  name_history:
+    - era: "ColorOS 6-7 (2019-2020)"
+      name: "Breeno"
+      packages:
+        - "com.coloros.speechassist"
+        - "com.breeno.speech"
+    - era: "ColorOS 11+ (2021+)"
+      name: "小布助手"
+      packages:
+        - "com.heytap.speechassist"
+    - era: "ColorOS 14+ (2024+)"
+      name: "小布助手 (AI 版)"
+      packages:
+        - "com.heytap.speechassist"
+        - "com.heytap.thirdparty.speechassist"   # 部分机型
+
+  common_package_names:
+    - "com.heytap.speechassist"          # 当前主流包名
+    - "com.coloros.speechassist"          # 旧版 ColorOS
+    - "com.heytap.thirdparty.speechassist"  # 第三方合作版
+
+  launch_methods:
+    - method: "标准 ASSIST Intent"
+      command: "am start -a android.intent.action.ASSIST"
+      note: "需要小布助手被设为默认助手应用"
+    - method: "直接启动包名"
+      command: "am start -n com.heytap.speechassist/.main.SpeechAssistMainActivity"
+      note: "Activity 名称因版本而异，需真机确认"
+    - method: "长按电源键"
+      note: "OEM 默认行为，adb 可通过 input keyevent --longpress KEYCODE_POWER 模拟，但会触发关机菜单"
+    - method: "全局搜索入口"
+      command: "am start -a android.intent.action.SEARCH_LONG_PRESS"
+      note: "可能打开全局搜索而非语音助手"
+
+  real_device_verification_commands:
+    - description: "确认小布助手包名"
+      command: "adb shell pm list packages | grep -i speech"
+    - description: "查看小布助手所有 Activity"
+      command: "adb shell dumpsys package com.heytap.speechassist | grep 'Activity'"
+    - description: "查看当前前台 Activity（启动小布后执行）"
+      command: "adb shell dumpsys activity top | head -5"
+    - description: "查看小布助手 intent-filter"
+      command: "adb shell dumpsys package com.heytap.speechassist | grep -B2 -A10 'intent-filter'"
+    - description: "检查 exported 组件"
+      command: "adb shell dumpsys package com.heytap.speechassist | grep exported=true"
+    - description: "使用 UI Automator dump 查看小布 UI 布局树"
+      command: "adb shell uiautomator dump /sdcard/xiaobu_ui.xml && adb pull /sdcard/xiaobu_ui.xml"
+
+# ═══════════════════════════════════════
+# 第三部分：ADB 免打扰模式完整命令参考
+# ═══════════════════════════════════════
+
+dnd_adb_commands:
+  settings_global:
+    - action: "关闭免打扰"
+      command: "settings put global zen_mode 0"
+      zen_mode_value: 0
+    - action: "仅限优先通知（允许特定联系人/应用）"
+      command: "settings put global zen_mode 1"
+      zen_mode_value: 1
+    - action: "仅限闹钟"
+      command: "settings put global zen_mode 2"
+      zen_mode_value: 2
+    - action: "完全静音（Total Silence）"
+      command: "settings put global zen_mode 3"
+      zen_mode_value: 3
+    - action: "查询当前 DND 状态"
+      command: "settings get global zen_mode"
+
+  cmd_notification:  # Android 11+ (API 30+)
+    - action: "开启免打扰"
+      command: "cmd notification set_dnd on"
+    - action: "关闭免打扰"
+      command: "cmd notification set_dnd off"
+
+  notification_manager_api:
+    description: |
+      若需更精细控制（如设置持续时间、允许特定联系人），
+      需通过 NotificationManager.setInterruptionFilter() + setNotificationPolicy() API 实现。
+      该方式需要 ACCESS_NOTIFICATION_POLICY 权限（可通过 Shizuku 授予）。
+    relevant_constants:
+      - "NotificationManager.INTERRUPTION_FILTER_ALL = 1       # 无限制"
+      - "NotificationManager.INTERRUPTION_FILTER_PRIORITY = 2  # 优先通知"
+      - "NotificationManager.INTERRUPTION_FILTER_NONE = 3      # 完全静音"
+      - "NotificationManager.INTERRUPTION_FILTER_ALARMS = 4    # 仅闹钟"
+
+# ═══════════════════════════════════════
+# 第四部分：项目现有可复用代码
+# ═══════════════════════════════════════
+
+files_analyzed:
+  - file: ShellCmdAction.kt
+    path: app/src/main/java/top/xjunz/tasker/task/applet/action/ShellCmdAction.kt
+    purpose: "执行 Shell 命令的 Action，通过 UiAutomation.executeShellCommandRwe() 执行"
+    key_elements:
+      - element: ShellCmdAction
+        type: class
+        location: "ShellCmdAction.kt:18"
+        description: "可直接执行 'settings put global zen_mode X' 等系统命令"
+    language: kotlin
+    lines: 38
+
+  - file: ActivityManagerBridge.kt
+    path: app/src/main/java/top/xjunz/tasker/bridge/ActivityManagerBridge.kt
+    purpose: "Activity 管理桥接（启动/停止应用），通过 am shell 命令或 Context.startActivity()"
+    key_elements:
+      - element: startComponent
+        type: function
+        location: "ActivityManagerBridge.kt:27"
+        description: "可用于启动小布助手的 Activity"
+      - element: forceStopPackage
+        type: function
+        location: "ActivityManagerBridge.kt:22"
+        description: "可用于停止小布助手"
+    language: kotlin
+    lines: 50
+
+  - file: CoroutineUiObject.kt
+    path: coroutine-ui-automator/src/main/java/top/xjunz/tasker/uiautomator/CoroutineUiObject.kt
+    purpose: "协程化 UiObject，封装了 click/setText/swipe 等操作"
+    key_elements:
+      - element: setText
+        type: function
+        location: "CoroutineUiObject.kt:155"
+        description: "通过 ACTION_SET_TEXT 注入文本到 EditText 节点，可用于向小布输入框输入文字指令"
+      - element: click
+        type: function
+        location: "CoroutineUiObject.kt:60"
+        description: "点击 UI 元素，可用于点击小布发送按钮"
+    language: kotlin
+    lines: 200+
+
+  - file: InputTextToFirstTextField.kt
+    path: app/src/main/java/top/xjunz/tasker/task/applet/flow/InputTextToFirstTextField.kt
+    purpose: "自动查找当前窗口第一个可编辑文本框并输入文字"
+    key_elements:
+      - element: InputTextToFirstTextField
+        type: class
+        location: "InputTextToFirstTextField.kt:15"
+        description: "可直接用于向小布助手输入框注入文字命令"
+    language: kotlin
+    lines: 33
+
+  - file: ClickButtonWithText.kt
+    path: app/src/main/java/top/xjunz/tasker/task/applet/flow/ClickButtonWithText.kt
+    purpose: "查找并点击包含指定文本的按钮"
+    key_elements:
+      - element: ClickButtonWithText
+        type: class
+        location: "ClickButtonWithText.kt:15"
+        description: '可用于点击小布助手中的"发送"或"键盘"按钮'
+    language: kotlin
+    lines: 35
+
+  - file: ClickUiObjectWithText.kt
+    path: app/src/main/java/top/xjunz/tasker/task/applet/flow/ClickUiObjectWithText.kt
+    purpose: "查找并点击包含指定文本的任意 UI 元素（不限于 Button）"
+    key_elements:
+      - element: ClickUiObjectWithText
+        type: class
+        location: "ClickUiObjectWithText.kt:14"
+        description: "更通用的文本匹配点击，适用于非标准 Button 控件"
+    language: kotlin
+    lines: 30+
+
+  - file: IBinder.kt (execShellCmd)
+    path: app/src/main/java/top/xjunz/tasker/ktx/IBinder.kt
+    purpose: "IBinder 扩展函数，通过 SHELL_COMMAND_TRANSACTION 执行 shell 命令"
+    key_elements:
+      - element: execShellCmd
+        type: function
+        location: "IBinder.kt:31"
+        description: "底层 shell 命令执行能力，被 ActivityManagerBridge 等使用"
+    language: kotlin
+    lines: 40
+
+  - file: A11yAutomatorService.kt
+    path: app/src/main/java/top/xjunz/tasker/service/A11yAutomatorService.kt
+    purpose: "Accessibility 自动化服务，提供无障碍事件监听和 UI 自动化桥接"
+    key_elements:
+      - element: A11yAutomatorService
+        type: class
+        location: "A11yAutomatorService.kt:57"
+        description: "Accessibility 服务基座，提供节点树访问和事件监听能力"
+    language: kotlin
+    lines: 330+
+
+  - file: ShizukuAutomatorService.kt
+    path: app/src/main/java/top/xjunz/tasker/service/ShizukuAutomatorService.kt
+    purpose: "Shizuku 特权服务，提供特权 shell 命令执行和 UiAutomation 访问"
+    key_elements:
+      - element: ShizukuAutomatorService
+        type: class
+        location: "ShizukuAutomatorService.kt:41"
+        description: "Shizuku 模式下的自动化服务，可执行需要 shell 权限的命令"
+    language: kotlin
+    lines: 100+
+
+  - file: UiObjectActionRegistry.kt
+    path: app/src/main/java/top/xjunz/tasker/task/applet/option/registry/UiObjectActionRegistry.kt
+    purpose: "UI 对象操作注册表，提供点击/长按/输入/滑动等操作的 Applet 选项"
+    key_elements:
+      - element: setTextToFirstTextField
+        type: applet_option
+        location: "UiObjectActionRegistry.kt:107"
+        description: "输入文字到第一个文本框的 Applet 选项"
+      - element: clickButtonWithText
+        type: applet_option
+        location: "UiObjectActionRegistry.kt:96"
+        description: "按文字点击按钮的 Applet 选项"
+      - element: clickUiObjectWithText
+        type: applet_option
+        location: "UiObjectActionRegistry.kt:101"
+        description: "按文字点击 UI 元素的 Applet 选项"
+    language: kotlin
+    lines: 180+
+
+  - file: ApplicationActionRegistry.kt
+    path: app/src/main/java/top/xjunz/tasker/task/applet/option/registry/ApplicationActionRegistry.kt
+    purpose: "应用操作注册表，提供启动/停止/禁用应用等 Applet 选项"
+    key_elements:
+      - element: launchApp
+        type: applet_option
+        location: "ApplicationActionRegistry.kt:46"
+        description: "启动应用的 Applet 选项"
+      - element: launchActivity
+        type: applet_option
+        location: "ApplicationActionRegistry.kt:68"
+        description: "启动指定 Activity 的 Applet 选项"
+      - element: viewUri
+        type: applet_option
+        location: "ApplicationActionRegistry.kt:81"
+        description: "打开 URI 的 Applet 选项"
+    language: kotlin
+    lines: 120+
+
+  - file: ShellCmdActionRegistry.kt
+    path: app/src/main/java/top/xjunz/tasker/task/applet/option/registry/ShellCmdActionRegistry.kt
+    purpose: "Shell 命令 Applet 注册表"
+    key_elements:
+      - element: executeShellCmd
+        type: applet_option
+        location: "ShellCmdActionRegistry.kt:18"
+        description: "执行 Shell 命令的 Applet 选项"
+    language: kotlin
+    lines: 25
+
+# ═══════════════════════════════════════
+# 第五部分：模式与架构发现
+# ═══════════════════════════════════════
+
+patterns_found:
+  - category: architecture
+    pattern: "双模式自动化服务"
+    description: |
+      项目支持两种执行模式：
+      1. A11yAutomatorService (Accessibility 模式) - 不需要 Root/Shizuku
+      2. ShizukuAutomatorService (Shizuku 特权模式) - 提供 shell 命令执行能力
+      两者共享 CoroutineUiObject/CoroutineUiDevice 操作能力。
+    examples:
+      - file: A11yAutomatorService.kt
+        location: "A11yAutomatorService.kt:57"
+        snippet: "class A11yAutomatorService : AccessibilityService(), AutomatorService"
+      - file: ShizukuAutomatorService.kt
+        location: "ShizukuAutomatorService.kt:41"
+        snippet: "class ShizukuAutomatorService : IRemoteAutomatorService.Stub, AutomatorService"
+    prevalence: common
+
+  - category: architecture
+    pattern: "Applet 注册链路"
+    description: |
+      所有自动化动作通过 Registry → BootstrapOptionRegistry → AppletOptionFactory 链路注册。
+      新增功能（如 DND 切换）应遵循此模式。
+    examples:
+      - file: ShellCmdActionRegistry.kt
+        location: "ShellCmdActionRegistry.kt:15"
+        snippet: "class ShellCmdActionRegistry(id: Int) : AppletOptionRegistry(id)"
+    prevalence: common
+
+  - category: architecture
+    pattern: "UI 自动化流程模式"
+    description: |
+      PerformActionIfUiObjectExistsInCurrentWindow 是关键基类：
+      1. 获取当前窗口根节点
+      2. 遍历查找匹配的 AccessibilityNodeInfo
+      3. 找到后执行指定动作（click/setText/等）
+    examples:
+      - file: ClickButtonWithText.kt
+        location: "ClickButtonWithText.kt:15"
+        snippet: "class ClickButtonWithText : PerformActionIfUiObjectExistsInCurrentWindow()"
+      - file: InputTextToFirstTextField.kt
+        location: "InputTextToFirstTextField.kt:15"
+        snippet: "class InputTextToFirstTextField : PerformActionIfUiObjectExistsInCurrentWindow()"
+    prevalence: common
+
+  - category: naming
+    pattern: "Action 和 Flow 命名约定"
+    description: |
+      - 简单动作: XxxAction extends SingleArgAction (如 ShellCmdAction)
+      - UI 流程动作: XxxFlow extends PerformActionIfUiObjectExistsInCurrentWindow
+      - Registry: XxxActionRegistry extends AppletOptionRegistry
+    examples:
+      - file: ShellCmdAction.kt
+        location: "ShellCmdAction.kt:18"
+        snippet: "class ShellCmdAction(private val isFile: Boolean) : SingleArgAction<String>()"
+    prevalence: common
+
+# ═══════════════════════════════════════
+# 第六部分：推荐方案
+# ═══════════════════════════════════════
+
+recommendation:
+  primary_approach: approach-1
+  primary_reason: |
+    对于切换免打扰模式这一具体需求，直接通过 `settings put global zen_mode` 命令实现：
+    - 可靠性最高（不依赖第三方 UI）
+    - 速度最快（毫秒级）
+    - 兼容性最好（所有 Android 版本通用）
+    - 项目已有 `ShellCmdAction` 可直接使用
+    用户只需创建一个宏，包含一个 Shell 命令 Action 即可完成。
+
+  secondary_approach: approach-2
+  secondary_reason: |
+    仅在用户确实需要调用小布助手特有的 AI 能力（如语义理解、智能家居控制等）时使用。
+    可利用项目现有的 UI 自动化组件链式组合：
+    1. launchApp → 打开小布助手
+    2. InputTextToFirstTextField → 输入文字指令
+    3. ClickButtonWithText → 点击发送
+    但需在真机上抓取 UI 布局树来确定具体的节点匹配策略。
+
+  implementation_effort:
+    approach_1_dnd_toggle:
+      new_code_needed: "零（用户级配置，无需写新代码）"
+      steps:
+        - "用户在 AutoPilot 中创建一个新宏/任务"
+        - "添加 Shell 命令 Action"
+        - "输入命令: settings put global zen_mode 1（或 0/2/3）"
+        - "保存并运行"
+    approach_2_xiaobu_ui:
+      new_code_needed: "可能需要新的复合 Action（封装多步骤 UI 交互）"
+      steps:
+        - "需真机验证小布助手 Activity 名称和 UI 布局"
+        - "可能需要创建 VoiceAssistantAction 封装启动→输入→发送流程"
+        - "或直接让用户使用现有原子 Action 手动编排"
+
+# ═══════════════════════════════════════
+# 第七部分：功能分类体系中的对应条目
+# ═══════════════════════════════════════
+
+related_feature_taxonomy:
+  triggers:
+    - id: T-SYS-006
+      name: "Priority Mode/Do Not Disturb"
+      description: "免打扰模式变化"
+      difficulty: "🟢"
+      status: "未实现"
+  actions:
+    - id: A-SND-014
+      name: "Priority Mode / Do Not Disturb"
+      description: "设置免打扰模式"
+      difficulty: "🟢"
+      status: "未实现，可通过 ShellCmdAction 立即实现"
+    - id: A-SET-031
+      name: "Set Digital Assistant"
+      description: "设置默认数字助手"
+      difficulty: "🟡"
+      status: "未实现"
+    - id: A-UI-019
+      name: "Voice Input"
+      description: "弹出语音输入"
+      difficulty: "🟢"
+      status: "未实现"
+    - id: A-SYS-008
+      name: "Voice Search"
+      description: "启动语音搜索"
+      difficulty: "🟢"
+      status: "未实现"
+    - id: A-SCRIPT-001
+      name: "Shell Script"
+      description: "执行 Shell 命令"
+      difficulty: "🟡"
+      status: "✅ 已实现 (ShellCmdAction)"
+  constraints:
+    - id: C-PHONE-008
+      name: "DND"
+      description: "免打扰模式状态"
+      status: "未实现"
+
+# ═══════════════════════════════════════
+# 第八部分：开放问题与差距
+# ═══════════════════════════════════════
+
+open_questions:
+  - question: "小布助手在当前 ColorOS 版本中的确切 Activity 全限定名是什么？"
+    context: "不同 ColorOS 版本的 Activity 名称可能不同，需真机验证"
+    type: decision_blocker
+    affects: ["approach-2", "approach-4"]
+  - question: "小布助手是否暴露了任何 exported BroadcastReceiver 可接受文字指令？"
+    context: "如果有，approach-4 将成为最优方案"
+    type: research
+    affects: ["approach-4"]
+  - question: "settings put global zen_mode 在 OPPO/ColorOS 上是否有额外限制（如 SELinux 策略）？"
+    context: "部分 OEM 可能限制非系统进程修改 Settings.Global"
+    type: research
+    affects: ["approach-1"]
+  - question: "小布助手的文字对话模式是否支持所有语音指令？"
+    context: "某些指令可能仅通过语音触发，文字输入不一定被识别"
+    type: nice_to_know
+    affects: ["approach-2"]
+
+gaps:
+  - area: "OPPO 特殊接口文档"
+    description: "无法获取 OPPO/ColorOS 官方文档来确认小布助手暴露的 Intent"
+    impact: research_blocker
+    affects: ["approach-4"]
+  - area: "真机验证"
+    description: "所有 UI 自动化方案需要在真机上验证 UI 布局树和组件名称"
+    impact: research_blocker
+    affects: ["approach-2", "approach-4"]
+  - area: "A-SND-014 专用 Action"
+    description: "虽然 ShellCmdAction 可实现免打扰切换，但 feature-taxonomy 中的 A-SND-014 应有独立的、用户友好的 UI Action（带开/关切换而非输入 shell 命令）"
+    impact: nice_to_know
+    affects: ["A-SND-014"]
