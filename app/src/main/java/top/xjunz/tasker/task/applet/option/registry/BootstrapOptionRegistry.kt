@@ -48,6 +48,7 @@ open class BootstrapOptionRegistry : AppletOptionRegistry(ID_BOOTSTRAP_REGISTRY)
         const val ID_VARIABLE_CRITERION_REGISTRY = 0x18
         const val ID_MODE_CRITERION_REGISTRY = 0x19
         const val ID_LOCATION_CRITERION_REGISTRY = 0x1A
+        const val ID_SCREEN_OCR_CRITERION_REGISTRY = 0x1B
 
         const val ID_GLOBAL_ACTION_REGISTRY = 0x50
         const val ID_UI_OBJECT_ACTION_REGISTRY = 0x51
@@ -60,6 +61,7 @@ open class BootstrapOptionRegistry : AppletOptionRegistry(ID_BOOTSTRAP_REGISTRY)
         const val ID_VIBRATION_ACTION_REGISTRY = 0x58
         const val ID_VARIABLE_ACTION_REGISTRY = 0x59
         const val ID_MODE_ACTION_REGISTRY = 0x5A
+        const val ID_SCREEN_OCR_ACTION_REGISTRY = 0x5B
 
         const val ID_UI_OBJECT_FLOW_REGISTRY = 0x60
     }
@@ -117,7 +119,8 @@ open class BootstrapOptionRegistry : AppletOptionRegistry(ID_BOOTSTRAP_REGISTRY)
             networkCriteria,
             variableCriteria,
             modeCriteria,
-            locationCriteria
+            locationCriteria,
+            screenOcrCriteria
         )
     }
 
@@ -133,7 +136,8 @@ open class BootstrapOptionRegistry : AppletOptionRegistry(ID_BOOTSTRAP_REGISTRY)
             fileActions,
             vibrationActions,
             variableActions,
-            modeActions
+            modeActions,
+            screenOcrActions
         )
     }
 
@@ -290,4 +294,12 @@ open class BootstrapOptionRegistry : AppletOptionRegistry(ID_BOOTSTRAP_REGISTRY)
     @AppletOrdinal(0x0044)
     val modeActions =
         flowOptionWithId<PhantomFlow>(ID_MODE_ACTION_REGISTRY, R.string.mode_actions)
+
+    @AppletOrdinal(0x001A)
+    val screenOcrCriteria =
+        flowOptionWithId<PhantomFlow>(ID_SCREEN_OCR_CRITERION_REGISTRY, R.string.screen_ocr_criteria)
+
+    @AppletOrdinal(0x0045)
+    val screenOcrActions =
+        flowOptionWithId<PhantomFlow>(ID_SCREEN_OCR_ACTION_REGISTRY, R.string.screen_ocr_actions)
 }

@@ -714,4 +714,27 @@
     <string name="saved_geofences">已保存的围栏</string>
     <string name="no_geofences_hint">暂无围栏，点击新建</string>
     <string name="radius_format">半径：%dm</string>
+
+    <!-- OCR 屏幕识别 -->
+    <string name="screen_ocr_criteria">屏幕 OCR 识别</string>
+    <string name="screen_ocr_actions">屏幕 OCR 操作</string>
+    <string name="ocr_screen_contains_text">屏幕文字包含</string>
+    <string name="not_ocr_screen_contains_text">屏幕文字不包含</string>
+    <string name="ocr_screen_text_equals">屏幕文字等于</string>
+    <string name="not_ocr_screen_text_equals">屏幕文字不等于</string>
+    <string name="ocr_screen_text_matches_regex">屏幕文字匹配正则</string>
+    <string name="not_ocr_screen_text_matches_regex">屏幕文字不匹配正则</string>
+    <string name="ocr_match_text">匹配文本</string>
+    <string name="ocr_regex_pattern">正则表达式</string>
+    <string name="ocr_recognize_screen_text">识别屏幕文字</string>
+    <string name="ocr_recognized_text">OCR 识别文本</string>
+    <string name="ocr_settings">OCR 设置</string>
+    <string name="ocr_engine_selection">识别引擎</string>
+    <string name="ocr_engine_mlkit">ML Kit 离线识别</string>
+    <string name="ocr_engine_cloud">云端识别</string>
+    <string name="ocr_cloud_api_key">API Key</string>
+    <string name="ocr_test_recognize">测试识别</string>
+    <string name="ocr_region_select">选择识别区域</string>
+    <string name="ocr_region_full_screen">全屏</string>
+    <string name="ocr_result_preview">识别结果预览</string>
 </resources>

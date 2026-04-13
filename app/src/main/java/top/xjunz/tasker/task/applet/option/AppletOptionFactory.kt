@@ -24,6 +24,8 @@ import top.xjunz.tasker.task.applet.option.registry.LocationCriterionRegistry
 import top.xjunz.tasker.task.applet.option.registry.ModeActionRegistry
 import top.xjunz.tasker.task.applet.option.registry.ModeCriterionRegistry
 import top.xjunz.tasker.task.applet.option.registry.NetworkCriterionRegistry
+import top.xjunz.tasker.task.applet.option.registry.ScreenOcrActionRegistry
+import top.xjunz.tasker.task.applet.option.registry.ScreenOcrCriterionRegistry
 import top.xjunz.tasker.task.applet.option.registry.ShellCmdActionRegistry
 import top.xjunz.tasker.task.applet.option.registry.TextActionRegistry
 import top.xjunz.tasker.task.applet.option.registry.TextCriterionRegistry
@@ -128,6 +130,12 @@ object AppletOptionFactory : AppletFactory {
             { null }
         )
 
+    private val screenOcrCriterionRegistry =
+        ScreenOcrCriterionRegistry(BootstrapOptionRegistry.ID_SCREEN_OCR_CRITERION_REGISTRY)
+
+    private val screenOcrActionRegistry =
+        ScreenOcrActionRegistry(BootstrapOptionRegistry.ID_SCREEN_OCR_ACTION_REGISTRY)
+
     val uiObjectFlowRegistry =
         UiObjectFlowRegistry(BootstrapOptionRegistry.ID_UI_OBJECT_FLOW_REGISTRY)
 
@@ -145,6 +153,7 @@ object AppletOptionFactory : AppletFactory {
         variableCriterionRegistry,
         modeCriterionRegistry,
         locationCriterionRegistry,
+        screenOcrCriterionRegistry,
         /* action */
         controlActionRegistry,
         globalActionRegistry,
@@ -157,6 +166,7 @@ object AppletOptionFactory : AppletFactory {
         vibrationActionRegistry,
         variableActionRegistry,
         modeActionRegistry,
+        screenOcrActionRegistry,
         /* control */
         uiObjectFlowRegistry,
     )
