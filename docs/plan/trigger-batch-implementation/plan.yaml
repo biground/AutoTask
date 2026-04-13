@@ -1,0 +1,1473 @@
+plan_id: trigger-batch-implementation
+objective: |
+  实现 AutoPilot 的 19 个 MVP 触发器：启用 5 个已实现触发器，验证 2 个部分实现触发器，
+  新建 8 个 EventDispatcher + 相关 Referent/EventFilter/EventCriterionRegistry 注册。
+  最终所有 19 个触发器可在引擎中正常触发和匹配。
+created_at: "2026-04-13"
+created_by: gem-planner
+status: pending_approval
+research_confidence: high
+complexity: complex
+
+plan_metrics:
+  total_tasks: 16
+  total_waves: 5
+  wave_1_task_count: 3
+  total_dependencies: 23
+  risk_score: medium
+
+tldr: |
+  16 个任务分 5 波执行，覆盖 19 个 MVP 触发器。
+  Wave 1 (3 任务): 基础设施 — Event 常量 16 个、字符串资源 18 条、权限声明 7 条。
+  Wave 2 (9 任务): 启用已有分发器 + 创建 8 个新 EventDispatcher + 对应单测。
+  Wave 3 (1 任务): 将所有新分发器注册到共享文件 (AutomatorService/EventFilter/EventCriterionRegistry)。
+  Wave 4 (2 任务): 验证轮询触发器 + 全量编译与测试。
+  Wave 5 (1 任务): 安全审查。
+  关键路径: T01 → T04 → T13 → T15。最大并行度 9 (Wave 2)。
+
+open_questions: []
+
+pre_mortem:
+  overall_risk_level: medium
+  critical_failure_modes:
+    - scenario: "Event 常量 ID 冲突 — 新增 ID 20-35 与其他并行开发分支冲突"
+      likelihood: low
+      impact: high
+      mitigation: "T01 先合入主干并广播，其他分支基于此 rebase"
+    - scenario: "AutomatorService.initEventDispatcher() 多任务串行修改导致合并冲突"
+      likelihood: medium
+      impact: medium
+      mitigation: "T04 完成所有快速启用注册；T13 完成所有新分发器注册。两个任务严格串行"
+    - scenario: "BroadcastReceiver 动态注册在 Android 16 上行为变化"
+      likelihood: medium
+      impact: medium
+      mitigation: "每个 Dispatcher 单测验证注册/注销生命周期，集成测试验证事件分发"
+    - scenario: "敏感权限 (SMS/CALL/BLUETOOTH) 运行时授权遗漏导致崩溃"
+      likelihood: medium
+      impact: high
+      mitigation: "T16 安全审查逐一检查权限声明、运行时检查、异常处理"
+    - scenario: "AlarmManager.setExactAndAllowWhileIdle 在 Doze 模式下不触发"
+      likelihood: medium
+      impact: medium
+      mitigation: "AlarmEventDispatcher 文档注明限制；使用 setAlarmClock 作为降级方案"
+  assumptions:
+    - "Android 16 (API 36) 是唯一目标平台，不需要向下兼容"
+    - "Event.kt 下一个可用 ID 为 20，无其他分支在并行添加常量"
+    - "所有 BroadcastReceiver 触发器运行时由前台 AutomatorService 托管，无需静态注册"
+    - "测试环境使用 Robolectric/MockK，Event.extras (SparseArray) 在纯 JVM 下为 mock"
+    - "ModeChangeEventDispatcher 虽非 19 个 MVP 之一，但已实现，一并注册以保持完整性"
+
+implementation_specification:
+  code_structure: |
+    新增 EventDispatcher 子类遵循既有模式：
+    1. 继承 EventDispatcher()
+    2. onRegistered() 中注册系统回调 (BroadcastReceiver / TelephonyCallback / etc.)
+    3. 回调中 Event.obtain(EVENT_TYPE).apply { putExtra(...) } → dispatchEvents()
+    4. destroy() 中注销所有监听
+    新增 Referent 实现类遵循既有 referent 模式：
+    data class *Referent(...) : Referent { getReferredValue(which, runtime) }
+    所有新文件放在 app/src/main/java/top/xjunz/tasker/task/event/ 目录下
+
+  affected_areas:
+    - "tasker-engine/src/main/java/top/xjunz/tasker/engine/runtime/Event.kt — 新增 16 个常量"
+    - "app/src/main/java/top/xjunz/tasker/service/AutomatorService.kt — initEventDispatcher() 注册新分发器"
+    - "app/src/main/java/top/xjunz/tasker/task/applet/criterion/EventFilter.kt — 新增 when 分支"
+    - "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/EventCriterionRegistry.kt — 新增事件选项"
+    - "app/src/main/java/top/xjunz/tasker/autostart/AutoStarter.kt — 增加开机事件分发逻辑"
+    - "app/src/main/AndroidManifest.xml — 新增权限声明"
+    - "app/src/main/res/values/strings.xml — 新增字符串资源"
+    - "app/src/main/java/top/xjunz/tasker/task/event/ — 8 个新 EventDispatcher 文件"
+    - "app/src/main/java/top/xjunz/tasker/task/applet/flow/ref/ — 5 个新 Referent 文件"
+    - "app/src/test/kotlin/top/xjunz/tasker/task/event/ — 8 个新单测文件"
+
+  component_details:
+    - component: "Event.kt 常量扩展"
+      responsibility: "定义 ID 20-35 的 16 个新事件类型常量"
+      interfaces:
+        - "EVENT_ON_ALARM_FIRED (20)"
+        - "EVENT_ON_DEVICE_BOOTED (21)"
+        - "EVENT_ON_SCREEN_ON (22)"
+        - "EVENT_ON_SCREEN_OFF (23)"
+        - "EVENT_ON_SCREEN_UNLOCKED (24)"
+        - "EVENT_ON_BT_STATE_CHANGED (25)"
+        - "EVENT_ON_BT_DEVICE_CONNECTED (26)"
+        - "EVENT_ON_BT_DEVICE_DISCONNECTED (27)"
+        - "EVENT_ON_CALL_STATE_CHANGED (28)"
+        - "EVENT_ON_SMS_RECEIVED (29)"
+        - "EVENT_ON_POWER_CONNECTED (30)"
+        - "EVENT_ON_POWER_DISCONNECTED (31)"
+        - "EVENT_ON_HEADSET_PLUGGED (32)"
+        - "EVENT_ON_HEADSET_UNPLUGGED (33)"
+        - "EVENT_ON_INTENT_RECEIVED (34)"
+        - "EVENT_ON_MANUAL_TRIGGER (35)"
+
+    - component: "ScreenEventDispatcher"
+      responsibility: "监听 SCREEN_ON/OFF + USER_PRESENT 系统广播，分发屏幕事件"
+      interfaces:
+        - "dispatchEvents(EVENT_ON_SCREEN_ON)"
+        - "dispatchEvents(EVENT_ON_SCREEN_OFF)"
+        - "dispatchEvents(EVENT_ON_SCREEN_UNLOCKED)"
+
+    - component: "PowerEventDispatcher"
+      responsibility: "监听 POWER_CONNECTED/DISCONNECTED 系统广播"
+      interfaces:
+        - "dispatchEvents(EVENT_ON_POWER_CONNECTED)"
+        - "dispatchEvents(EVENT_ON_POWER_DISCONNECTED)"
+
+    - component: "HeadsetEventDispatcher"
+      responsibility: "监听 ACTION_HEADSET_PLUG 广播，通过 state extra 区分插入/拔出"
+      interfaces:
+        - "dispatchEvents(EVENT_ON_HEADSET_PLUGGED)"
+        - "dispatchEvents(EVENT_ON_HEADSET_UNPLUGGED)"
+
+    - component: "BluetoothEventDispatcher + BluetoothReferent"
+      responsibility: "监听蓝牙状态/设备连接广播；Referent 暴露设备名、MAC 地址"
+      interfaces:
+        - "dispatchEvents(EVENT_ON_BT_STATE_CHANGED)"
+        - "dispatchEvents(EVENT_ON_BT_DEVICE_CONNECTED)"
+        - "dispatchEvents(EVENT_ON_BT_DEVICE_DISCONNECTED)"
+        - "BluetoothReferent.getReferredValue(0=self, 1=deviceName, 2=macAddress)"
+
+    - component: "AlarmEventDispatcher + AlarmReferent"
+      responsibility: "使用 AlarmManager 调度精确时间事件；Referent 暴露触发时间"
+      interfaces:
+        - "dispatchEvents(EVENT_ON_ALARM_FIRED)"
+        - "scheduleAlarm(timeInMillis, repeatRule)"
+        - "cancelAlarm()"
+        - "AlarmReferent.getReferredValue(0=self, 1=triggerTimeMillis)"
+
+    - component: "PhoneCallEventDispatcher + PhoneCallReferent"
+      responsibility: "使用 TelephonyCallback 监听来电状态变化；Referent 暴露号码"
+      interfaces:
+        - "dispatchEvents(EVENT_ON_CALL_STATE_CHANGED)"
+        - "EXTRA_CALL_STATE, EXTRA_PHONE_NUMBER"
+        - "PhoneCallReferent.getReferredValue(0=self, 1=phoneNumber, 2=callState)"
+
+    - component: "SmsEventDispatcher + SmsReferent"
+      responsibility: "监听 SMS_RECEIVED 广播；Referent 暴露发送方号码和内容"
+      interfaces:
+        - "dispatchEvents(EVENT_ON_SMS_RECEIVED)"
+        - "EXTRA_SMS_SENDER, EXTRA_SMS_BODY"
+        - "SmsReferent.getReferredValue(0=self, 1=sender, 2=body)"
+
+    - component: "IntentEventDispatcher + IntentReferent"
+      responsibility: "动态注册 BroadcastReceiver 捕获用户配置的 Intent Action"
+      interfaces:
+        - "dispatchEvents(EVENT_ON_INTENT_RECEIVED)"
+        - "registerAction(action: String)"
+        - "unregisterAction(action: String)"
+        - "IntentReferent.getReferredValue(0=self, 1=action, 2=dataUri)"
+
+  dependencies:
+    - component: "所有新 Dispatcher"
+      relationship: "继承 EventDispatcher，通过 MetaEventDispatcher.registerEventDispatcher() 注册"
+    - component: "所有新 Referent"
+      relationship: "实现 Referent 接口，由 EventFilter.apply() 创建并返回"
+    - component: "EventCriterionRegistry 条目"
+      relationship: "引用 Event 常量和 strings.xml 资源，创建 EventFilter 实例"
+
+  integration_points:
+    - "AutomatorService.initEventDispatcher() — 注册入口"
+    - "EventFilter.apply() when 分支 — 事件匹配和 Referent 创建"
+    - "EventCriterionRegistry @AppletOrdinal 条目 — UI 触发器列表"
+    - "ResidentTaskScheduler — 事件回调驱动任务执行"
+
+contracts:
+  - from_task: T01
+    to_task: T04
+    interface: "Event.kt 包含所有 16 个新常量 (ID 20-35)"
+    format: "Kotlin const val，编译通过"
+
+  - from_task: T01
+    to_task: "T05-T12"
+    interface: "Event 常量可在 Dispatcher 中引用"
+    format: "Event.EVENT_ON_* 常量"
+
+  - from_task: T02
+    to_task: T04
+    interface: "strings.xml 包含所有新事件的显示名称"
+    format: "R.string.on_* 资源 ID"
+
+  - from_task: T03
+    to_task: T04
+    interface: "AndroidManifest.xml 包含新权限声明"
+    format: "<uses-permission> 条目"
+
+  - from_task: T04
+    to_task: T13
+    interface: "AutomatorService.kt 中已有 clipboard/variable/mode 注册"
+    format: "initEventDispatcher() 方法已更新"
+
+  - from_task: "T05-T12"
+    to_task: T13
+    interface: "所有 8 个新 EventDispatcher + 5 个新 Referent 类文件存在且编译通过"
+    format: "Kotlin 类文件"
+
+  - from_task: T13
+    to_task: T15
+    interface: "所有 Dispatcher 已注册，EventFilter 分支完整，EventCriterionRegistry 条目完整"
+    format: "编译通过 + 全量测试通过"
+
+# ============================================================
+# 任务列表
+# ============================================================
+
+tasks:
+  # ================================================
+  # Wave 1: 基础设施
+  # ================================================
+
+  - id: T01
+    title: "添加 16 个新事件常量到 Event.kt"
+    description: |
+      在 Event.kt companion object 中添加 ID 20-35 的事件常量。
+      这些常量是所有后续 Dispatcher/EventFilter/Registry 任务的前提。
+    wave: 1
+    agent: gem-implementer
+    prototype: false
+    covers: []
+    priority: high
+    status: pending
+    dependencies: []
+    conflicts_with: []
+    triggers_covered: []
+    files_touched:
+      - "tasker-engine/src/main/java/top/xjunz/tasker/engine/runtime/Event.kt"
+    context_files:
+      - path: "tasker-engine/src/main/java/top/xjunz/tasker/engine/runtime/Event.kt"
+        description: "当前定义 EVENT_ON_LOCATION_ARRIVED = 19 为最后一个常量"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "基础设施先行，所有 Dispatcher 和 Registry 任务依赖事件常量"
+        timestamp: "2026-04-13"
+        estimated_effort: small
+        estimated_files: 1
+        estimated_lines: 20
+        focus_area: "Event.kt companion object"
+        verification:
+          - "编译命令: JAVA_HOME=/opt/homebrew/Cellar/openjdk@17/17.0.18/libexec/openjdk.jdk/Contents/Home ./gradlew :tasker-engine:compileDebugKotlin"
+          - "grep 'EVENT_ON_MANUAL_TRIGGER' Event.kt 输出常量定义"
+        acceptance_criteria:
+          - "Event.kt 包含 16 个新常量 EVENT_ON_ALARM_FIRED(20) 到 EVENT_ON_MANUAL_TRIGGER(35)"
+          - "所有常量为 const val Int，ID 不重复"
+          - ":tasker-engine:compileDebugKotlin 编译通过"
+        failure_modes:
+          - scenario: "ID 与其他分支冲突"
+            likelihood: low
+            impact: high
+            mitigation: "先 git pull 确认最新代码，ID 从 20 开始无冲突"
+        tech_stack:
+          - "Kotlin"
+        test_coverage: "无需单测，编译验证即可"
+    task_definition:
+      objective: "在 Event.kt 中添加 16 个新事件常量 (ID 20-35)"
+      steps:
+        - |
+          Red: 在 Event.kt companion object 末尾（EVENT_ON_LOCATION_ARRIVED = 19 之后）
+          观察当前最后一个常量为 19，确认可以从 20 开始
+        - |
+          Green: 在 EVENT_ON_LOCATION_ARRIVED 定义之后，添加以下 16 行：
+          ```kotlin
+          const val EVENT_ON_ALARM_FIRED = 20
+          const val EVENT_ON_DEVICE_BOOTED = 21
+          const val EVENT_ON_SCREEN_ON = 22
+          const val EVENT_ON_SCREEN_OFF = 23
+          const val EVENT_ON_SCREEN_UNLOCKED = 24
+          const val EVENT_ON_BT_STATE_CHANGED = 25
+          const val EVENT_ON_BT_DEVICE_CONNECTED = 26
+          const val EVENT_ON_BT_DEVICE_DISCONNECTED = 27
+          const val EVENT_ON_CALL_STATE_CHANGED = 28
+          const val EVENT_ON_SMS_RECEIVED = 29
+          const val EVENT_ON_POWER_CONNECTED = 30
+          const val EVENT_ON_POWER_DISCONNECTED = 31
+          const val EVENT_ON_HEADSET_PLUGGED = 32
+          const val EVENT_ON_HEADSET_UNPLUGGED = 33
+          const val EVENT_ON_INTENT_RECEIVED = 34
+          const val EVENT_ON_MANUAL_TRIGGER = 35
+          ```
+        - "Verify: 运行 :tasker-engine:compileDebugKotlin 确认编译通过"
+      acceptance_criteria:
+        - "16 个新常量存在且 ID 不重复"
+        - ":tasker-engine:compileDebugKotlin 编译成功"
+
+  - id: T02
+    title: "添加触发器字符串资源到 strings.xml"
+    description: |
+      在 strings.xml 中添加所有新触发器需要的字符串资源。
+      涵盖事件名称、Referent 字段标签等。
+    wave: 1
+    agent: gem-implementer
+    prototype: false
+    covers: []
+    priority: high
+    status: pending
+    dependencies: []
+    conflicts_with: [T03]
+    triggers_covered: []
+    files_touched:
+      - "app/src/main/res/values/strings.xml"
+    context_files:
+      - path: "app/src/main/res/values/strings.xml"
+        description: "现有字符串资源文件，已有 on_wifi_connected 等事件相关字符串"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "字符串资源被 EventCriterionRegistry 引用，必须先于注册任务完成"
+        timestamp: "2026-04-13"
+        estimated_effort: small
+        estimated_files: 1
+        estimated_lines: 40
+        focus_area: "strings.xml 事件/触发器相关区域"
+        verification:
+          - "编译命令: JAVA_HOME=... ./gradlew :app:processDebugResources"
+          - "grep 'on_alarm_fired' strings.xml 确认条目存在"
+        acceptance_criteria:
+          - "包含所有新事件的触发器名称字符串 (on_alarm_fired, on_device_booted, on_screen_on, on_screen_off, on_screen_unlocked, on_bt_state_changed, on_bt_device_connected, on_bt_device_disconnected, on_call_state_changed, on_sms_received, on_power_connected, on_power_disconnected, on_headset_plugged, on_headset_unplugged, on_intent_received, on_manual_trigger)"
+          - "包含 Referent 字段标签 (bt_device_name, bt_mac_address, alarm_trigger_time, phone_number, call_state, sms_sender, sms_body, intent_action, intent_data_uri)"
+          - "资源编译通过"
+        failure_modes:
+          - scenario: "字符串 name 与现有条目冲突"
+            likelihood: low
+            impact: low
+            mitigation: "使用唯一前缀命名，先 grep 确认无冲突"
+        tech_stack:
+          - "Android XML Resources"
+        test_coverage: null
+    task_definition:
+      objective: "添加约 25 条新字符串资源到 strings.xml"
+      steps:
+        - "Red: grep strings.xml 确认无同名字符串"
+        - |
+          Green: 在 strings.xml 合适位置添加以下字符串：
+          ```xml
+          <!-- 触发器事件名称 -->
+          <string name="on_alarm_fired">闹钟触发</string>
+          <string name="on_device_booted">设备开机</string>
+          <string name="on_screen_on">屏幕亮起</string>
+          <string name="on_screen_off">屏幕熄灭</string>
+          <string name="on_screen_unlocked">屏幕解锁</string>
+          <string name="on_bt_state_changed">蓝牙状态变化</string>
+          <string name="on_bt_device_connected">蓝牙设备连接</string>
+          <string name="on_bt_device_disconnected">蓝牙设备断开</string>
+          <string name="on_call_state_changed">来电状态变化</string>
+          <string name="on_sms_received">短信接收</string>
+          <string name="on_power_connected">电源连接</string>
+          <string name="on_power_disconnected">电源断开</string>
+          <string name="on_headset_plugged">耳机插入</string>
+          <string name="on_headset_unplugged">耳机拔出</string>
+          <string name="on_intent_received">接收 Intent</string>
+          <string name="on_manual_trigger">手动触发</string>
+          <!-- Referent 标签 -->
+          <string name="bt_device_name">蓝牙设备名</string>
+          <string name="bt_mac_address">蓝牙 MAC 地址</string>
+          <string name="alarm_trigger_time">闹钟触发时间</string>
+          <string name="phone_number">电话号码</string>
+          <string name="call_state">通话状态</string>
+          <string name="sms_sender">短信发送方</string>
+          <string name="sms_body">短信内容</string>
+          <string name="intent_action">Intent Action</string>
+          <string name="intent_data_uri">Intent Data URI</string>
+          ```
+        - "Verify: 运行 :app:processDebugResources 确认编译通过"
+      acceptance_criteria:
+        - "所有字符串已添加且无命名冲突"
+        - "资源编译成功"
+
+  - id: T03
+    title: "添加新权限声明到 AndroidManifest.xml"
+    description: |
+      在 AndroidManifest.xml 中添加触发器所需的新权限声明。
+      涵盖精确闹钟、蓝牙、电话、短信等权限。
+    wave: 1
+    agent: gem-implementer
+    prototype: false
+    covers: []
+    priority: high
+    status: pending
+    dependencies: []
+    conflicts_with: [T02]
+    triggers_covered: []
+    files_touched:
+      - "app/src/main/AndroidManifest.xml"
+    context_files:
+      - path: "app/src/main/AndroidManifest.xml"
+        description: "已有 RECEIVE_BOOT_COMPLETED, ACCESS_NETWORK_STATE 等权限"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "权限声明是运行时必需的，提前声明避免 SecurityException"
+        timestamp: "2026-04-13"
+        estimated_effort: small
+        estimated_files: 1
+        estimated_lines: 10
+        focus_area: "AndroidManifest.xml <uses-permission> 区域"
+        verification:
+          - "grep 'SCHEDULE_EXACT_ALARM' AndroidManifest.xml"
+          - "编译命令: ./gradlew :app:processDebugManifest"
+        acceptance_criteria:
+          - "SCHEDULE_EXACT_ALARM 权限已声明"
+          - "USE_EXACT_ALARM 权限已声明"
+          - "BLUETOOTH_CONNECT 权限已声明"
+          - "READ_PHONE_STATE 权限已声明"
+          - "READ_CALL_LOG 权限已声明"
+          - "RECEIVE_SMS 权限已声明"
+          - "READ_SMS 权限已声明"
+        failure_modes:
+          - scenario: "权限声明格式错误导致 manifest merge 失败"
+            likelihood: low
+            impact: medium
+            mitigation: "使用标准 <uses-permission android:name=\"...\"/> 格式"
+        tech_stack:
+          - "Android Manifest XML"
+        test_coverage: null
+    task_definition:
+      objective: "在 AndroidManifest.xml 中添加 7 条新权限声明"
+      steps:
+        - "Red: 确认当前 Manifest 中缺少目标权限"
+        - |
+          Green: 在已有 <uses-permission> 块后添加：
+          ```xml
+          <!-- 触发器新增权限 -->
+          <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+          <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
+          <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+          <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+          <uses-permission android:name="android.permission.READ_CALL_LOG" />
+          <uses-permission android:name="android.permission.RECEIVE_SMS" />
+          <uses-permission android:name="android.permission.READ_SMS" />
+          ```
+        - "Verify: 运行 :app:processDebugManifest 确认合并成功"
+      acceptance_criteria:
+        - "7 条权限声明存在于合并后的 Manifest 中"
+
+  # ================================================
+  # Wave 2: 启用已有 + 创建新 Dispatcher
+  # ================================================
+
+  - id: T04
+    title: "启用已有分发器 + 注册快速启用触发器"
+    description: |
+      在 AutomatorService.initEventDispatcher() 中启用 ClipboardEventDispatcher（取消注释）、
+      注册 VariableChangeEventDispatcher 和 ModeChangeEventDispatcher。
+      在 EventCriterionRegistry 中取消注释 primaryClipChanged，新增 manualTrigger 和 deviceBooted 条目。
+      在 EventFilter 中新增 boot 和 manual 事件分支。
+      修改 AutomatorService.prepareWorkerMode() 在初始化后分发开机事件。
+    wave: 2
+    agent: gem-implementer
+    prototype: false
+    covers:
+      - "T-APP-006 剪贴板变化"
+      - "T-INT-001 变量变化"
+      - "T-INT-017 手动触发"
+      - "T-DEV-001 设备开机"
+    priority: high
+    status: pending
+    dependencies: [T01, T02, T03]
+    conflicts_with: [T13]
+    triggers_covered: [T-APP-006, T-INT-001, T-INT-017, T-DEV-001]
+    files_touched:
+      - "app/src/main/java/top/xjunz/tasker/service/AutomatorService.kt"
+      - "app/src/main/java/top/xjunz/tasker/task/applet/criterion/EventFilter.kt"
+      - "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/EventCriterionRegistry.kt"
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/service/AutomatorService.kt"
+        description: "initEventDispatcher() 在第 67-80 行；ClipboardEventDispatcher 被注释在第 77 行"
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/EventCriterionRegistry.kt"
+        description: "primaryClipChanged 在文件末尾被注释；当前最后一个 @AppletOrdinal 为 0x0017"
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/criterion/EventFilter.kt"
+        description: "apply() 中的 when 表达式处理各事件类型"
+      - path: "app/src/main/java/top/xjunz/tasker/task/event/ClipboardEventDispatcher.kt"
+        description: "已完整实现，只需取消注释注册即可"
+      - path: "app/src/main/java/top/xjunz/tasker/task/variable/VariableChangeEventDispatcher.kt"
+        description: "已实现但未注册到 initEventDispatcher"
+      - path: "app/src/main/java/top/xjunz/tasker/task/mode/ModeChangeEventDispatcher.kt"
+        description: "已实现但未注册到 initEventDispatcher"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "将多个超小变更(取消注释、添加1-2行)合并为一个任务，因为都触及共享文件"
+        timestamp: "2026-04-13"
+        estimated_effort: medium
+        estimated_files: 3
+        estimated_lines: 50
+        focus_area: "AutomatorService/EventFilter/EventCriterionRegistry 共享文件"
+        verification:
+          - "编译命令: JAVA_HOME=... ./gradlew :app:compileDebugKotlin"
+          - "grep '//eventDispatcher.registerEventDispatcher(ClipboardEventDispatcher())' AutomatorService.kt 应无结果(已取消注释)"
+          - "grep 'VariableChangeEventDispatcher' AutomatorService.kt 有注册行"
+          - "grep 'manualTrigger' EventCriterionRegistry.kt 有定义"
+          - "grep 'deviceBooted' EventCriterionRegistry.kt 有定义"
+        acceptance_criteria:
+          - "ClipboardEventDispatcher 在 initEventDispatcher 中已注册（非注释状态）"
+          - "VariableChangeEventDispatcher 在 initEventDispatcher 中已注册"
+          - "ModeChangeEventDispatcher 在 initEventDispatcher 中已注册"
+          - "EventCriterionRegistry.primaryClipChanged 已取消注释，@AppletOrdinal 有效"
+          - "EventCriterionRegistry 新增 manualTrigger (EVENT_ON_MANUAL_TRIGGER) 和 deviceBooted (EVENT_ON_DEVICE_BOOTED)"
+          - "EventFilter.apply() 中 EVENT_ON_DEVICE_BOOTED → EMPTY_SUCCESS"
+          - "EventFilter.apply() 中 EVENT_ON_MANUAL_TRIGGER → EMPTY_SUCCESS"
+          - "AutomatorService.prepareWorkerMode() 在 initEventDispatcher() 后调用 eventDispatcher.dispatchEvents(Event.obtain(EVENT_ON_DEVICE_BOOTED))"
+          - ":app:compileDebugKotlin 编译成功"
+        failure_modes:
+          - scenario: "VariableChangeEventDispatcher 构造函数需要参数 (repository, scope)"
+            likelihood: medium
+            impact: medium
+            mitigation: "参考现有用法传入 VariableRepository.instance 和 CoroutineScope"
+        tech_stack:
+          - "Kotlin"
+        test_coverage: "现有 VariableChangeEventDispatcherTest 覆盖分发逻辑"
+    task_definition:
+      objective: "启用 3 个已有分发器 + 注册 4 个快速启用触发器的事件入口"
+      steps:
+        - |
+          Red: 运行 :app:compileDebugKotlin 确认当前编译通过（基线）
+        - |
+          Green 步骤 1 — AutomatorService.kt:
+          1. 取消注释 `//eventDispatcher.registerEventDispatcher(ClipboardEventDispatcher())`
+          2. 在 ClipboardEventDispatcher 注册行后添加：
+             eventDispatcher.registerEventDispatcher(VariableChangeEventDispatcher(VariableRepository.instance, CoroutineScope(Dispatchers.IO + SupervisorJob())))
+             eventDispatcher.registerEventDispatcher(ModeChangeEventDispatcher(ModeRepository.instance, CoroutineScope(Dispatchers.IO + SupervisorJob())))
+          3. 在 prepareWorkerMode() 方法中 initEventDispatcher() 调用之后添加：
+             eventDispatcher.dispatchEvents(Event.obtain(Event.EVENT_ON_DEVICE_BOOTED))
+        - |
+          Green 步骤 2 — EventFilter.kt:
+          在 when(hit.type) 中添加两个新分支：
+          Event.EVENT_ON_DEVICE_BOOTED, Event.EVENT_ON_MANUAL_TRIGGER -> AppletResult.EMPTY_SUCCESS
+        - |
+          Green 步骤 3 — EventCriterionRegistry.kt:
+          1. 取消注释 primaryClipChanged 块，调整 @AppletOrdinal 为 0x0018
+          2. 新增 @AppletOrdinal(0x0019) manualTrigger = eventFilterOption(Event.EVENT_ON_MANUAL_TRIGGER, R.string.on_manual_trigger)
+          3. 新增 @AppletOrdinal(0x001A) deviceBooted = eventFilterOption(Event.EVENT_ON_DEVICE_BOOTED, R.string.on_device_booted)
+        - |
+          Verify: 运行 :app:compileDebugKotlin + 现有测试套件
+      acceptance_criteria:
+        - "编译通过"
+        - "现有 305 个单测全部通过"
+
+  - id: T05
+    title: "创建 ScreenEventDispatcher + 单测"
+    description: |
+      创建 ScreenEventDispatcher 监听 SCREEN_ON / SCREEN_OFF / USER_PRESENT 系统广播，
+      分发对应的 3 个事件。包含完整单元测试。
+    wave: 2
+    agent: gem-implementer
+    prototype: false
+    covers: ["T-DEV-002 屏幕亮灭", "T-DEV-003 屏幕解锁"]
+    priority: high
+    status: pending
+    dependencies: [T01]
+    conflicts_with: []
+    triggers_covered: [T-DEV-002, T-DEV-003]
+    files_touched:
+      - "app/src/main/java/top/xjunz/tasker/task/event/ScreenEventDispatcher.kt"
+      - "app/src/test/kotlin/top/xjunz/tasker/task/event/ScreenEventDispatcherTest.kt"
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/task/event/ClipboardEventDispatcher.kt"
+        description: "参考模式：继承 EventDispatcher，在 init/onRegistered 注册监听，destroy 清理"
+      - path: "app/src/main/java/top/xjunz/tasker/task/event/NetworkEventDispatcher.kt"
+        description: "参考模式：BroadcastReceiver/Callback 模式"
+      - path: "app/src/test/kotlin/top/xjunz/tasker/task/variable/VariableChangeEventDispatcherTest.kt"
+        description: "参考测试模式：addCallback 收集事件，验证事件类型和数量"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "简单 BroadcastReceiver 模式，无需特殊权限"
+        timestamp: "2026-04-13"
+        estimated_effort: small
+        estimated_files: 2
+        estimated_lines: 80
+        focus_area: "新建 Dispatcher 文件 + 单测"
+        verification:
+          - "编译命令: JAVA_HOME=... ./gradlew :app:compileDebugKotlin"
+          - "测试命令: ./gradlew :app:testDebugUnitTest --tests '*.ScreenEventDispatcherTest'"
+        acceptance_criteria:
+          - "ScreenEventDispatcher 继承 EventDispatcher"
+          - "onRegistered() 中动态注册 BroadcastReceiver (SCREEN_ON/SCREEN_OFF/USER_PRESENT)"
+          - "收到广播后调用 dispatchEvents() 发送对应 Event"
+          - "destroy() 中注销 BroadcastReceiver"
+          - "单测验证 3 种事件的分发"
+        failure_modes:
+          - scenario: "Robolectric 下 ContextBridge 返回 null"
+            likelihood: medium
+            impact: medium
+            mitigation: "单测使用 MockK mock ContextBridge，或使用 Robolectric ApplicationContext"
+        tech_stack:
+          - "Kotlin"
+          - "Android BroadcastReceiver"
+          - "MockK"
+          - "JUnit 4"
+        test_coverage: "ScreenEventDispatcherTest 覆盖 3 种事件分发"
+    task_definition:
+      objective: "创建处理屏幕亮灭和解锁的 EventDispatcher"
+      steps:
+        - |
+          Red: 创建 ScreenEventDispatcherTest.kt，编写测试：
+          - `屏幕亮起时分发 EVENT_ON_SCREEN_ON`
+          - `屏幕熄灭时分发 EVENT_ON_SCREEN_OFF`
+          - `屏幕解锁时分发 EVENT_ON_SCREEN_UNLOCKED`
+          运行测试，确认编译失败（ScreenEventDispatcher 不存在）
+        - |
+          Green: 创建 ScreenEventDispatcher.kt：
+          ```kotlin
+          class ScreenEventDispatcher : EventDispatcher() {
+              private val receiver = object : BroadcastReceiver() {
+                  override fun onReceive(context: Context, intent: Intent) {
+                      when (intent.action) {
+                          Intent.ACTION_SCREEN_ON -> dispatchEvents(Event.obtain(Event.EVENT_ON_SCREEN_ON))
+                          Intent.ACTION_SCREEN_OFF -> dispatchEvents(Event.obtain(Event.EVENT_ON_SCREEN_OFF))
+                          Intent.ACTION_USER_PRESENT -> dispatchEvents(Event.obtain(Event.EVENT_ON_SCREEN_UNLOCKED))
+                      }
+                  }
+              }
+              override fun onRegistered() {
+                  val filter = IntentFilter().apply {
+                      addAction(Intent.ACTION_SCREEN_ON)
+                      addAction(Intent.ACTION_SCREEN_OFF)
+                      addAction(Intent.ACTION_USER_PRESENT)
+                  }
+                  ContextBridge.getContext().registerReceiver(receiver, filter)
+              }
+              override fun destroy() {
+                  ContextBridge.getContext().unregisterReceiver(receiver)
+              }
+          }
+          ```
+        - "Verify: 运行单测确认 3 个测试全部通过"
+      acceptance_criteria:
+        - "3 个单测通过"
+        - "编译成功"
+
+  - id: T06
+    title: "创建 PowerEventDispatcher + 单测"
+    description: |
+      创建 PowerEventDispatcher 监听 POWER_CONNECTED / POWER_DISCONNECTED 系统广播。
+    wave: 2
+    agent: gem-implementer
+    prototype: false
+    covers: ["T-PWR-001 电源连接/断开"]
+    priority: medium
+    status: pending
+    dependencies: [T01]
+    conflicts_with: []
+    triggers_covered: [T-PWR-001]
+    files_touched:
+      - "app/src/main/java/top/xjunz/tasker/task/event/PowerEventDispatcher.kt"
+      - "app/src/test/kotlin/top/xjunz/tasker/task/event/PowerEventDispatcherTest.kt"
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/task/event/ClipboardEventDispatcher.kt"
+        description: "参考 BroadcastReceiver 注册模式"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "简单 BroadcastReceiver，无需权限"
+        timestamp: "2026-04-13"
+        estimated_effort: small
+        estimated_files: 2
+        estimated_lines: 60
+        focus_area: "新建 Dispatcher + 单测"
+        verification:
+          - "测试命令: ./gradlew :app:testDebugUnitTest --tests '*.PowerEventDispatcherTest'"
+        acceptance_criteria:
+          - "PowerEventDispatcher 监听 ACTION_POWER_CONNECTED / ACTION_POWER_DISCONNECTED"
+          - "dispatchEvents 分发 EVENT_ON_POWER_CONNECTED / EVENT_ON_POWER_DISCONNECTED"
+          - "destroy() 注销 receiver"
+          - "单测覆盖 2 种事件"
+        failure_modes:
+          - scenario: "ACTION_POWER_CONNECTED 在某些 OEM 上不触发"
+            likelihood: low
+            impact: low
+            mitigation: "标准 Android API，OEM 兼容性问题属 V2 范围"
+        tech_stack:
+          - "Kotlin"
+          - "Android BroadcastReceiver"
+        test_coverage: "PowerEventDispatcherTest 覆盖 2 种事件"
+    task_definition:
+      objective: "创建处理电源连接/断开的 EventDispatcher"
+      steps:
+        - "Red: 创建 PowerEventDispatcherTest.kt，测试电源连接和断开事件分发，运行确认编译失败"
+        - |
+          Green: 创建 PowerEventDispatcher.kt，遵循 ScreenEventDispatcher 相同模式：
+          - onRegistered(): registerReceiver(filter: POWER_CONNECTED + POWER_DISCONNECTED)
+          - onReceive(): dispatchEvents(EVENT_ON_POWER_CONNECTED / DISCONNECTED)
+          - destroy(): unregisterReceiver
+        - "Verify: 运行单测确认通过"
+      acceptance_criteria:
+        - "2 个单测通过"
+
+  - id: T07
+    title: "创建 HeadsetEventDispatcher + 单测"
+    description: |
+      创建 HeadsetEventDispatcher 监听 ACTION_HEADSET_PLUG 广播，
+      通过 intent extra 的 state 值区分插入(1)和拔出(0)。
+    wave: 2
+    agent: gem-implementer
+    prototype: false
+    covers: ["T-HW-001 耳机插入/拔出"]
+    priority: medium
+    status: pending
+    dependencies: [T01]
+    conflicts_with: []
+    triggers_covered: [T-HW-001]
+    files_touched:
+      - "app/src/main/java/top/xjunz/tasker/task/event/HeadsetEventDispatcher.kt"
+      - "app/src/test/kotlin/top/xjunz/tasker/task/event/HeadsetEventDispatcherTest.kt"
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/task/event/ClipboardEventDispatcher.kt"
+        description: "参考模式"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "简单 BroadcastReceiver，通过 extra state 区分事件"
+        timestamp: "2026-04-13"
+        estimated_effort: small
+        estimated_files: 2
+        estimated_lines: 65
+        focus_area: "新建 Dispatcher + 单测"
+        verification:
+          - "测试命令: ./gradlew :app:testDebugUnitTest --tests '*.HeadsetEventDispatcherTest'"
+        acceptance_criteria:
+          - "HeadsetEventDispatcher 监听 AudioManager.ACTION_HEADSET_PLUG"
+          - "state=1 → EVENT_ON_HEADSET_PLUGGED，state=0 → EVENT_ON_HEADSET_UNPLUGGED"
+          - "单测覆盖插入和拔出"
+        failure_modes:
+          - scenario: "AudioManager.ACTION_HEADSET_PLUG 在 BT 耳机上不触发"
+            likelihood: medium
+            impact: low
+            mitigation: "BT 耳机由 BluetoothEventDispatcher 处理，有线耳机用此 dispatcher"
+        tech_stack:
+          - "Kotlin"
+          - "Android BroadcastReceiver"
+          - "AudioManager"
+        test_coverage: "HeadsetEventDispatcherTest 覆盖 2 种事件"
+    task_definition:
+      objective: "创建处理耳机插入/拔出的 EventDispatcher"
+      steps:
+        - "Red: 创建 HeadsetEventDispatcherTest.kt，测试耳机插入和拔出事件分发"
+        - |
+          Green: 创建 HeadsetEventDispatcher.kt：
+          - 监听 AudioManager.ACTION_HEADSET_PLUG
+          - onReceive 中判断 intent.getIntExtra(\"state\", -1)
+          - state=1 → dispatchEvents(EVENT_ON_HEADSET_PLUGGED)
+          - state=0 → dispatchEvents(EVENT_ON_HEADSET_UNPLUGGED)
+        - "Verify: 运行单测确认通过"
+      acceptance_criteria:
+        - "2 个单测通过"
+
+  - id: T08
+    title: "创建 BluetoothEventDispatcher + BluetoothReferent + 单测"
+    description: |
+      创建 BluetoothEventDispatcher 监听蓝牙状态变化和设备连接/断开广播。
+      创建 BluetoothReferent 暴露设备名和 MAC 地址。
+      需要 BLUETOOTH_CONNECT 运行时权限检查。
+    wave: 2
+    agent: gem-implementer
+    prototype: false
+    covers: ["T-NET-003 蓝牙事件"]
+    priority: medium
+    status: pending
+    dependencies: [T01]
+    conflicts_with: []
+    triggers_covered: [T-NET-003]
+    files_touched:
+      - "app/src/main/java/top/xjunz/tasker/task/event/BluetoothEventDispatcher.kt"
+      - "app/src/main/java/top/xjunz/tasker/task/applet/flow/ref/BluetoothReferent.kt"
+      - "app/src/test/kotlin/top/xjunz/tasker/task/event/BluetoothEventDispatcherTest.kt"
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/task/event/NetworkEventDispatcher.kt"
+        description: "参考：系统回调模式 + EXTRA 常量"
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/flow/ref/VariableChangeReferent.kt"
+        description: "参考 Referent 实现模式"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "中等复杂度，需要处理 3 种蓝牙广播 + 权限检查 + Referent"
+        timestamp: "2026-04-13"
+        estimated_effort: medium
+        estimated_files: 3
+        estimated_lines: 120
+        focus_area: "蓝牙事件分发 + 设备信息引用"
+        verification:
+          - "测试命令: ./gradlew :app:testDebugUnitTest --tests '*.BluetoothEventDispatcherTest'"
+        acceptance_criteria:
+          - "BluetoothEventDispatcher 监听 ACTION_STATE_CHANGED / ACTION_ACL_CONNECTED / ACTION_ACL_DISCONNECTED"
+          - "EXTRA_BT_DEVICE_NAME 和 EXTRA_BT_MAC_ADDRESS 常量定义"
+          - "BluetoothReferent 实现 Referent 接口，getReferredValue(0)=self, (1)=deviceName, (2)=macAddress"
+          - "onRegistered 中检查 BLUETOOTH_CONNECT 权限"
+          - "单测覆盖 3 种事件"
+        failure_modes:
+          - scenario: "BLUETOOTH_CONNECT 权限未授权导致 SecurityException"
+            likelihood: medium
+            impact: medium
+            mitigation: "onRegistered() 中 checkSelfPermission，无权限时 log 警告并跳过注册"
+        tech_stack:
+          - "Kotlin"
+          - "Android Bluetooth API"
+          - "BroadcastReceiver"
+        test_coverage: "BluetoothEventDispatcherTest 覆盖 3 种事件 + 权限缺失场景"
+    task_definition:
+      objective: "创建蓝牙事件分发器和 Referent"
+      steps:
+        - |
+          Red: 创建 BluetoothEventDispatcherTest.kt 和空的 BluetoothReferent.kt，
+          测试 BT 状态变化、设备连接、设备断开事件，运行确认失败
+        - |
+          Green: 实现 BluetoothEventDispatcher：
+          - 监听 BluetoothAdapter.ACTION_STATE_CHANGED, BluetoothDevice.ACTION_ACL_CONNECTED/DISCONNECTED
+          - ACL 事件中从 intent 获取 BluetoothDevice，提取 name/address 放入 Event extras
+          - 创建 BluetoothReferent(deviceName, macAddress) 实现 Referent
+        - |
+          Refactor: 确保权限检查优雅：
+          if (ContextCompat.checkSelfPermission(...) != GRANTED) { Log.w(...); return }
+        - "Verify: 运行单测确认通过"
+      acceptance_criteria:
+        - "3 个单测通过"
+        - "BluetoothReferent 编译通过"
+
+  - id: T09
+    title: "创建 AlarmEventDispatcher + AlarmReferent + 单测"
+    description: |
+      创建 AlarmEventDispatcher 使用 AlarmManager 调度精确时间事件。
+      使用 PendingIntent + BroadcastReceiver 接收闹钟触发。
+      创建 AlarmReferent 暴露触发时间。
+    wave: 2
+    agent: gem-implementer
+    prototype: false
+    covers: ["T-TIME-001 指定日期时间触发", "T-TIME-002 按周几/号数触发"]
+    priority: high
+    status: pending
+    dependencies: [T01]
+    conflicts_with: []
+    triggers_covered: [T-TIME-001, T-TIME-002]
+    files_touched:
+      - "app/src/main/java/top/xjunz/tasker/task/event/AlarmEventDispatcher.kt"
+      - "app/src/main/java/top/xjunz/tasker/task/applet/flow/ref/AlarmReferent.kt"
+      - "app/src/test/kotlin/top/xjunz/tasker/task/event/AlarmEventDispatcherTest.kt"
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/task/event/PollEventDispatcher.kt"
+        description: "参考：时间相关 Dispatcher 的 EXTRA 模式"
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/flow/ref/VariableChangeReferent.kt"
+        description: "参考 Referent 模式"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "复杂度较高，需要 AlarmManager + PendingIntent + BroadcastReceiver + 重复规则"
+        timestamp: "2026-04-13"
+        estimated_effort: medium
+        estimated_files: 3
+        estimated_lines: 150
+        focus_area: "AlarmManager 调度 + 事件分发"
+        verification:
+          - "测试命令: ./gradlew :app:testDebugUnitTest --tests '*.AlarmEventDispatcherTest'"
+        acceptance_criteria:
+          - "AlarmEventDispatcher 继承 EventDispatcher"
+          - "提供 scheduleAlarm(timeInMillis) 方法设定精确闹钟"
+          - "使用 AlarmManager.setExactAndAllowWhileIdle + PendingIntent"
+          - "内部 BroadcastReceiver 接收闹钟广播后 dispatchEvents(EVENT_ON_ALARM_FIRED)"
+          - "Event extras 携带 EXTRA_ALARM_TRIGGER_TIME (Long)"
+          - "AlarmReferent 实现 getReferredValue: (0)=self, (1)=triggerTimeMillis"
+          - "destroy() 取消所有 PendingIntent + 注销 Receiver"
+          - "单测覆盖调度和接收"
+        failure_modes:
+          - scenario: "SCHEDULE_EXACT_ALARM 权限被拒导致 IllegalStateException"
+            likelihood: medium
+            impact: high
+            mitigation: "schedule 前检查 canScheduleExactAlarms()，失败时降级为 setAndAllowWhileIdle"
+          - scenario: "Doze 模式下闹钟延迟触发"
+            likelihood: medium
+            impact: medium
+            mitigation: "使用 setExactAndAllowWhileIdle，文档注明 Doze 限制"
+        tech_stack:
+          - "Kotlin"
+          - "AlarmManager"
+          - "PendingIntent"
+          - "BroadcastReceiver"
+        test_coverage: "AlarmEventDispatcherTest 覆盖调度/触发/取消场景"
+    task_definition:
+      objective: "创建基于 AlarmManager 的精确时间触发分发器"
+      steps:
+        - |
+          Red: 创建 AlarmEventDispatcherTest.kt，测试：
+          - scheduleAlarm 后 AlarmManager 被调用
+          - 收到闹钟广播后分发 EVENT_ON_ALARM_FIRED
+          - destroy 后 PendingIntent 被取消
+        - |
+          Green: 创建 AlarmEventDispatcher.kt：
+          - companion object: ACTION_ALARM_FIRED = "top.xjunz.tasker.ALARM_FIRED"
+          - companion object: EXTRA_ALARM_TRIGGER_TIME = 0
+          - 内部 BroadcastReceiver 在 onReceive 中 dispatchEvents
+          - scheduleAlarm(timeInMillis): AlarmManager.setExactAndAllowWhileIdle(RTC_WAKEUP, time, pi)
+          - onRegistered(): 注册 receiver
+          - destroy(): 取消 alarm + 注销 receiver
+          创建 AlarmReferent.kt
+        - "Verify: 运行单测确认通过"
+      acceptance_criteria:
+        - "单测通过"
+        - "编译成功"
+
+  - id: T10
+    title: "创建 PhoneCallEventDispatcher + PhoneCallReferent + 单测"
+    description: |
+      创建 PhoneCallEventDispatcher 使用 TelephonyCallback (API 31+) 监听通话状态变化。
+      创建 PhoneCallReferent 暴露来电号码和通话状态。
+    wave: 2
+    agent: gem-implementer
+    prototype: false
+    covers: ["T-PHONE-001 来电"]
+    priority: medium
+    status: pending
+    dependencies: [T01]
+    conflicts_with: []
+    triggers_covered: [T-PHONE-001]
+    files_touched:
+      - "app/src/main/java/top/xjunz/tasker/task/event/PhoneCallEventDispatcher.kt"
+      - "app/src/main/java/top/xjunz/tasker/task/applet/flow/ref/PhoneCallReferent.kt"
+      - "app/src/test/kotlin/top/xjunz/tasker/task/event/PhoneCallEventDispatcherTest.kt"
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/task/event/NetworkEventDispatcher.kt"
+        description: "参考：系统回调注册模式"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "需要 TelephonyCallback + 敏感权限处理"
+        timestamp: "2026-04-13"
+        estimated_effort: medium
+        estimated_files: 3
+        estimated_lines: 110
+        focus_area: "通话状态监听 + 权限检查"
+        verification:
+          - "测试命令: ./gradlew :app:testDebugUnitTest --tests '*.PhoneCallEventDispatcherTest'"
+        acceptance_criteria:
+          - "PhoneCallEventDispatcher 使用 TelephonyCallback.CallStateListener"
+          - "来电时分发 EVENT_ON_CALL_STATE_CHANGED + EXTRA_PHONE_NUMBER + EXTRA_CALL_STATE"
+          - "PhoneCallReferent: (0)=self, (1)=phoneNumber, (2)=callState"
+          - "onRegistered 检查 READ_PHONE_STATE 权限"
+          - "destroy() 注销 TelephonyCallback"
+        failure_modes:
+          - scenario: "READ_PHONE_STATE 权限未授权"
+            likelihood: medium
+            impact: medium
+            mitigation: "无权限时 log 警告并跳过注册"
+        tech_stack:
+          - "Kotlin"
+          - "TelephonyCallback (API 31+)"
+        test_coverage: "覆盖来电/接听/挂断 3 种状态"
+    task_definition:
+      objective: "创建通话状态事件分发器和 Referent"
+      steps:
+        - "Red: 创建测试类，测试来电状态变化事件分发，确认编译失败"
+        - |
+          Green: 创建 PhoneCallEventDispatcher.kt：
+          - companion: EXTRA_PHONE_NUMBER=0, EXTRA_CALL_STATE=1
+          - 使用 TelephonyManager.registerTelephonyCallback(executor, callback)
+          - callback: TelephonyCallback.CallStateListener { onCallStateChanged(state) → dispatchEvents }
+          - 获取来电号码需 READ_CALL_LOG 权限（通过 TelephonyCallback.CallStateListener 接口）
+          创建 PhoneCallReferent(phoneNumber, callState) : Referent
+        - "Verify: 运行单测确认通过"
+      acceptance_criteria:
+        - "单测通过"
+
+  - id: T11
+    title: "创建 SmsEventDispatcher + SmsReferent + 单测"
+    description: |
+      创建 SmsEventDispatcher 监听 SMS_RECEIVED 广播。
+      创建 SmsReferent 暴露发送方号码和短信内容。
+    wave: 2
+    agent: gem-implementer
+    prototype: false
+    covers: ["T-PHONE-006 短信接收"]
+    priority: medium
+    status: pending
+    dependencies: [T01]
+    conflicts_with: []
+    triggers_covered: [T-PHONE-006]
+    files_touched:
+      - "app/src/main/java/top/xjunz/tasker/task/event/SmsEventDispatcher.kt"
+      - "app/src/main/java/top/xjunz/tasker/task/applet/flow/ref/SmsReferent.kt"
+      - "app/src/test/kotlin/top/xjunz/tasker/task/event/SmsEventDispatcherTest.kt"
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/task/event/ClipboardEventDispatcher.kt"
+        description: "参考 BroadcastReceiver + EXTRA 模式"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "BroadcastReceiver + SMS PDU 解析 + 敏感权限"
+        timestamp: "2026-04-13"
+        estimated_effort: medium
+        estimated_files: 3
+        estimated_lines: 100
+        focus_area: "短信事件分发 + 权限检查"
+        verification:
+          - "测试命令: ./gradlew :app:testDebugUnitTest --tests '*.SmsEventDispatcherTest'"
+        acceptance_criteria:
+          - "SmsEventDispatcher 监听 android.provider.Telephony.SMS_RECEIVED"
+          - "从 intent extras 解析 SmsMessage PDU"
+          - "分发 EVENT_ON_SMS_RECEIVED + EXTRA_SMS_SENDER + EXTRA_SMS_BODY"
+          - "SmsReferent: (0)=self, (1)=sender, (2)=body"
+          - "onRegistered 检查 RECEIVE_SMS 权限"
+        failure_modes:
+          - scenario: "SMS PDU 解析在不同设备上格式不同"
+            likelihood: low
+            impact: medium
+            mitigation: "使用标准 SmsMessage.createFromPdu() API"
+        tech_stack:
+          - "Kotlin"
+          - "android.telephony.SmsMessage"
+          - "BroadcastReceiver"
+        test_coverage: "覆盖短信接收事件 + 多段短信合并"
+    task_definition:
+      objective: "创建短信接收事件分发器和 Referent"
+      steps:
+        - "Red: 创建测试类，测试短信接收事件分发，确认编译失败"
+        - |
+          Green: 创建 SmsEventDispatcher.kt：
+          - companion: EXTRA_SMS_SENDER=0, EXTRA_SMS_BODY=1
+          - 监听 Telephony.Sms.Intents.SMS_RECEIVED_ACTION
+          - onReceive: Telephony.Sms.Intents.getMessagesFromIntent(intent) 获取 SmsMessage[]
+          - 拼接多条 PDU 的 body，获取 sender
+          - dispatchEvents(Event.obtain(EVENT_ON_SMS_RECEIVED).apply { putExtra(...) })
+          创建 SmsReferent(sender, body) : Referent
+        - "Verify: 运行单测确认通过"
+      acceptance_criteria:
+        - "单测通过"
+
+  - id: T12
+    title: "创建 IntentEventDispatcher + IntentReferent + 单测"
+    description: |
+      创建 IntentEventDispatcher 支持动态注册用户配置的 Intent Action。
+      创建 IntentReferent 暴露 action 和 data URI。
+      这是最灵活的触发器，允许用户捕获任意广播。
+    wave: 2
+    agent: gem-implementer
+    prototype: false
+    covers: ["T-INT-009 接收 Android Intent"]
+    priority: medium
+    status: pending
+    dependencies: [T01]
+    conflicts_with: []
+    triggers_covered: [T-INT-009]
+    files_touched:
+      - "app/src/main/java/top/xjunz/tasker/task/event/IntentEventDispatcher.kt"
+      - "app/src/main/java/top/xjunz/tasker/task/applet/flow/ref/IntentReferent.kt"
+      - "app/src/test/kotlin/top/xjunz/tasker/task/event/IntentEventDispatcherTest.kt"
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/task/event/ClipboardEventDispatcher.kt"
+        description: "参考 BroadcastReceiver 模式"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "中等复杂度，需支持动态 IntentFilter 配置和多 action 管理"
+        timestamp: "2026-04-13"
+        estimated_effort: medium
+        estimated_files: 3
+        estimated_lines: 130
+        focus_area: "动态 BroadcastReceiver + IntentFilter 管理"
+        verification:
+          - "测试命令: ./gradlew :app:testDebugUnitTest --tests '*.IntentEventDispatcherTest'"
+        acceptance_criteria:
+          - "IntentEventDispatcher 支持 registerAction(action) / unregisterAction(action)"
+          - "收到匹配广播后分发 EVENT_ON_INTENT_RECEIVED"
+          - "Event extras 携带 EXTRA_INTENT_ACTION 和 EXTRA_INTENT_DATA_URI"
+          - "IntentReferent: (0)=self, (1)=action, (2)=dataUri"
+          - "destroy() 注销所有 receiver"
+          - "防御 registerAction 传空字符串"
+        failure_modes:
+          - scenario: "用户配置了需要权限的广播 action 但未获取权限"
+            likelihood: medium
+            impact: medium
+            mitigation: "注册时 try-catch SecurityException，通知用户权限不足"
+        tech_stack:
+          - "Kotlin"
+          - "动态 BroadcastReceiver"
+          - "IntentFilter"
+        test_coverage: "覆盖注册/注销/接收/多 action 场景"
+    task_definition:
+      objective: "创建通用 Intent 接收事件分发器和 Referent"
+      steps:
+        - "Red: 创建测试类，测试注册 action → 收到广播 → 分发事件，确认编译失败"
+        - |
+          Green: 创建 IntentEventDispatcher.kt：
+          - companion: EXTRA_INTENT_ACTION=0, EXTRA_INTENT_DATA_URI=1
+          - 内部 HashMap<String, BroadcastReceiver> 管理已注册的 action
+          - registerAction(action): 创建 BroadcastReceiver + IntentFilter，注册到 Context
+          - unregisterAction(action): 注销对应 receiver
+          - onReceive: dispatchEvents(Event.obtain(EVENT_ON_INTENT_RECEIVED).apply { putExtra })
+          - destroy(): 遍历注销所有 receiver
+          创建 IntentReferent(action, dataUri) : Referent
+        - "Verify: 运行单测确认通过"
+      acceptance_criteria:
+        - "单测通过"
+
+  # ================================================
+  # Wave 3: 注册所有新 Dispatcher 到共享文件
+  # ================================================
+
+  - id: T13
+    title: "注册所有新 Dispatcher + EventFilter 分支 + EventCriterionRegistry 条目"
+    description: |
+      将 Wave 2 创建的 8 个新 EventDispatcher 注册到 AutomatorService.initEventDispatcher()。
+      在 EventFilter.apply() 的 when 表达式中添加所有新事件分支。
+      在 EventCriterionRegistry 中为所有新事件添加 @AppletOrdinal 条目。
+      这是关键的集成任务，连接创建阶段和运行时。
+    wave: 3
+    agent: gem-implementer
+    prototype: false
+    covers: []
+    priority: high
+    status: pending
+    dependencies: [T04, T05, T06, T07, T08, T09, T10, T11, T12]
+    conflicts_with: [T04]
+    triggers_covered: [T-DEV-002, T-DEV-003, T-PWR-001, T-HW-001, T-NET-003, T-TIME-001, T-TIME-002, T-PHONE-001, T-PHONE-006, T-INT-009]
+    files_touched:
+      - "app/src/main/java/top/xjunz/tasker/service/AutomatorService.kt"
+      - "app/src/main/java/top/xjunz/tasker/task/applet/criterion/EventFilter.kt"
+      - "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/EventCriterionRegistry.kt"
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/service/AutomatorService.kt"
+        description: "initEventDispatcher() — T04 已添加 Clipboard/Variable/Mode 注册"
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/criterion/EventFilter.kt"
+        description: "apply() when 表达式 — T04 已添加 boot/manual 分支"
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/EventCriterionRegistry.kt"
+        description: "T04 已添加 primaryClipChanged/manualTrigger/deviceBooted"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "集中注册避免频繁合并冲突，完成后触发器端到端可用"
+        timestamp: "2026-04-13"
+        estimated_effort: medium
+        estimated_files: 3
+        estimated_lines: 150
+        focus_area: "AutomatorService + EventFilter + EventCriterionRegistry 集成"
+        verification:
+          - "编译命令: JAVA_HOME=... ./gradlew :app:compileDebugKotlin"
+          - "grep 'ScreenEventDispatcher' AutomatorService.kt 有注册行"
+          - "grep 'EVENT_ON_SCREEN_ON' EventFilter.kt 有 when 分支"
+          - "grep 'screenOn' EventCriterionRegistry.kt 有定义"
+          - "运行全部单测: ./gradlew :app:testDebugUnitTest"
+        acceptance_criteria:
+          - "AutomatorService.initEventDispatcher() 注册 8 个新 Dispatcher"
+          - "EventFilter.apply() when 包含所有新事件分支，正确返回 Referent 或 EMPTY_SUCCESS"
+          - "EventCriterionRegistry 包含 12+ 个新 @AppletOrdinal 条目"
+          - ":app:compileDebugKotlin 编译成功"
+          - "现有单测全部通过"
+        failure_modes:
+          - scenario: "EventFilter 中 import 新 Referent 类路径错误"
+            likelihood: low
+            impact: medium
+            mitigation: "编译时立即发现，修正 import 路径"
+          - scenario: "@AppletOrdinal 序号冲突"
+            likelihood: low
+            impact: high
+            mitigation: "从 T04 结束时的最大序号 (0x001A) 继续递增"
+        tech_stack:
+          - "Kotlin"
+        test_coverage: "依赖现有测试套件验证注册不破坏构建"
+    task_definition:
+      objective: "将所有新 EventDispatcher 注册到运行时框架中"
+      steps:
+        - |
+          Red: 运行 :app:compileDebugKotlin 确认当前编译通过（基线，T04 后的状态）
+        - |
+          Green 步骤 1 — AutomatorService.kt initEventDispatcher():
+          在已有注册行后添加：
+          ```kotlin
+          eventDispatcher.registerEventDispatcher(ScreenEventDispatcher())
+          eventDispatcher.registerEventDispatcher(PowerEventDispatcher())
+          eventDispatcher.registerEventDispatcher(HeadsetEventDispatcher())
+          eventDispatcher.registerEventDispatcher(BluetoothEventDispatcher())
+          eventDispatcher.registerEventDispatcher(AlarmEventDispatcher())
+          eventDispatcher.registerEventDispatcher(PhoneCallEventDispatcher())
+          eventDispatcher.registerEventDispatcher(SmsEventDispatcher())
+          eventDispatcher.registerEventDispatcher(IntentEventDispatcher())
+          ```
+        - |
+          Green 步骤 2 — EventFilter.kt apply() when:
+          新增分支（简单事件返回 EMPTY_SUCCESS，复杂事件返回 Referent）：
+          ```kotlin
+          Event.EVENT_ON_SCREEN_ON, Event.EVENT_ON_SCREEN_OFF,
+          Event.EVENT_ON_SCREEN_UNLOCKED,
+          Event.EVENT_ON_POWER_CONNECTED, Event.EVENT_ON_POWER_DISCONNECTED,
+          Event.EVENT_ON_HEADSET_PLUGGED, Event.EVENT_ON_HEADSET_UNPLUGGED,
+          Event.EVENT_ON_ALARM_FIRED -> AppletResult.EMPTY_SUCCESS
+
+          Event.EVENT_ON_BT_STATE_CHANGED,
+          Event.EVENT_ON_BT_DEVICE_CONNECTED,
+          Event.EVENT_ON_BT_DEVICE_DISCONNECTED -> {
+              BluetoothReferent(
+                  hit.getExtra(BluetoothEventDispatcher.EXTRA_BT_DEVICE_NAME),
+                  hit.getExtra(BluetoothEventDispatcher.EXTRA_BT_MAC_ADDRESS)
+              ).asResult()
+          }
+
+          Event.EVENT_ON_CALL_STATE_CHANGED -> {
+              PhoneCallReferent(
+                  hit.getExtra(PhoneCallEventDispatcher.EXTRA_PHONE_NUMBER),
+                  hit.getExtra(PhoneCallEventDispatcher.EXTRA_CALL_STATE)
+              ).asResult()
+          }
+
+          Event.EVENT_ON_SMS_RECEIVED -> {
+              SmsReferent(
+                  hit.getExtra(SmsEventDispatcher.EXTRA_SMS_SENDER),
+                  hit.getExtra(SmsEventDispatcher.EXTRA_SMS_BODY)
+              ).asResult()
+          }
+
+          Event.EVENT_ON_INTENT_RECEIVED -> {
+              IntentReferent(
+                  hit.getExtra(IntentEventDispatcher.EXTRA_INTENT_ACTION),
+                  hit.getExtra(IntentEventDispatcher.EXTRA_INTENT_DATA_URI)
+              ).asResult()
+          }
+          ```
+        - |
+          Green 步骤 3 — EventCriterionRegistry.kt:
+          从 @AppletOrdinal(0x001B) 开始，逐一添加条目：
+          screenOn, screenOff, screenUnlocked, powerConnected, powerDisconnected,
+          headsetPlugged, headsetUnplugged, btStateChanged, btDeviceConnected,
+          btDeviceDisconnected, alarmFired, callStateChanged, smsReceived, intentReceived
+          复杂事件带 .withResult<*Referent> 声明
+        - |
+          Verify: 运行 :app:compileDebugKotlin + :app:testDebugUnitTest
+      acceptance_criteria:
+        - "编译通过"
+        - "所有现有 + 新增单测通过"
+
+  # ================================================
+  # Wave 4: 验证与全量测试
+  # ================================================
+
+  - id: T14
+    title: "验证轮询触发器 T-TIME-003 + T-PWR-002"
+    description: |
+      验证 T-TIME-003 (Regular Interval) 和 T-PWR-002 (Battery Level) 
+      使用现有 PollEventDispatcher(EVENT_ON_TICK) + TimeCriterionRegistry/GlobalCriterionRegistry 
+      的轮询方案在 MVP 阶段是否满足需求。
+      编写集成测试确认轮询事件能正确触发时间/电量条件评估。
+    wave: 4
+    agent: gem-implementer
+    prototype: false
+    covers: ["T-TIME-003 定时间隔触发", "T-PWR-002 电量变化触发"]
+    priority: medium
+    status: pending
+    dependencies: [T13]
+    conflicts_with: [T15]
+    triggers_covered: [T-TIME-003, T-PWR-002]
+    files_touched:
+      - "app/src/test/kotlin/top/xjunz/tasker/task/event/PollingTriggerVerificationTest.kt"
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/task/event/PollEventDispatcher.kt"
+        description: "每秒分发 EVENT_ON_TICK"
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/TimeCriterionRegistry.kt"
+        description: "timeRange / dayOfWeek / dayOfMonth 条件"
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/GlobalCriterionRegistry.kt"
+        description: "batteryCapacityRange / isBatteryCharging 条件"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "这两个触发器无需新代码，只需验证现有机制足够 MVP 使用"
+        timestamp: "2026-04-13"
+        estimated_effort: small
+        estimated_files: 1
+        estimated_lines: 60
+        focus_area: "验证 + 文档"
+        verification:
+          - "测试命令: ./gradlew :app:testDebugUnitTest --tests '*.PollingTriggerVerificationTest'"
+        acceptance_criteria:
+          - "验证 PollEventDispatcher 在 1 秒内分发 EVENT_ON_TICK"
+          - "验证 TimeCriterionRegistry 条件在 TICK 事件中可被正确评估"
+          - "验证 GlobalCriterionRegistry.batteryCapacityRange 作为轮询条件可用"
+          - "测试通过即确认 T-TIME-003 和 T-PWR-002 MVP 可用"
+        failure_modes:
+          - scenario: "轮询精度在特定场景下不满足需求"
+            likelihood: low
+            impact: low
+            mitigation: "MVP 接受 1 秒粒度，V2 可优化为精确 interval/broadcast"
+        tech_stack:
+          - "Kotlin"
+          - "JUnit 4"
+        test_coverage: "PollingTriggerVerificationTest 验证 TICK 事件 + 条件评估"
+    task_definition:
+      objective: "验证轮询方案对 T-TIME-003 和 T-PWR-002 的 MVP 可行性"
+      steps:
+        - |
+          Red: 创建 PollingTriggerVerificationTest.kt，测试：
+          - PollEventDispatcher 分发 EVENT_ON_TICK 带 EXTRA_TICK_TIME_MILLS
+          - TimeCriterionRegistry 条件在当前时间满足时返回成功
+        - |
+          Green: 编写测试验证：
+          1. PollEventDispatcher 创建后 addCallback 收集事件
+          2. 触发 tick → 收到 EVENT_ON_TICK
+          3. 确认 EXTRA_TICK_TIME_MILLS 存在
+        - "Verify: 运行测试确认通过"
+      acceptance_criteria:
+        - "测试通过"
+        - "验证轮询方案 MVP 可用"
+
+  - id: T15
+    title: "全量编译 + 运行完整测试套件"
+    description: |
+      运行完整的编译和测试套件，确认所有变更不破坏现有功能。
+      验证所有 19 个触发器相关代码编译通过，305+ 个单测全部通过。
+    wave: 4
+    agent: gem-implementer
+    prototype: false
+    covers: []
+    priority: high
+    status: pending
+    dependencies: [T13]
+    conflicts_with: [T14]
+    triggers_covered:
+      - T-TIME-001
+      - T-TIME-002
+      - T-TIME-003
+      - T-DEV-001
+      - T-DEV-002
+      - T-DEV-003
+      - T-NET-001
+      - T-NET-003
+      - T-PHONE-001
+      - T-PHONE-006
+      - T-PWR-001
+      - T-PWR-002
+      - T-NOTIF-001
+      - T-APP-001
+      - T-APP-006
+      - T-HW-001
+      - T-INT-001
+      - T-INT-009
+      - T-INT-017
+    files_touched: []
+    context_files: []
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "最终验证关卡，确保所有变更可靠"
+        timestamp: "2026-04-13"
+        estimated_effort: small
+        estimated_files: 0
+        estimated_lines: 0
+        focus_area: "全量构建验证"
+        verification:
+          - "编译命令: JAVA_HOME=... ./gradlew :app:compileDebugKotlin"
+          - "测试命令: ./gradlew :app:testDebugUnitTest"
+          - "Lint: ./gradlew :app:lintDebug (可选)"
+        acceptance_criteria:
+          - ":app:compileDebugKotlin 编译成功 (exit code 0)"
+          - ":app:testDebugUnitTest 全部通过 (0 failures)"
+          - "新增单测数量 ≥ 8 (每个 Dispatcher 至少 1 个测试类)"
+          - "总测试数 ≥ 313 (305 基线 + 8 新类)"
+        failure_modes:
+          - scenario: "部分新引用破坏了现有编译"
+            likelihood: low
+            impact: high
+            mitigation: "逐模块编译定位问题 (tasker-engine → app)"
+        tech_stack:
+          - "Gradle"
+          - "Kotlin Compiler"
+          - "JUnit 4"
+        test_coverage: "全量测试套件"
+    task_definition:
+      objective: "验证所有变更编译通过且测试全绿"
+      steps:
+        - |
+          运行完整编译：
+          JAVA_HOME=/opt/homebrew/Cellar/openjdk@17/17.0.18/libexec/openjdk.jdk/Contents/Home ./gradlew :app:compileDebugKotlin
+          确认 BUILD SUCCESSFUL
+        - |
+          运行完整测试套件：
+          JAVA_HOME=... ./gradlew :app:testDebugUnitTest
+          确认 0 failures
+        - |
+          统计测试覆盖：
+          grep -r 'class.*Test' app/src/test/ | wc -l
+          确认新增 ≥ 8 个测试类
+      acceptance_criteria:
+        - "编译成功"
+        - "0 failures"
+        - "新增 ≥ 8 个测试文件"
+
+  # ================================================
+  # Wave 5: 安全审查
+  # ================================================
+
+  - id: T16
+    title: "安全审查 — 权限、敏感数据、异常处理"
+    description: |
+      审查所有新增代码的安全性：
+      - 权限声明完整性：Manifest 中声明 vs 运行时检查
+      - 敏感数据处理：来电号码、短信内容、蓝牙 MAC 不应写日志
+      - 异常处理：BroadcastReceiver 中不应抛出未捕获异常
+      - Intent 安全：IntentEventDispatcher 防止 Intent 注入
+    wave: 5
+    agent: gem-reviewer
+    prototype: false
+    covers: []
+    priority: high
+    status: pending
+    dependencies: [T15]
+    conflicts_with: []
+    triggers_covered: []
+    files_touched: []
+    context_files:
+      - path: "app/src/main/AndroidManifest.xml"
+        description: "权限声明"
+      - path: "app/src/main/java/top/xjunz/tasker/task/event/BluetoothEventDispatcher.kt"
+        description: "敏感权限 + MAC 地址"
+      - path: "app/src/main/java/top/xjunz/tasker/task/event/PhoneCallEventDispatcher.kt"
+        description: "敏感权限 + 电话号码"
+      - path: "app/src/main/java/top/xjunz/tasker/task/event/SmsEventDispatcher.kt"
+        description: "敏感权限 + 短信内容"
+      - path: "app/src/main/java/top/xjunz/tasker/task/event/IntentEventDispatcher.kt"
+        description: "动态 IntentFilter 安全"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "涉及敏感权限（SMS/PHONE/BT）和用户数据，必须安全审查"
+        timestamp: "2026-04-13"
+        estimated_effort: small
+        estimated_files: 0
+        estimated_lines: 0
+        focus_area: "安全审查"
+        verification:
+          - "逐文件检查权限使用是否有运行时检查"
+          - "grep -r 'Log\\.' 新文件 确认无敏感数据泄露到日志"
+          - "审查 IntentEventDispatcher 的 registerAction 输入验证"
+        acceptance_criteria:
+          - "所有需要运行时权限的 Dispatcher 在 onRegistered() 中检查权限"
+          - "敏感数据（电话号码、短信内容、MAC 地址）不出现在 Log 输出中"
+          - "所有 BroadcastReceiver.onReceive() 用 try-catch 包裹"
+          - "IntentEventDispatcher.registerAction() 验证 action 非空且不含危险模式"
+          - "AlarmEventDispatcher 检查 canScheduleExactAlarms() 再调度"
+        failure_modes:
+          - scenario: "审查发现关键安全漏洞需要回退"
+            likelihood: low
+            impact: high
+            mitigation: "安全审查在全量测试后进行，修复后重跑 T15"
+        requires_review: true
+        review_depth: full
+        review_security_sensitive: true
+    task_definition:
+      objective: "确保所有新触发器代码安全合规"
+      steps:
+        - |
+          检查清单 1 — 权限一致性：
+          对比 Manifest 声明 vs Dispatcher 运行时 checkSelfPermission
+          - BLUETOOTH_CONNECT → BluetoothEventDispatcher
+          - READ_PHONE_STATE / READ_CALL_LOG → PhoneCallEventDispatcher
+          - RECEIVE_SMS → SmsEventDispatcher
+          - SCHEDULE_EXACT_ALARM → AlarmEventDispatcher
+        - |
+          检查清单 2 — 敏感数据：
+          grep 所有新 Dispatcher 文件中的 Log.d / Log.i / Log.w / Log.e
+          确认不包含 phoneNumber / smsBody / macAddress 明文
+        - |
+          检查清单 3 — 异常处理：
+          确认所有 onReceive() 方法体用 try-catch 包裹
+          确认 destroy() 中 unregisterReceiver 有 try-catch
+        - |
+          检查清单 4 — Input 验证：
+          IntentEventDispatcher.registerAction(action) 验证 action.isNotBlank()
+          AlarmEventDispatcher.scheduleAlarm() 验证时间 > System.currentTimeMillis()
+      acceptance_criteria:
+        - "所有检查项通过"
+        - "如有问题，生成修复任务并标记"
