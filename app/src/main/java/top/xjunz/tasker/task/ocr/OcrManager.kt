@@ -10,7 +10,9 @@ import android.graphics.Rect
  */
 object OcrManager {
 
+    @Volatile
     private var provider: OcrProvider = MlKitOcrProvider()
+    @Volatile
     private var screenshotProvider: ScreenshotProvider? = null
 
     @Volatile

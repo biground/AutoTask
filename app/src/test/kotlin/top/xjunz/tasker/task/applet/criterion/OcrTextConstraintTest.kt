@@ -128,6 +128,39 @@ class OcrTextConstraintTest {
         assertFalse("values[0] 缺失应返回失败", result.isSuccessful)
     }
 
+    // ========== ReDoS 防护 ==========
+
+    @Test
+    fun `isUnsafeRegex 检测嵌套量词`() {
+        assertTrue("(a+)+ 应被识别为危险", OcrTextConstraint.isUnsafeRegex("(a+)+"))
+        assertTrue("(a*)+ 应被识别为危险", OcrTextConstraint.isUnsafeRegex("(a*)+"))
+        assertTrue("(.+)+ 应被识别为危险", OcrTextConstraint.isUnsafeRegex("(.+)+"))
+        assertTrue("(a+)* 应被识别为危险", OcrTextConstraint.isUnsafeRegex("(a+)*"))
+        assertTrue("(a+)? 应被识别为危险", OcrTextConstraint.isUnsafeRegex("(a+)?"))
+    }
+
+    @Test
+    fun `isUnsafeRegex 放行安全正则`() {
+        assertFalse("\\d{3,} 是安全的", OcrTextConstraint.isUnsafeRegex("\\d{3,}"))
+        assertFalse("^\\d+$ 是安全的", OcrTextConstraint.isUnsafeRegex("^\\d+$"))
+        assertFalse("[a-z]+ 是安全的", OcrTextConstraint.isUnsafeRegex("[a-z]+"))
+        assertFalse("hello 是安全的", OcrTextConstraint.isUnsafeRegex("hello"))
+    }
+
+    @Test
+    fun `REGEX 拒绝嵌套量词模式`() = runTest {
+        val constraint = create(OcrTextMatchMode.REGEX, "(a+)+", "aaaaaaaaaaaaaaaaaa!")
+        val result = constraint.apply(mockRuntime())
+        assertFalse("嵌套量词正则应直接被拒绝", result.isSuccessful)
+    }
+
+    @Test
+    fun `REGEX 安全正则正常匹配`() = runTest {
+        val constraint = create(OcrTextMatchMode.REGEX, "\\d+", "订单12345")
+        val result = constraint.apply(mockRuntime())
+        assertTrue("安全正则应正常匹配", result.isSuccessful)
+    }
+
     // ---- 辅助 ----
 
     /** 创建一个最简的 TaskRuntime 实例（apply 中未使用 runtime 的字段） */

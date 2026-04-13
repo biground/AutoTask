@@ -4,13 +4,16 @@
 
 package top.xjunz.tasker.task.applet.criterion
 
-import kotlinx.coroutines.withTimeoutOrNull
 import top.xjunz.tasker.engine.applet.base.Applet
 import top.xjunz.tasker.engine.applet.base.AppletResult
 import top.xjunz.tasker.engine.runtime.TaskRuntime
 import top.xjunz.tasker.task.ocr.OcrManager
 import top.xjunz.tasker.task.ocr.OcrResult
 import top.xjunz.tasker.task.ocr.OcrTextMatchMode
+import java.util.concurrent.Callable
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 
 /**
  * OCR 文字约束 (Criterion)
@@ -29,6 +32,19 @@ class OcrTextConstraint(
     private val recognizer: suspend () -> OcrResult? = { OcrManager.recognizeScreen() }
 ) : Applet() {
 
+    companion object {
+        private const val REGEX_TIMEOUT_MS = 200L
+
+        /**
+         * 简单检查正则是否包含嵌套量词模式（ReDoS 高风险）
+         * 检测模式如：(a+)+, (a*)+, (a+)*, (.+)+ 等
+         */
+        internal fun isUnsafeRegex(pattern: String): Boolean {
+            val nestedQuantifier = Regex("""\([^)]*[+*]\)[+*?]""")
+            return nestedQuantifier.containsMatchIn(pattern)
+        }
+    }
+
     override suspend fun apply(runtime: TaskRuntime): AppletResult {
         val matchText = values[0] as? String ?: return AppletResult.EMPTY_FAILURE
 
@@ -39,10 +55,25 @@ class OcrTextConstraint(
             OcrTextMatchMode.EXACT -> result.fullText == matchText
             OcrTextMatchMode.REGEX -> {
                 try {
-                    // ReDoS 防护：200ms 超时保护
-                    withTimeoutOrNull(200) {
-                        matchText.toRegex().containsMatchIn(result.fullText)
-                    } ?: false
+                    // ReDoS 防护：拒绝包含嵌套量词的危险模式
+                    if (isUnsafeRegex(matchText)) return@apply AppletResult.EMPTY_FAILURE
+
+                    val regex = matchText.toRegex()
+                    // 在独立线程执行正则匹配，通过 Future.cancel(true) 实现真正超时
+                    val executor = Executors.newSingleThreadExecutor()
+                    try {
+                        val future = executor.submit(Callable {
+                            regex.containsMatchIn(result.fullText)
+                        })
+                        try {
+                            future.get(REGEX_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+                        } catch (_: TimeoutException) {
+                            future.cancel(true)
+                            false
+                        }
+                    } finally {
+                        executor.shutdownNow()
+                    }
                 } catch (_: Exception) {
                     // 非法正则表达式安全返回 false
                     false
