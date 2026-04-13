@@ -87,11 +87,16 @@ sealed class MainOption(
         R.drawable.ic_baseline_my_location_24
     )
 
+    object OcrSettings : MainOption(
+        R.string.ocr_settings,
+        R.drawable.ic_text_fields_24px
+    )
+
     companion object {
         val ALL_OPTIONS = if (upForGrabs) {
-            arrayOf(ExportTasks, AutoStart, WakeLock, AmapApiKey, NightMode, Feedback, VersionInfo, About)
+            arrayOf(ExportTasks, AutoStart, WakeLock, AmapApiKey, OcrSettings, NightMode, Feedback, VersionInfo, About)
         } else {
-            arrayOf(PremiumStatus, ExportTasks, AutoStart, AmapApiKey, NightMode, Feedback, VersionInfo, About)
+            arrayOf(PremiumStatus, ExportTasks, AutoStart, AmapApiKey, OcrSettings, NightMode, Feedback, VersionInfo, About)
         }
     }
 }

@@ -58,6 +58,7 @@ import top.xjunz.tasker.ui.base.inlineAdapter
 import top.xjunz.tasker.ui.main.MainViewModel.Companion.peekMainViewModel
 import top.xjunz.tasker.ui.purchase.PurchaseDialog
 import top.xjunz.tasker.ui.purchase.PurchaseDialog.Companion.showPurchaseDialog
+import top.xjunz.tasker.ui.task.OcrSettingsDialog
 import top.xjunz.tasker.ui.task.selector.argument.AmapApiKeyDialog
 import top.xjunz.tasker.util.ClickListenerUtil.setNoDoubleClickListener
 import top.xjunz.tasker.util.Feedbacks
@@ -256,6 +257,10 @@ class AboutFragment : BaseFragment<FragmentAboutBinding>(), ScrollTarget,
 
             MainOption.AmapApiKey -> {
                 AmapApiKeyDialog().show(childFragmentManager)
+            }
+
+            MainOption.OcrSettings -> {
+                OcrSettingsDialog().show(childFragmentManager)
             }
         }
     }
