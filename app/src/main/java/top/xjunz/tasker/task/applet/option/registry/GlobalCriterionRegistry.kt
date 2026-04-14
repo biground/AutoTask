@@ -18,6 +18,8 @@ import top.xjunz.tasker.ktx.format
 import top.xjunz.tasker.task.applet.anno.AppletOrdinal
 import top.xjunz.tasker.task.applet.criterion.NumberRangeCriterion.Companion.simpleNumberRangeCriterion
 import top.xjunz.tasker.task.applet.value.VariantArgType
+import top.xjunz.tasker.task.runtime.LocalTaskManager
+import top.xjunz.tasker.task.storage.TaskStorage
 
 /**
  * @author xjunz 2022/11/10
@@ -88,6 +90,14 @@ class GlobalCriterionRegistry(id: Int) : AppletOptionRegistry(id) {
         @Suppress("DEPRECATION")
         unaryEqualCriterion {
             ContextBridge.getContext().getSystemService(TelephonyManager::class.java).callState
+        }
+    }
+
+    @AppletOrdinal(0x0016)
+    val isMacroRunning = invertibleAppletOption(R.string.is_macro_running) {
+        booleanCriterion {
+            val enabledTasks = LocalTaskManager.getEnabledResidentTasks()
+            enabledTasks.any { it.isExecuting }
         }
     }
 

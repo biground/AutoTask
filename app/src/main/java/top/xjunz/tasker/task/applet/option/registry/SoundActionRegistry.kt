@@ -7,12 +7,16 @@ package top.xjunz.tasker.task.applet.option.registry
 import top.xjunz.tasker.R
 import top.xjunz.tasker.bridge.AudioManagerBridge
 import top.xjunz.tasker.bridge.NotificationManagerBridge
+import top.xjunz.tasker.bridge.TtsBridge
 import top.xjunz.tasker.engine.applet.action.doubleArgsAction
+import top.xjunz.tasker.engine.applet.action.optimisticVarRefAction
 import top.xjunz.tasker.engine.applet.action.simpleSingleNonNullArgAction
+import top.xjunz.tasker.task.applet.action.PlaySoundAction
 import top.xjunz.tasker.ktx.array
 import top.xjunz.tasker.ktx.foreColored
 import top.xjunz.tasker.ktx.formatSpans
 import top.xjunz.tasker.task.applet.anno.AppletOrdinal
+import top.xjunz.tasker.task.applet.value.VariantArgType
 
 /**
  * 声音相关动作的 Registry。
@@ -77,4 +81,23 @@ class SoundActionRegistry(id: Int) : AppletOptionRegistry(id) {
                 null
             }
         }.descAsTitle()
+
+    @AppletOrdinal(0x0003)
+    val speakText = appletOption(R.string.speak_text) {
+        optimisticVarRefAction<String> { value, refs, _ ->
+            val text = value.format(*refs)
+            TtsBridge.speak(text)
+        }
+    }.withValueArgument<String>(R.string.tts_text, VariantArgType.TEXT_FORMAT)
+        .withSingleValueAppletDescriber<String> { applet, t ->
+            val bolds = applet.references.values.map {
+                ("\${$it}").foreColored()
+            }.toTypedArray()
+            t?.formatSpans(*bolds)
+        }
+
+    @AppletOrdinal(0x0004)
+    val playSound = appletOption(R.string.play_sound) {
+        PlaySoundAction()
+    }.withValueArgument<String>(R.string.sound_file_path, VariantArgType.TEXT_FILE_PATH)
 }

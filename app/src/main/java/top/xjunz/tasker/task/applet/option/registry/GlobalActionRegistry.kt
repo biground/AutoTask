@@ -10,8 +10,10 @@ import android.hardware.camera2.CameraManager
 import android.os.Build
 import android.os.ParcelFileDescriptor.AutoCloseInputStream
 import android.provider.Settings
+import android.view.KeyEvent
 import top.xjunz.shared.ktx.casted
 import top.xjunz.tasker.R
+import top.xjunz.tasker.bridge.AudioManagerBridge
 import top.xjunz.tasker.bridge.ContextBridge
 import top.xjunz.tasker.bridge.PowerManagerBridge
 import top.xjunz.tasker.engine.applet.action.emptyArgAction
@@ -204,4 +206,28 @@ class GlobalActionRegistry(id: Int) : AppletOptionRegistry(id) {
             true
         }
     }
+
+    @AppletOrdinal(0x000F)
+    val controlMedia = appletOption(R.string.control_media) {
+        simpleSingleNonNullArgAction<Int> { mediaAction ->
+            val keyCode = when (mediaAction) {
+                0 -> KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE
+                1 -> KeyEvent.KEYCODE_MEDIA_NEXT
+                2 -> KeyEvent.KEYCODE_MEDIA_PREVIOUS
+                3 -> KeyEvent.KEYCODE_MEDIA_STOP
+                else -> return@simpleSingleNonNullArgAction false
+            }
+            AudioManagerBridge.dispatchMediaKeyEvent(keyCode)
+            true
+        }
+    }.withValueArgument<Int>(R.string.media_action)
+        .withSingleValueAppletDescriber<Int> { applet, t ->
+            val actions = R.array.media_actions.array
+            val idx = t ?: 0
+            if (idx in actions.indices) {
+                actions[idx].clickToEdit(applet)
+            } else {
+                null
+            }
+        }.descAsTitle()
 }

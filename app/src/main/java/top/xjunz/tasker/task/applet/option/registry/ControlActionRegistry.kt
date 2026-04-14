@@ -10,6 +10,7 @@ import top.xjunz.tasker.engine.applet.action.Continue
 import top.xjunz.tasker.engine.applet.action.Repeat
 import top.xjunz.tasker.engine.applet.action.Suspension
 import top.xjunz.tasker.engine.applet.action.emptyArgOptimisticAction
+import top.xjunz.tasker.engine.applet.action.simpleSingleNonNullArgAction
 import top.xjunz.tasker.engine.applet.base.If
 import top.xjunz.tasker.engine.applet.base.WaitFor
 import top.xjunz.tasker.engine.applet.base.WaitUntil
@@ -103,7 +104,7 @@ class ControlActionRegistry(id: Int) : AppletOptionRegistry(id) {
         PauseUntilTomorrow()
     }
 
-    @AppletOrdinal(0x0020)
+    @AppletOrdinal(0x0021)
     val pauseFor = appletOption(R.string.pause_for) {
         PauseFor()
     }.withValueArgument<Long>(R.string.specified_duration, VariantArgType.BITS_LONG_DURATION)
@@ -129,4 +130,24 @@ class ControlActionRegistry(id: Int) : AppletOptionRegistry(id) {
                 }
             }
         }
+
+    @AppletOrdinal(0x0022)
+    val toggleMacro = appletOption(R.string.toggle_macro) {
+        simpleSingleNonNullArgAction<String> { macroName ->
+            val task = TaskStorage.getAllTasks().find { it.title == macroName }
+            if (task != null) {
+                val isEnabled = LocalTaskManager.run { task.isEnabled }
+                if (isEnabled) {
+                    LocalTaskManager.removeTask(task)
+                    TaskStorage.toggleTaskFilename(task)
+                } else {
+                    TaskStorage.toggleTaskFilename(task)
+                    LocalTaskManager.enableResidentTask(task)
+                }
+                true
+            } else {
+                false
+            }
+        }
+    }.withValueArgument<String>(R.string.macro_name)
 }

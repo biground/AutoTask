@@ -134,4 +134,11 @@
         <item>全部禁止</item>
         <item>仅闹钟</item>
     </string-array>
+    <!-- 媒体操作：0=播放/暂停, 1=下一首, 2=上一首, 3=停止 -->
+    <string-array name="media_actions">
+        <item>播放/暂停</item>
+        <item>下一首</item>
+        <item>上一首</item>
+        <item>停止</item>
+    </string-array>
 </resources>

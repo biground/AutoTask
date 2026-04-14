@@ -5,6 +5,7 @@
 package top.xjunz.tasker.bridge
 
 import android.media.AudioManager
+import android.view.KeyEvent
 
 /**
  * AudioManager 的桥接封装。
@@ -25,5 +26,10 @@ object AudioManagerBridge {
 
     fun setRingerMode(mode: Int) {
         audioManager.ringerMode = mode
+    }
+
+    fun dispatchMediaKeyEvent(keyCode: Int) {
+        audioManager.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, keyCode))
+        audioManager.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_UP, keyCode))
     }
 }
