@@ -17,6 +17,7 @@ import top.xjunz.tasker.engine.applet.base.WaitUntil
 import top.xjunz.tasker.ktx.foreColored
 import top.xjunz.tasker.ktx.formatSpans
 import top.xjunz.tasker.ktx.str
+import top.xjunz.tasker.task.applet.action.ExportMacrosAction
 import top.xjunz.tasker.task.applet.action.PauseFor
 import top.xjunz.tasker.task.applet.action.PauseUntilTomorrow
 import top.xjunz.tasker.task.applet.anno.AppletOrdinal
@@ -150,4 +151,9 @@ class ControlActionRegistry(id: Int) : AppletOptionRegistry(id) {
             }
         }
     }.withValueArgument<String>(R.string.macro_name)
+
+    @AppletOrdinal(0x0023)
+    val exportMacros = appletOption(R.string.export_macros) {
+        ExportMacrosAction()
+    }.withValueArgument<String>(R.string.file_path, VariantArgType.TEXT_FILE_PATH)
 }
