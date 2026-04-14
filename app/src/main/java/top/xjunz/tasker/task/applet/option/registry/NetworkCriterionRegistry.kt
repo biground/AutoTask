@@ -4,8 +4,10 @@
 
 package top.xjunz.tasker.task.applet.option.registry
 
+import android.provider.Settings
 import top.xjunz.tasker.R
 import top.xjunz.tasker.bridge.ConnectivityManagerBridge
+import top.xjunz.tasker.bridge.ContextBridge
 import top.xjunz.tasker.engine.applet.criterion.booleanCriterion
 import top.xjunz.tasker.engine.applet.criterion.unaryEqualCriterion
 import top.xjunz.tasker.task.applet.anno.AppletOrdinal
@@ -42,4 +44,12 @@ class NetworkCriterionRegistry(id: Int) : AppletOptionRegistry(id) {
             ConnectivityManagerBridge.getCurrentConnectedWifiSSID()
         }
     }.shizukuOnly()
+
+    @AppletOrdinal(0x0005)
+    val isAirplaneMode = invertibleAppletOption(R.string.criterion_is_airplane_mode) {
+        booleanCriterion {
+            val context = ContextBridge.getContext()
+            Settings.Global.getInt(context.contentResolver, Settings.Global.AIRPLANE_MODE_ON, 0) != 0
+        }
+    }
 }

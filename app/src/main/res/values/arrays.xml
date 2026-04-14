@@ -112,4 +112,26 @@
         <item>180°</item>
         <item>270°</item>
     </string-array>
+    <!-- 音频流类型：索引对应 AudioManager.STREAM_xxx 值 -->
+    <string-array name="stream_types">
+        <item>语音通话</item>
+        <item>系统</item>
+        <item>铃声</item>
+        <item>媒体</item>
+        <item>闹钟</item>
+        <item>通知</item>
+    </string-array>
+    <!-- 铃声模式：索引对应 AudioManager.RINGER_MODE_xxx 值 -->
+    <string-array name="ringer_modes">
+        <item>静音</item>
+        <item>振动</item>
+        <item>正常</item>
+    </string-array>
+    <!-- 勿扰过滤级别：索引对应 NotificationManager.INTERRUPTION_FILTER_xxx 值（从1开始） -->
+    <string-array name="dnd_filters">
+        <item>全部允许</item>
+        <item>仅优先</item>
+        <item>全部禁止</item>
+        <item>仅闹钟</item>
+    </string-array>
 </resources>

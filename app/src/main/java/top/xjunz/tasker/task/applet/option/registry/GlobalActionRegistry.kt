@@ -5,8 +5,14 @@
 package top.xjunz.tasker.task.applet.option.registry
 
 import android.accessibilityservice.AccessibilityService
+import android.app.UiAutomationHidden
+import android.hardware.camera2.CameraManager
 import android.os.Build
+import android.os.ParcelFileDescriptor.AutoCloseInputStream
+import android.provider.Settings
+import top.xjunz.shared.ktx.casted
 import top.xjunz.tasker.R
+import top.xjunz.tasker.bridge.ContextBridge
 import top.xjunz.tasker.bridge.PowerManagerBridge
 import top.xjunz.tasker.engine.applet.action.emptyArgAction
 import top.xjunz.tasker.engine.applet.action.emptyArgOptimisticAction
@@ -102,6 +108,100 @@ class GlobalActionRegistry(id: Int) : AppletOptionRegistry(id) {
     val wakeUpScreen = appletOption(R.string.wake_up_screen) {
         emptyArgOptimisticAction {
             PowerManagerBridge.wakeUpScreen()
+        }
+    }
+
+    /**
+     * 执行 shell 命令并返回是否成功（stderr 为空视为成功）。
+     */
+    private suspend fun executeShellCmd(cmd: String): Boolean {
+        val out = uiAutomation.casted<UiAutomationHidden>().executeShellCommandRwe(cmd)
+        try {
+            val err = AutoCloseInputStream(out[2]).bufferedReader().readText()
+            return err.isEmpty()
+        } finally {
+            out.forEach { it.close() }
+        }
+    }
+
+    @AppletOrdinal(0x0009)
+    val setAutoRotate = appletOption(R.string.set_auto_rotate) {
+        emptyArgAction {
+            val resolver = ContextBridge.getContext().contentResolver
+            val current = Settings.System.getInt(
+                resolver, Settings.System.ACCELEROMETER_ROTATION, 0
+            )
+            Settings.System.putInt(
+                resolver, Settings.System.ACCELEROMETER_ROTATION, if (current == 0) 1 else 0
+            )
+        }
+    }.shizukuOnly()
+
+    @AppletOrdinal(0x000A)
+    val toggleBluetooth = appletOption(R.string.toggle_bluetooth) {
+        emptyArgAction {
+            val current = Settings.Global.getInt(
+                ContextBridge.getContext().contentResolver, Settings.Global.BLUETOOTH_ON, 0
+            )
+            executeShellCmd("settings put global bluetooth_on ${if (current == 0) 1 else 0}")
+        }
+    }.shizukuOnly()
+
+    @AppletOrdinal(0x000B)
+    val setBrightness = appletOption(R.string.set_brightness) {
+        simpleSingleNonNullArgAction<Int> { percent ->
+            val resolver = ContextBridge.getContext().contentResolver
+            // 关闭自动亮度
+            Settings.System.putInt(
+                resolver, Settings.System.SCREEN_BRIGHTNESS_MODE,
+                Settings.System.SCREEN_BRIGHTNESS_MODE_MANUAL
+            )
+            // 百分比映射到 0-255
+            val brightness = percent * 255 / 100
+            Settings.System.putInt(resolver, Settings.System.SCREEN_BRIGHTNESS, brightness)
+        }
+    }.withValueArgument<Int>(R.string.brightness_value, VariantArgType.INT_PERCENT)
+        .shizukuOnly()
+
+    @AppletOrdinal(0x000C)
+    val toggleDarkTheme = appletOption(R.string.toggle_dark_theme) {
+        emptyArgAction {
+            val resolver = ContextBridge.getContext().contentResolver
+            val current = Settings.Secure.getInt(resolver, "ui_night_mode", 1)
+            // ui_night_mode: 1=off, 2=on
+            val target = if (current == 2) "no" else "yes"
+            executeShellCmd("cmd uimode night $target")
+        }
+    }.shizukuOnly()
+
+    @AppletOrdinal(0x000D)
+    val toggleWifi = appletOption(R.string.toggle_wifi) {
+        emptyArgAction {
+            val resolver = ContextBridge.getContext().contentResolver
+            val enabled = Settings.Global.getInt(resolver, Settings.Global.WIFI_ON, 0) != 0
+            executeShellCmd("svc wifi ${if (enabled) "disable" else "enable"}")
+        }
+    }.shizukuOnly()
+
+    @AppletOrdinal(0x000E)
+    val toggleTorch = appletOption(R.string.toggle_torch) {
+        emptyArgAction {
+            val cameraManager = ContextBridge.getContext()
+                .getSystemService(CameraManager::class.java)
+            val cameraId = cameraManager.cameraIdList[0]
+            // 通过回调检测当前手电筒状态
+            var currentEnabled = false
+            val callback = object : CameraManager.TorchCallback() {
+                override fun onTorchModeChanged(id: String, enabled: Boolean) {
+                    if (id == cameraId) currentEnabled = enabled
+                }
+            }
+            cameraManager.registerTorchCallback(callback, null)
+            // 等待回调触发
+            kotlinx.coroutines.delay(50)
+            cameraManager.unregisterTorchCallback(callback)
+            cameraManager.setTorchMode(cameraId, !currentEnabled)
+            true
         }
     }
 }

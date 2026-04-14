@@ -4,10 +4,16 @@
 
 package top.xjunz.tasker.task.applet.option.registry
 
+import android.app.KeyguardManager
+import android.content.res.Configuration
+import android.telephony.TelephonyManager
 import top.xjunz.tasker.R
+import top.xjunz.tasker.bridge.AudioManagerBridge
 import top.xjunz.tasker.bridge.BatteryManagerBridge
+import top.xjunz.tasker.bridge.ContextBridge
 import top.xjunz.tasker.bridge.DisplayManagerBridge
 import top.xjunz.tasker.engine.applet.criterion.booleanCriterion
+import top.xjunz.tasker.engine.applet.criterion.unaryEqualCriterion
 import top.xjunz.tasker.ktx.format
 import top.xjunz.tasker.task.applet.anno.AppletOrdinal
 import top.xjunz.tasker.task.applet.criterion.NumberRangeCriterion.Companion.simpleNumberRangeCriterion
@@ -51,6 +57,37 @@ class GlobalCriterionRegistry(id: Int) : AppletOptionRegistry(id) {
             "$first%"
         } else {
             R.string.format_percent_range.format(first, last)
+        }
+    }
+
+    @AppletOrdinal(0x0012)
+    val isDeviceLocked = invertibleAppletOption(R.string.criterion_is_device_locked) {
+        booleanCriterion {
+            val context = ContextBridge.getContext()
+            context.getSystemService(KeyguardManager::class.java).isKeyguardLocked
+        }
+    }
+
+    @AppletOrdinal(0x0013)
+    val isHeadphoneConnected = invertibleAppletOption(R.string.criterion_is_headphone_connected) {
+        booleanCriterion {
+            AudioManagerBridge.isHeadphoneConnected
+        }
+    }
+
+    @AppletOrdinal(0x0014)
+    val isDarkMode = invertibleAppletOption(R.string.criterion_is_dark_mode) {
+        booleanCriterion {
+            val uiMode = ContextBridge.getContext().resources.configuration.uiMode
+            uiMode and Configuration.UI_MODE_NIGHT_MASK == Configuration.UI_MODE_NIGHT_YES
+        }
+    }
+
+    @AppletOrdinal(0x0015)
+    val callState = appletOption(R.string.criterion_call_state) {
+        @Suppress("DEPRECATION")
+        unaryEqualCriterion {
+            ContextBridge.getContext().getSystemService(TelephonyManager::class.java).callState
         }
     }
 

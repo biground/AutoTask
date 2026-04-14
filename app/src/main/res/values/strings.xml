@@ -644,6 +644,8 @@
     <string name="not_is_wifi_network">当前不是WIFI网络</string>
     <string name="is_cellular_network">当前是移动网络</string>
     <string name="not_is_cellular_network">当前不是移动网络</string>
+    <string name="criterion_is_airplane_mode">飞行模式已开启</string>
+    <string name="not_criterion_is_airplane_mode">飞行模式未开启</string>
     <string name="on_wifi_connected">当连接到WIFI时</string>
     <string name="connected_wifi_ssid">连接到的WIFI名称</string>
     <string name="on_wifi_disconnected">当WIFI连接断开时</string>
@@ -815,6 +817,7 @@
     <string name="volume_level">音量大小</string>
     <string name="stream_type">音频流类型</string>
     <string name="ringer_mode">铃声模式</string>
+    <string name="format_set_volume_desc">设置 %s 音量</string>
     <string name="tts_text">朗读内容</string>
     <string name="sound_file_path">声音文件路径</string>
     <string name="notification_title">通知标题</string>

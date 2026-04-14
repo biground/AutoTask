@@ -88,6 +88,13 @@
     <string name="not_is_charging">未在充电</string>
     <string name="in_battery_capacity_range">电池电量在指定范围内</string>
     <string name="not_in_battery_capacity_range">电池电量不在指定范围内</string>
+    <string name="criterion_is_device_locked">设备已锁屏</string>
+    <string name="not_criterion_is_device_locked">设备未锁屏</string>
+    <string name="criterion_is_headphone_connected">耳机已连接</string>
+    <string name="not_criterion_is_headphone_connected">耳机未连接</string>
+    <string name="criterion_is_dark_mode">处于深色模式</string>
+    <string name="not_criterion_is_dark_mode">未处于深色模式</string>
+    <string name="criterion_call_state">通话状态</string>
 
     <string name="format_pkg_collection_desc">%s等共%d个应用程序</string>
     <string name="format_act_collection_desc">已指定%d个页面</string>

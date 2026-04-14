@@ -14,4 +14,8 @@ object NotificationManagerBridge {
     private val notificationManager: NotificationManager by lazy {
         ContextBridge.getContext().getSystemService(NotificationManager::class.java)
     }
+
+    fun setInterruptionFilter(filter: Int) {
+        notificationManager.setInterruptionFilter(filter)
+    }
 }
