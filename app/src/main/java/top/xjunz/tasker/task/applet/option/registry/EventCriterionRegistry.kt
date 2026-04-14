@@ -10,10 +10,14 @@ import top.xjunz.tasker.engine.runtime.Event
 import top.xjunz.tasker.task.applet.anno.AppletOrdinal
 import top.xjunz.tasker.task.applet.criterion.EventFilter
 import top.xjunz.tasker.task.applet.criterion.FileEventCriterion
+import top.xjunz.tasker.task.applet.flow.ref.BluetoothReferent
 import top.xjunz.tasker.task.applet.flow.ref.ComponentInfoWrapper
 import top.xjunz.tasker.task.applet.flow.ref.GeofenceReferent
+import top.xjunz.tasker.task.applet.flow.ref.IntentReferent
 import top.xjunz.tasker.task.applet.flow.ref.ModeChangeReferent
 import top.xjunz.tasker.task.applet.flow.ref.NotificationReferent
+import top.xjunz.tasker.task.applet.flow.ref.PhoneCallReferent
+import top.xjunz.tasker.task.applet.flow.ref.SmsReferent
 import top.xjunz.tasker.task.applet.flow.ref.VariableChangeReferent
 import top.xjunz.tasker.task.applet.value.VariantArgType
 
@@ -146,4 +150,78 @@ class EventCriterionRegistry(id: Int) : AppletOptionRegistry(id) {
     @AppletOrdinal(0x001A)
     val deviceBooted =
         eventFilterOption(Event.EVENT_ON_DEVICE_BOOTED, R.string.on_device_booted)
+
+    @AppletOrdinal(0x001B)
+    val screenOn =
+        eventFilterOption(Event.EVENT_ON_SCREEN_ON, R.string.on_screen_on)
+
+    @AppletOrdinal(0x001C)
+    val screenOff =
+        eventFilterOption(Event.EVENT_ON_SCREEN_OFF, R.string.on_screen_off)
+
+    @AppletOrdinal(0x001D)
+    val screenUnlocked =
+        eventFilterOption(Event.EVENT_ON_SCREEN_UNLOCKED, R.string.on_screen_unlocked)
+
+    @AppletOrdinal(0x001E)
+    val powerConnected =
+        eventFilterOption(Event.EVENT_ON_POWER_CONNECTED, R.string.on_power_connected)
+
+    @AppletOrdinal(0x001F)
+    val powerDisconnected =
+        eventFilterOption(Event.EVENT_ON_POWER_DISCONNECTED, R.string.on_power_disconnected)
+
+    @AppletOrdinal(0x0020)
+    val headsetPlugged =
+        eventFilterOption(Event.EVENT_ON_HEADSET_PLUGGED, R.string.on_headset_plugged)
+
+    @AppletOrdinal(0x0021)
+    val headsetUnplugged =
+        eventFilterOption(Event.EVENT_ON_HEADSET_UNPLUGGED, R.string.on_headset_unplugged)
+
+    @AppletOrdinal(0x0022)
+    val btStateChanged =
+        eventFilterOption(Event.EVENT_ON_BT_STATE_CHANGED, R.string.on_bt_state_changed)
+            .withResult<BluetoothReferent>(R.string.on_bt_state_changed)
+            .withResult<String>(R.string.bt_device_name)
+            .withResult<String>(R.string.bt_mac_address)
+
+    @AppletOrdinal(0x0023)
+    val btDeviceConnected =
+        eventFilterOption(Event.EVENT_ON_BT_DEVICE_CONNECTED, R.string.on_bt_device_connected)
+            .withResult<BluetoothReferent>(R.string.on_bt_device_connected)
+            .withResult<String>(R.string.bt_device_name)
+            .withResult<String>(R.string.bt_mac_address)
+
+    @AppletOrdinal(0x0024)
+    val btDeviceDisconnected =
+        eventFilterOption(Event.EVENT_ON_BT_DEVICE_DISCONNECTED, R.string.on_bt_device_disconnected)
+            .withResult<BluetoothReferent>(R.string.on_bt_device_disconnected)
+            .withResult<String>(R.string.bt_device_name)
+            .withResult<String>(R.string.bt_mac_address)
+
+    @AppletOrdinal(0x0025)
+    val alarmFired =
+        eventFilterOption(Event.EVENT_ON_ALARM_FIRED, R.string.on_alarm_fired)
+
+    @AppletOrdinal(0x0026)
+    val callStateChanged =
+        eventFilterOption(Event.EVENT_ON_CALL_STATE_CHANGED, R.string.on_call_state_changed)
+            .withResult<PhoneCallReferent>(R.string.on_call_state_changed)
+            .withResult<String>(R.string.phone_number)
+            .withResult<Int>(R.string.call_state)
+
+    @AppletOrdinal(0x0027)
+    val smsReceived =
+        eventFilterOption(Event.EVENT_ON_SMS_RECEIVED, R.string.on_sms_received)
+            .withResult<SmsReferent>(R.string.on_sms_received)
+            .withResult<String>(R.string.sms_sender)
+            .withResult<String>(R.string.sms_body)
+
+    @AppletOrdinal(0x0028)
+    val intentReceived =
+        eventFilterOption(Event.EVENT_ON_INTENT_RECEIVED, R.string.on_intent_received)
+            .withResult<IntentReferent>(R.string.on_intent_received)
+            .withResult<String>(R.string.intent_action)
+            .withResult<String>(R.string.intent_data_uri)
 }

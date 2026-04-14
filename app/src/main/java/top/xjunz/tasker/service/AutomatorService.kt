@@ -20,10 +20,18 @@ import kotlinx.coroutines.SupervisorJob
 import top.xjunz.tasker.bridge.ContextBridge
 import top.xjunz.tasker.task.applet.option.AppletOptionFactory
 import top.xjunz.tasker.task.event.A11yEventDispatcher
+import top.xjunz.tasker.task.event.AlarmEventDispatcher
+import top.xjunz.tasker.task.event.BluetoothEventDispatcher
 import top.xjunz.tasker.task.event.ClipboardEventDispatcher
+import top.xjunz.tasker.task.event.HeadsetEventDispatcher
+import top.xjunz.tasker.task.event.IntentEventDispatcher
 import top.xjunz.tasker.task.event.MetaEventDispatcher
 import top.xjunz.tasker.task.event.NetworkEventDispatcher
+import top.xjunz.tasker.task.event.PhoneCallEventDispatcher
 import top.xjunz.tasker.task.event.PollEventDispatcher
+import top.xjunz.tasker.task.event.PowerEventDispatcher
+import top.xjunz.tasker.task.event.ScreenEventDispatcher
+import top.xjunz.tasker.task.event.SmsEventDispatcher
 import top.xjunz.tasker.task.location.AmapApiKeyManager
 import top.xjunz.tasker.task.location.GeofenceConfigRepository
 import top.xjunz.tasker.task.location.LocationEventDispatcher
@@ -94,6 +102,14 @@ interface AutomatorService {
                 serviceScope
             )
         )
+        eventDispatcher.registerEventDispatcher(ScreenEventDispatcher())
+        eventDispatcher.registerEventDispatcher(PowerEventDispatcher())
+        eventDispatcher.registerEventDispatcher(HeadsetEventDispatcher())
+        eventDispatcher.registerEventDispatcher(BluetoothEventDispatcher())
+        eventDispatcher.registerEventDispatcher(AlarmEventDispatcher())
+        eventDispatcher.registerEventDispatcher(PhoneCallEventDispatcher())
+        eventDispatcher.registerEventDispatcher(SmsEventDispatcher())
+        eventDispatcher.registerEventDispatcher(IntentEventDispatcher())
         eventDispatcher.addCallback(residentTaskScheduler)
         eventDispatcher.addCallback(oneshotTaskScheduler)
     }
