@@ -30,6 +30,8 @@ import top.xjunz.tasker.task.applet.option.registry.ShellCmdActionRegistry
 import top.xjunz.tasker.task.applet.option.registry.TextActionRegistry
 import top.xjunz.tasker.task.applet.option.registry.TextCriterionRegistry
 import top.xjunz.tasker.task.applet.option.registry.TimeCriterionRegistry
+import top.xjunz.tasker.task.applet.option.registry.NetworkActionRegistry
+import top.xjunz.tasker.task.applet.option.registry.SoundActionRegistry
 import top.xjunz.tasker.task.applet.option.registry.UiActionRegistry
 import top.xjunz.tasker.task.applet.option.registry.UiObjectActionRegistry
 import top.xjunz.tasker.task.applet.option.registry.UiObjectCriterionRegistry
@@ -140,6 +142,12 @@ object AppletOptionFactory : AppletFactory {
     private val uiActionRegistry =
         UiActionRegistry(BootstrapOptionRegistry.ID_UI_ACTION_REGISTRY)
 
+    private val soundActionRegistry =
+        SoundActionRegistry(BootstrapOptionRegistry.ID_SOUND_ACTION_REGISTRY)
+
+    private val networkActionRegistry =
+        NetworkActionRegistry(BootstrapOptionRegistry.ID_NETWORK_ACTION_REGISTRY)
+
     val uiObjectFlowRegistry =
         UiObjectFlowRegistry(BootstrapOptionRegistry.ID_UI_OBJECT_FLOW_REGISTRY)
 
@@ -172,6 +180,8 @@ object AppletOptionFactory : AppletFactory {
         modeActionRegistry,
         screenOcrActionRegistry,
         uiActionRegistry,
+        soundActionRegistry,
+        networkActionRegistry,
         /* control */
         uiObjectFlowRegistry,
     )

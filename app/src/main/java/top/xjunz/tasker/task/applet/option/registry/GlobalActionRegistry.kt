@@ -205,7 +205,7 @@ class GlobalActionRegistry(id: Int) : AppletOptionRegistry(id) {
             cameraManager.setTorchMode(cameraId, !currentEnabled)
             true
         }
-    }
+    }.also { it.appletId = 0x700E } // 避免与 waitForIdle 的 hashCode 碰撞
 
     @AppletOrdinal(0x000F)
     val controlMedia = appletOption(R.string.control_media) {

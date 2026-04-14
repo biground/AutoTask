@@ -140,7 +140,10 @@ open class BootstrapOptionRegistry : AppletOptionRegistry(ID_BOOTSTRAP_REGISTRY)
             vibrationActions,
             variableActions,
             modeActions,
-            screenOcrActions
+            screenOcrActions,
+            soundActions,
+            uiActions,
+            networkActions
         )
     }
 
@@ -305,4 +308,16 @@ open class BootstrapOptionRegistry : AppletOptionRegistry(ID_BOOTSTRAP_REGISTRY)
     @AppletOrdinal(0x0045)
     val screenOcrActions =
         flowOptionWithId<PhantomFlow>(ID_SCREEN_OCR_ACTION_REGISTRY, R.string.screen_ocr_actions)
+
+    @AppletOrdinal(0x0046)
+    val soundActions =
+        flowOptionWithId<PhantomFlow>(ID_SOUND_ACTION_REGISTRY, R.string.sound_actions)
+
+    @AppletOrdinal(0x0047)
+    val uiActions =
+        flowOptionWithId<PhantomFlow>(ID_UI_ACTION_REGISTRY, R.string.ui_actions)
+
+    @AppletOrdinal(0x0048)
+    val networkActions =
+        flowOptionWithId<PhantomFlow>(ID_NETWORK_ACTION_REGISTRY, R.string.network_internal_actions)
 }
