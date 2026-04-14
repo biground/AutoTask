@@ -62,6 +62,9 @@ open class BootstrapOptionRegistry : AppletOptionRegistry(ID_BOOTSTRAP_REGISTRY)
         const val ID_VARIABLE_ACTION_REGISTRY = 0x59
         const val ID_MODE_ACTION_REGISTRY = 0x5A
         const val ID_SCREEN_OCR_ACTION_REGISTRY = 0x5B
+        const val ID_SOUND_ACTION_REGISTRY = 0x5C
+        const val ID_UI_ACTION_REGISTRY = 0x5D
+        const val ID_NETWORK_ACTION_REGISTRY = 0x5E
 
         const val ID_UI_OBJECT_FLOW_REGISTRY = 0x60
     }

@@ -1,0 +1,1122 @@
+plan_id: action-constraint-batch
+objective: "研究 AutoPilot 项目中 Action 和 Constraint 的实现模式和基础设施，为 18 个新动作 + 6 个新约束的批量实现提供技术上下文"
+focus_area: action-constraint-infrastructure
+created_at: "2026-04-14"
+created_by: gem-researcher
+status: completed
+
+tldr: |
+  - Action/Constraint 基于 Applet 体系实现：Action 继承 Action→ArgumentAction/SingleArgAction；Criterion 继承 Criterion<T,V>
+  - 简单动作仅需 1 个文件（Registry 内 inline lambda），复杂动作需 3 个文件（Bridge + Action类 + Registry注册）
+  - 注册链路: Registry 字段 + @AppletOrdinal → BootstrapOptionRegistry ID常量 → AppletOptionFactory 实例化
+  - 系统 API 通过 bridge/*Bridge.kt 桥接，一律用 ContextBridge.getContext() 获取系统服务
+  - 当前有 12 个 ActionRegistry + 10 个 CriterionRegistry + 1 个 FlowRegistry，新增需在 BootstrapOptionRegistry 分配 ID 并注册到 AppletOptionFactory
+
+research_metadata:
+  methodology: "hybrid retrieval: semantic_search + grep_search + read_file 逐层深入"
+  scope: "完整覆盖 Applet 框架核心（tasker-engine 层）+ 全部已有 Registry/Action/Criterion/Bridge 文件"
+  confidence: high
+  coverage: 95
+  decision_blockers: 0
+  research_blockers: 0
+
+# ==============================================================================
+# 1. FILES ANALYZED
+# ==============================================================================
+files_analyzed:
+
+  # --- Engine Core ---
+  - file: Action.kt
+    path: tasker-engine/src/main/java/top/xjunz/tasker/engine/applet/action/Action.kt
+    purpose: "Action 基类，继承 Applet，标记 supportsAnywayRelation=true"
+    key_elements:
+      - element: Action
+        type: class
+        location: "Action.kt:12"
+        description: "abstract class Action : Applet()，动作基础抽象类"
+    language: kotlin
+    lines: 17
+
+  - file: ArgumentAction.kt
+    path: tasker-engine/src/main/java/top/xjunz/tasker/engine/applet/action/ArgumentAction.kt
+    purpose: "带参数的 Action，从 values+references 组装 args 数组后调用 doAction"
+    key_elements:
+      - element: ArgumentAction
+        type: class
+        location: "ArgumentAction.kt:12"
+        description: "从 Applet.values 和 references 构造 args[] 传入 doAction()"
+    language: kotlin
+    lines: 23
+
+  - file: ActionCreator.kt
+    path: tasker-engine/src/main/java/top/xjunz/tasker/engine/applet/action/ActionCreator.kt
+    purpose: "DSL 工厂函数：emptyArgAction, emptyArgOptimisticAction, optimisticAction, createAction, doubleArgsAction"
+    key_elements:
+      - element: emptyArgAction
+        type: function
+        location: "ActionCreator.kt:32"
+        description: "无参动作，lambda 接收 TaskRuntime 返回 Boolean"
+      - element: emptyArgOptimisticAction
+        type: function
+        location: "ActionCreator.kt:38"
+        description: "无参乐观动作，总是返回 true（适用于设置类操作）"
+      - element: createAction
+        type: function
+        location: "ActionCreator.kt:15"
+        description: "通用工厂，lambda 接收 (args, runtime) 返回 Boolean"
+      - element: doubleArgsAction
+        type: function
+        location: "ActionCreator.kt:48"
+        description: "双参数动作"
+    language: kotlin
+    lines: 52
+
+  - file: SingleArgAction.kt
+    path: tasker-engine/src/main/java/top/xjunz/tasker/engine/applet/action/SingleArgAction.kt
+    purpose: "单参数 Action 抽象类，需自定义序列化可继承此类"
+    key_elements:
+      - element: SingleArgAction
+        type: class
+        location: "SingleArgAction.kt:14"
+        description: "abstract class SingleArgAction<Arg>，args.single() 后传入 doAction(arg, runtime)"
+      - element: simpleSingleNonNullArgAction
+        type: function
+        location: "SingleArgAction.kt:35"
+        description: "简单单参数非空动作，lambda 接收 Arg 返回 Boolean"
+    language: kotlin
+    lines: 39
+
+  - file: VarRefAction.kt
+    path: tasker-engine/src/main/java/top/xjunz/tasker/engine/applet/action/VarRefAction.kt
+    purpose: "变量引用动作，用于需要格式化模板输出的场景（如 Toast、Logcat）"
+    key_elements:
+      - element: optimisticVarRefAction
+        type: function
+        location: "VarRefAction.kt:27"
+        description: "lambda 接收 (value, refs[], runtime)"
+    language: kotlin
+    lines: 35
+
+  - file: Processor.kt
+    path: tasker-engine/src/main/java/top/xjunz/tasker/engine/applet/action/Processor.kt
+    purpose: "处理器动作，执行后产生结果变量（Result 类型）"
+    key_elements:
+      - element: createProcessor
+        type: function
+        location: "Processor.kt:24"
+        description: "lambda 接收 (args, runtime) 返回 Result?，非 null 即成功"
+    language: kotlin
+    lines: 30
+
+  - file: Criterion.kt
+    path: tasker-engine/src/main/java/top/xjunz/tasker/engine/applet/criterion/Criterion.kt
+    purpose: "Criterion 基类，T=匹配目标，V=匹配值"
+    key_elements:
+      - element: Criterion
+        type: class
+        location: "Criterion.kt:22"
+        description: "abstract class Criterion<T, V> : Applet()，核心方法 matchTarget(target, value)"
+    language: kotlin
+    lines: 80+
+
+  - file: CriterionCreator.kt
+    path: tasker-engine/src/main/java/top/xjunz/tasker/engine/applet/criterion/CriterionCreator.kt
+    purpose: "Criterion DSL 工厂：booleanCriterion, unaryEqualCriterion, propertyCriterion, equalCriterion, collectionCriterion"
+    key_elements:
+      - element: booleanCriterion
+        type: function
+        location: "CriterionCreator.kt:54"
+        description: "布尔约束，lambda 返回 Boolean（设备是否锁屏、是否飞行模式等）"
+      - element: unaryEqualCriterion
+        type: function
+        location: "CriterionCreator.kt:72"
+        description: "一元相等约束，lambda 返回当前值 V?，与用户设的值做 equals 对比"
+      - element: propertyCriterion
+        type: function
+        location: "CriterionCreator.kt:24"
+        description: "属性约束，lambda 返回 Boolean，支持翻转"
+    language: kotlin
+    lines: 86
+
+  - file: Applet.kt
+    path: tasker-engine/src/main/java/top/xjunz/tasker/engine/applet/base/Applet.kt
+    purpose: "所有 Applet 基类，定义 values、references、referents、argumentTypes、isInverted 等核心属性"
+    key_elements:
+      - element: Applet
+        type: class
+        location: "Applet.kt:19"
+        description: "定义 id (registryId<<16 | appletId)、values Map、references Map、referents Map"
+    language: kotlin
+    lines: 200+
+
+  # --- Registration Layer ---
+  - file: AppletOptionRegistry.kt
+    path: app/src/main/java/top/xjunz/tasker/task/applet/option/registry/AppletOptionRegistry.kt
+    purpose: "Registry 抽象基类：声明 appletOption() / invertibleAppletOption() 工厂方法，通过 @AppletOrdinal 注解自动发现选项"
+    key_elements:
+      - element: AppletOptionRegistry
+        type: class
+        location: "AppletOptionRegistry.kt:17"
+        description: "每个 Registry 有唯一 id。parseDeclaredOptions() 反射扫描 @AppletOrdinal 字段"
+      - element: appletOption
+        type: function
+        location: "AppletOptionRegistry.kt:52"
+        description: "创建 AppletOption(registryId, title, TITLE_NONE, creator)"
+      - element: invertibleAppletOption
+        type: function
+        location: "AppletOptionRegistry.kt:48"
+        description: "创建可翻转的 AppletOption"
+    language: kotlin
+    lines: 90
+
+  - file: BootstrapOptionRegistry.kt
+    path: app/src/main/java/top/xjunz/tasker/task/applet/option/registry/BootstrapOptionRegistry.kt
+    purpose: "顶层注册中心：定义所有 Registry 的 ID 常量、流程选项、菜单组织"
+    key_elements:
+      - element: ID_GLOBAL_ACTION_REGISTRY
+        type: variable
+        location: "BootstrapOptionRegistry.kt:52"
+        description: "0x50"
+      - element: ID_GLOBAL_CRITERION_REGISTRY
+        type: variable
+        location: "BootstrapOptionRegistry.kt:45"
+        description: "0x13"
+      - element: ID_NETWORK_CRITERION_REGISTRY
+        type: variable
+        location: "BootstrapOptionRegistry.kt:47"
+        description: "0x17"
+      - element: criterionFlowOptions
+        type: variable
+        location: "BootstrapOptionRegistry.kt:~113"
+        description: "约束菜单项数组，决定 If 分支下看到哪些 Registry"
+      - element: actionFlowOptions
+        type: variable
+        location: "BootstrapOptionRegistry.kt:~126"
+        description: "动作菜单项数组，决定 Do 分支下看到哪些 Registry"
+    language: kotlin
+    lines: 310+
+
+  - file: AppletOptionFactory.kt
+    path: app/src/main/java/top/xjunz/tasker/task/applet/option/AppletOptionFactory.kt
+    purpose: "Singleton 工厂：实例化所有 Registry 并注册到 allRegistries 数组"
+    key_elements:
+      - element: AppletOptionFactory
+        type: class
+        location: "AppletOptionFactory.kt:46"
+        description: "object : AppletFactory，createAppletById() 从 registryId 路由到对应 Registry"
+      - element: allRegistries
+        type: variable
+        location: "AppletOptionFactory.kt:~136"
+        description: "所有Registry实例数组，新增Registry必须加入此数组"
+    language: kotlin
+    lines: 200+
+
+  - file: AppletOption.kt
+    path: app/src/main/java/top/xjunz/tasker/task/applet/option/AppletOption.kt
+    purpose: "选项描述实体：包装标题、参数描述、值描述器、约束标志等"
+    key_elements:
+      - element: withValueArgument
+        type: function
+        location: "AppletOption.kt"
+        description: "添加值参数描述"
+      - element: withRefArgument
+        type: function
+        location: "AppletOption.kt"
+        description: "添加引用参数描述"
+      - element: withResult
+        type: function
+        location: "AppletOption.kt"
+        description: "添加输出结果变量描述"
+      - element: shizukuOnly
+        type: function
+        location: "AppletOption.kt:265"
+        description: "标记需要 Shizuku 权限"
+      - element: premiumOnly
+        type: function
+        location: "AppletOption.kt:270"
+        description: "标记高级功能"
+      - element: restrictApiLevel
+        type: function
+        location: "AppletOption.kt:395"
+        description: "限制 Android API 版本"
+    language: kotlin
+    lines: 400+
+
+  - file: AppletOrdinal.kt
+    path: app/src/main/java/top/xjunz/tasker/task/applet/anno/AppletOrdinal.kt
+    purpose: "@AppletOrdinal(ordinal) 注解：高 8 位=分类ID，低 8 位=分类内序号"
+    key_elements:
+      - element: AppletOrdinal
+        type: class
+        location: "AppletOrdinal.kt:17"
+        description: "ordinal 格式: 0xCCII (CC=category index, II=item index)"
+    language: kotlin
+    lines: 18
+
+  # --- Existing Registry Files ---
+  - file: GlobalActionRegistry.kt
+    path: app/src/main/java/top/xjunz/tasker/task/applet/option/registry/GlobalActionRegistry.kt
+    purpose: "全局动作注册表：按键、锁屏、截图、旋转、唤醒等"
+    key_elements:
+      - element: waitForIdle
+        type: variable
+        location: "GlobalActionRegistry.kt:@0x0000"
+        description: "等待空闲"
+      - element: pressBack
+        type: variable
+        location: "GlobalActionRegistry.kt:@0x0001"
+        description: "按返回键"
+      - element: wakeUpScreen
+        type: variable
+        location: "GlobalActionRegistry.kt:@0x0008"
+        description: "唤醒屏幕 → PowerManagerBridge"
+    language: kotlin
+    lines: 100
+
+  - file: GlobalCriterionRegistry.kt
+    path: app/src/main/java/top/xjunz/tasker/task/applet/option/registry/GlobalCriterionRegistry.kt
+    purpose: "全局约束注册表：屏幕方向、充电状态、电池容量"
+    key_elements:
+      - element: isScreenPortrait
+        type: variable
+        location: "GlobalCriterionRegistry.kt:@0x0000"
+        description: "booleanCriterion 模式"
+      - element: isBatteryCharging
+        type: variable
+        location: "GlobalCriterionRegistry.kt:@0x0010"
+        description: "booleanCriterion 模式"
+      - element: batteryCapacityRange
+        type: variable
+        location: "GlobalCriterionRegistry.kt:@0x0011"
+        description: "simpleNumberRangeCriterion + VariantArgType.INT_PERCENT"
+    language: kotlin
+    lines: 55
+
+  - file: NetworkCriterionRegistry.kt
+    path: app/src/main/java/top/xjunz/tasker/task/applet/option/registry/NetworkCriterionRegistry.kt
+    purpose: "网络约束：网络可用、WiFi、蜂窝、WiFi SSID"
+    key_elements:
+      - element: isNetworkActive
+        type: variable
+        location: "NetworkCriterionRegistry.kt:@0x0001"
+        description: "booleanCriterion 最简模式"
+      - element: currentWifiSsidIs
+        type: variable
+        location: "NetworkCriterionRegistry.kt:@0x0004"
+        description: "unaryEqualCriterion 模式"
+    language: kotlin
+    lines: 45
+
+  # --- Bridge Layer ---
+  - file: ContextBridge.kt
+    path: app/src/main/java/top/xjunz/tasker/bridge/ContextBridge.kt
+    purpose: "统一上下文获取：App 进程返回 Application，Shizuku 进程创建 privileged Context"
+    key_elements:
+      - element: getContext
+        type: function
+        location: "ContextBridge.kt:38"
+        description: "核心入口，所有 Bridge 均通过此获取 Context"
+    language: kotlin
+    lines: 100+
+
+  - file: PowerManagerBridge.kt
+    path: app/src/main/java/top/xjunz/tasker/bridge/PowerManagerBridge.kt
+    purpose: "PowerManager 封装：唤醒屏幕、WakeLock"
+    key_elements:
+      - element: wakeUpScreen
+        type: function
+        location: "PowerManagerBridge.kt:25"
+        description: "WakeLock acquire+release 方式唤醒"
+    language: kotlin
+    lines: 37
+
+  - file: ConnectivityManagerBridge.kt
+    path: app/src/main/java/top/xjunz/tasker/bridge/ConnectivityManagerBridge.kt
+    purpose: "网络状态封装"
+    key_elements:
+      - element: isNetworkAvailable
+        type: variable
+        location: "ConnectivityManagerBridge.kt"
+        description: "cm.activeNetwork != null"
+      - element: isWifi
+        type: variable
+        location: "ConnectivityManagerBridge.kt"
+        description: "NetworkCapabilities TRANSPORT_WIFI"
+    language: kotlin
+    lines: 55
+
+  - file: BatteryManagerBridge.kt
+    path: app/src/main/java/top/xjunz/tasker/bridge/BatteryManagerBridge.kt
+    purpose: "电池状态封装"
+    key_elements:
+      - element: isCharging
+        type: variable
+        location: "BatteryManagerBridge.kt:20"
+        description: "batteryManager.isCharging"
+    language: kotlin
+    lines: 26
+
+  - file: DisplayManagerBridge.kt
+    path: app/src/main/java/top/xjunz/tasker/bridge/DisplayManagerBridge.kt
+    purpose: "显示管理封装"
+    key_elements:
+      - element: size
+        type: variable
+        location: "DisplayManagerBridge.kt"
+        description: "屏幕真实尺寸"
+    language: kotlin
+    lines: 45
+
+  - file: VibratorBridge.kt
+    path: app/src/main/java/top/xjunz/tasker/bridge/VibratorBridge.kt
+    purpose: "震动封装"
+    key_elements:
+      - element: performVibrate
+        type: function
+        location: "VibratorBridge.kt:25"
+        description: "VibrationEffect.createWaveform"
+    language: kotlin
+    lines: 28
+
+  - file: OverlayToastBridge.kt
+    path: app/src/main/java/top/xjunz/tasker/bridge/OverlayToastBridge.kt
+    purpose: "浮层 Toast 显示（支持 A11y overlayWindow 和 Shizuku overlay）"
+    key_elements:
+      - element: showOverlayToast
+        type: function
+        location: "OverlayToastBridge.kt"
+        description: "在浮层窗口显示文本消息"
+    language: kotlin
+    lines: 100+
+
+# ==============================================================================
+# 2. PATTERNS FOUND
+# ==============================================================================
+patterns_found:
+
+  - category: architecture
+    pattern: "Applet 工厂模式 (3 层)"
+    description: |
+      1) tasker-engine 定义 Action/Criterion 基类和 DSL 工厂函数
+      2) app 层 `*Registry.kt` 通过 DSL 声明具体选项
+      3) AppletOptionFactory 枚举所有 Registry 实例
+    examples:
+      - file: GlobalActionRegistry.kt
+        location: "GlobalActionRegistry.kt:全文"
+        snippet: |
+          @AppletOrdinal(0x0008)
+          val wakeUpScreen = appletOption(R.string.wake_up_screen) {
+              emptyArgOptimisticAction {
+                  PowerManagerBridge.wakeUpScreen()
+              }
+          }
+    prevalence: common
+
+  - category: architecture
+    pattern: "Action 实现模式 — 三种复杂度"
+    description: |
+      **模式 A: inline lambda（最简，1 个文件）**
+      - 在 *Registry.kt 中直接用 emptyArgAction / emptyArgOptimisticAction / simpleSingleNonNullArgAction
+      - 适合：系统 API 一行调用的动作。示例：GlobalActionRegistry.pressBack, wakeUpScreen
+      
+      **模式 B: 自定义 Action 类（2-3 个文件）**
+      - 在 action/ 目录创建继承 SingleArgAction<T> 或 ArgumentAction 的类
+      - 在 *Registry.kt 注册 new 实例
+      - 适合：需要自定义序列化、复杂逻辑的动作。示例：Vibrate, ShellCmdAction, GestureAction
+      
+      **模式 C: Bridge + Action + Registry（3 个文件）**
+      - bridge/ 目录封装系统 API（object + lazy 获取系统服务）
+      - action/ 目录创建 Action 类
+      - registry/ 目录注册
+      - 适合：需要复用系统 API 的场景。示例：Vibrate → VibratorBridge
+    examples:
+      - file: GlobalActionRegistry.kt
+        location: "GlobalActionRegistry.kt:87-91"
+        snippet: |
+          // 模式 A：inline lambda
+          val wakeUpScreen = appletOption(R.string.wake_up_screen) {
+              emptyArgOptimisticAction { PowerManagerBridge.wakeUpScreen() }
+          }
+      - file: Vibrate.kt
+        location: "Vibrate.kt:21"
+        snippet: |
+          // 模式 B：自定义 SingleArgAction
+          class Vibrate : SingleArgAction<Vibrate.VibrationWaveForm>() {
+              override suspend fun doAction(arg: VibrationWaveForm?, runtime: TaskRuntime): AppletResult { ... }
+          }
+      - file: SetModeAction.kt
+        location: "SetModeAction.kt:26"
+        snippet: |
+          // 模式 C：自定义 ArgumentAction（含依赖注入）
+          class SetModeAction(private val modeRepositoryProvider: () -> ModeRepository) : ArgumentAction() { ... }
+    prevalence: common
+
+  - category: architecture
+    pattern: "Criterion 实现模式 — 两种"
+    description: |
+      **模式 1: booleanCriterion（最简）**
+      - 无参数，lambda 返回 Boolean
+      - 自动支持 isInverted 翻转
+      - 注册用 invertibleAppletOption()
+      - 示例：isScreenPortrait, isBatteryCharging, isNetworkActive
+      
+      **模式 2: 自定义 Applet 子类**
+      - 继承 Applet 直接实现 apply()
+      - 手动处理 values[] 和 isInverted
+      - 示例：ModeConstraint, GeofenceConstraint, OcrTextConstraint
+    examples:
+      - file: GlobalCriterionRegistry.kt
+        location: "GlobalCriterionRegistry.kt:22-26"
+        snippet: |
+          val isScreenPortrait = invertibleAppletOption(R.string.screen_orientation_portrait) {
+              booleanCriterion { DisplayManagerBridge.size.let { it.x < it.y } }
+          }
+      - file: ModeConstraint.kt
+        location: "ModeConstraint.kt:26"
+        snippet: |
+          class ModeConstraint(private val modeRepositoryProvider: () -> ModeRepository) : Applet() {
+              override suspend fun apply(runtime: TaskRuntime): AppletResult { ... }
+          }
+    prevalence: common
+
+  - category: architecture
+    pattern: "Bridge 层封装模式"
+    description: |
+      所有系统服务通过 bridge/ 目录的 object 封装：
+      - `object XxxBridge { private val service by lazy { ContextBridge.getContext().getSystemService(...) } }`
+      - 提供 val 属性（只读状态查询）和 fun 方法（操作执行）
+      - 已有 Bridge: BatteryManager, Connectivity, Display, Power, Vibrator, Clipboard, ActivityManager, PackageManager, OverlayToast
+    examples:
+      - file: BatteryManagerBridge.kt
+        location: "BatteryManagerBridge.kt:12-25"
+        snippet: |
+          object BatteryManagerBridge {
+              private val batteryManager: BatteryManager by lazy {
+                  ContextBridge.getContext().getSystemService(BatteryManager::class.java)
+              }
+              val isCharging: Boolean get() = batteryManager.isCharging
+          }
+    prevalence: common
+
+  - category: architecture
+    pattern: "注册链路（新增 Registry 完整步骤）"
+    description: |
+      1. BootstrapOptionRegistry.companion 定义 ID 常量（如 ID_SOUND_ACTION_REGISTRY = 0x5C）
+      2. BootstrapOptionRegistry 类体中添加 PhantomFlow 入口（如 @AppletOrdinal(0x0046) val soundActions = flowOptionWithId<PhantomFlow>(ID_SOUND_ACTION_REGISTRY, R.string.sound_actions)）
+      3. BootstrapOptionRegistry.actionFlowOptions / criterionFlowOptions 数组中添加引用
+      4. AppletOptionFactory 实例化 Registry 并加入 allRegistries 数组
+      
+      如果只在已有 Registry 中加入新选项：
+      - 在 *Registry.kt 中添加 @AppletOrdinal(下一个可用序号) val xxx = appletOption(...) { ... }
+      - 确保 AppletOrdinal 的 ordinal 不重复
+    examples:
+      - file: BootstrapOptionRegistry.kt
+        location: "BootstrapOptionRegistry.kt:52-63"
+        snippet: |
+          const val ID_GLOBAL_ACTION_REGISTRY = 0x50
+          ...
+          const val ID_SCREEN_OCR_ACTION_REGISTRY = 0x5B
+      - file: AppletOptionFactory.kt
+        location: "AppletOptionFactory.kt:~136"
+        snippet: |
+          private val allRegistries = arrayOf(
+              flowRegistry, eventRegistry, applicationRegistry, ...
+              globalActionRegistry, vibrationActionRegistry, ...
+          )
+    prevalence: common
+
+  - category: naming
+    pattern: "字符串资源命名规范"
+    description: |
+      - 动作标题: 动词短语，如 `press_back`, `wake_up_screen`, `execute_shell_cmd`, `perform_vibrate`
+      - 约束标题: `is_xxx`（布尔）或描述性名词，如 `is_charging`, `screen_orientation_portrait`
+      - 反转命名: `not_` + 原名，如 `not_is_charging`（自动解析）
+      - Registry 分类: `global_actions`, `text_operations`, `file_operations`, `vibrate`
+      - 格式化输出: `format_xxx_desc`, `format_xxx`
+    examples:
+      - file: strings.xml
+        location: "app/src/main/res/values/strings.xml"
+        snippet: |
+          <string name="device_status">设备状态</string>
+          <string name="perform_vibrate">执行震动</string>
+    prevalence: common
+
+  - category: architecture
+    pattern: "参数传递与结果返回"
+    description: |
+      **参数接收:**
+      - withValueArgument<T>(titleRes, variantValueType?) — 用户通过 UI 配置的值，存入 Applet.values[index]
+      - withRefArgument<T>(titleRes) — 引用其他 Applet 的输出，存入 Applet.references[index]
+      - withBinaryArgument<Ref, Val>(titleRes, variantValueType?) — 支持引用或直接值
+      - withUnaryArgument<T>(...) — 既是参数也可做引用
+      
+      **结果返回:**
+      - withResult<T>(titleRes) — 声明输出变量，供后续 Applet 引用
+      - Action 内部通过 runtime.registerReferent(value) 注册结果
+      - AppletResult.EMPTY_SUCCESS (成功无结果)
+      - AppletResult.succeeded(result) (成功带结果)
+      - AppletResult.EMPTY_FAILURE (失败)
+      - AppletResult.failed(error) (失败带错误信息)
+    examples:
+      - file: TextActionRegistry.kt
+        location: "TextActionRegistry.kt:~40"
+        snippet: |
+          val extractText = appletOption(R.string.format_extract_text) {
+              createProcessor { args, _ ->
+                  val src = args[0] as? String
+                  val regex = args[1] as? String
+                  if (regex == null) null else src?.firstGroupValue(regex)
+              }
+          }.withRefArgument<String>(R.string.text)
+           .withValueArgument<String>(R.string.regex)
+           .withResult<String>(R.string.extracted_text)
+    prevalence: common
+
+  - category: architecture
+    pattern: "VariantArgType 类型系统"
+    description: |
+      定义参数的 UI 编辑器类型，影响前端展示形式：
+      - NONE = -1（默认文本）
+      - INT_PERCENT = 12<<16|3（百分比滑块）
+      - INT_INTERVAL = 2<<16|3（时间间隔）
+      - INT_ROTATION = 5<<16|3（旋转方向选择器）
+      - TEXT_PACKAGE_NAME = 1<<16|1（包名选择器）
+      - TEXT_FILE_PATH = 5<<16|1（文件路径选择器）
+      - TEXT_FORMAT = 6<<16|1|MASK（模板文本）
+      - TEXT_VIBRATION_PATTERN = 7<<16|1（震动模式编辑器）
+      新增动作如需特殊 UI，可扩展此处
+    examples:
+      - file: VariantArgType.kt
+        location: "VariantArgType.kt:全文"
+        snippet: |
+          const val INT_PERCENT = 12 shl 16 or Applet.ARG_TYPE_INT
+    prevalence: common
+
+# ==============================================================================
+# 3. RELATED ARCHITECTURE
+# ==============================================================================
+related_architecture:
+  components_relevant_to_domain:
+    - component: "tasker-engine (Applet 框架)"
+      responsibility: "定义 Applet/Action/Criterion 基类、DSL 工厂、序列化"
+      location: "tasker-engine/src/main/java/top/xjunz/tasker/engine/"
+      relationship_to_domain: "所有 Action/Criterion 的继承基础"
+
+    - component: "bridge/ 桥接层"
+      responsibility: "封装 Android 系统服务，提供进程无关的 API 访问"
+      location: "app/src/main/java/top/xjunz/tasker/bridge/"
+      relationship_to_domain: "Action/Criterion 通过 Bridge 访问系统 API"
+
+    - component: "option/registry/ 注册层"
+      responsibility: "声明可用选项，组织分类菜单，连接 UI 和引擎"
+      location: "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/"
+      relationship_to_domain: "所有新 Action/Criterion 必须在此注册"
+
+    - component: "AppletOptionFactory"
+      responsibility: "单例工厂，聚合所有 Registry，路由 ID→实例创建"
+      location: "app/src/main/java/top/xjunz/tasker/task/applet/option/AppletOptionFactory.kt"
+      relationship_to_domain: "新 Registry 必须在此注册"
+
+    - component: "service/Environment.kt"
+      responsibility: "提供 currentService、uiAutomation 等全局服务引用"
+      location: "app/src/main/java/top/xjunz/tasker/service/Environment.kt"
+      relationship_to_domain: "Action 通过此访问 A11y、UiAutomator 服务"
+
+  interfaces_used_by_domain:
+    - interface: Applet
+      location: "tasker-engine/.../applet/base/Applet.kt"
+      usage_pattern: "所有 Action/Criterion 的根基类"
+    - interface: AppletFactory
+      location: "tasker-engine/.../applet/factory/AppletFactory.kt"
+      usage_pattern: "createAppletById(id) 反序列化入口"
+
+  data_flow_involving_domain: |
+    用户 UI 选择选项 → AppletOption.yield() → 创建 Applet 实例 → 
+    设置 values/references → 序列化为 JSON → 
+    运行时 AppletFactory.createAppletById() 反序列化 → 
+    TaskRuntime.apply(applet) → Action.doAction() / Criterion.matchTarget()
+
+  key_relationships_to_domain:
+    - from: "*Registry.kt"
+      to: "BootstrapOptionRegistry"
+      relationship: "通过 ID 常量关联"
+    - from: "*Registry.kt"
+      to: "AppletOptionFactory"
+      relationship: "Factory 持有 Registry 实例"
+    - from: "Action/Criterion 实现"
+      to: "*Bridge.kt"
+      relationship: "调用系统 API"
+    - from: "strings.xml"
+      to: "*Registry.kt"
+      relationship: "提供 UI 标题和描述文本"
+
+# ==============================================================================
+# 4. CURRENT REGISTRY ORDINALS (避免冲突)
+# ==============================================================================
+registry_ordinals:
+  # --- BootstrapOptionRegistry IDs ---
+  bootstrap_registry_ids:
+    criterion_registries:
+      ID_EVENT_FILTER_REGISTRY: 0x0F
+      ID_APP_CRITERION_REGISTRY: 0x10
+      ID_TIME_CRITERION_REGISTRY: 0x12
+      ID_GLOBAL_CRITERION_REGISTRY: 0x13
+      ID_NOTIFICATION_CRITERION_REGISTRY: 0x14
+      ID_TEXT_CRITERION_REGISTRY: 0x15
+      ID_UI_OBJECT_CRITERION_REGISTRY: 0x16
+      ID_NETWORK_CRITERION_REGISTRY: 0x17
+      ID_VARIABLE_CRITERION_REGISTRY: 0x18
+      ID_MODE_CRITERION_REGISTRY: 0x19
+      ID_LOCATION_CRITERION_REGISTRY: 0x1A
+      ID_SCREEN_OCR_CRITERION_REGISTRY: 0x1B
+      next_available_criterion: 0x1C  # ← 新约束 Registry 从此开始
+    action_registries:
+      ID_GLOBAL_ACTION_REGISTRY: 0x50
+      ID_UI_OBJECT_ACTION_REGISTRY: 0x51
+      ID_CONTROL_ACTION_REGISTRY: 0x52
+      ID_APP_ACTION_REGISTRY: 0x53
+      ID_TEXT_ACTION_REGISTRY: 0x54
+      ID_GESTURE_ACTION_REGISTRY: 0x55
+      ID_SHELL_CMD_ACTION_REGISTRY: 0x56
+      ID_FILE_ACTION_REGISTRY: 0x57
+      ID_VIBRATION_ACTION_REGISTRY: 0x58
+      ID_VARIABLE_ACTION_REGISTRY: 0x59
+      ID_MODE_ACTION_REGISTRY: 0x5A
+      ID_SCREEN_OCR_ACTION_REGISTRY: 0x5B
+      next_available_action: 0x5C  # ← 新动作 Registry 从此开始
+    flow_registries:
+      ID_UI_OBJECT_FLOW_REGISTRY: 0x60
+
+  # --- 各 Registry 内部 AppletOrdinal 使用情况 ---
+  global_action_registry:
+    used_ordinals: [0x0000, 0x0001, 0x0002, 0x0003, 0x0004, 0x0005, 0x0006, 0x0007, 0x0008]
+    next_available: 0x0009
+
+  global_criterion_registry:
+    used_ordinals: [0x0000, 0x0010, 0x0011]
+    next_available: 0x0012
+    note: "0x0000 是屏幕方向，0x0010+ 是设备状态，建议新约束从 0x0012 或 0x0020 开始"
+
+  network_criterion_registry:
+    used_ordinals: [0x0001, 0x0002, 0x0003, 0x0004]
+    next_available: 0x0005
+
+  control_action_registry:
+    used_ordinals: [0x0000, 0x0001, 0x0002, 0x0003, 0x0004, 0x0005, 0x0006, 0x0010, 0x0011, 0x0020]
+    next_available: 0x0021
+
+  text_action_registry:
+    used_ordinals: [0x0000, 0x0001, 0x0002, 0x0003]
+    next_available: 0x0004
+
+  vibration_action_registry:
+    used_ordinals: [0x0001]
+    next_available: 0x0002
+
+  event_criterion_registry:
+    used_ordinals: [0x0000..0x0009, 0x0010..0x001F, 0x0020..0x0028]
+    max_ordinal: 0x0028
+    next_available: 0x0029
+
+# ==============================================================================
+# 5. FEASIBILITY & COMPLEXITY FOR 24 FEATURES
+# ==============================================================================
+feature_feasibility:
+
+  actions:
+    - id: A-SET-002
+      name: "Auto Rotate On/Off"
+      complexity: low
+      implementation_pattern: "模式 A: inline lambda in GlobalActionRegistry"
+      details: |
+        使用 Settings.System.putInt(contentResolver, Settings.System.ACCELEROMETER_ROTATION, 0/1)
+        需要 WRITE_SETTINGS 权限或 Shizuku。可在 GlobalActionRegistry 中直接 inline。
+      files_needed: ["GlobalActionRegistry.kt (修改)", "strings.xml (新增)"]
+      bridge_needed: false
+      new_registry: false
+
+    - id: A-SET-003
+      name: "Bluetooth Configure (Enable/Disable)"
+      complexity: low
+      implementation_pattern: "模式 A: inline lambda in GlobalActionRegistry"
+      details: |
+        BluetoothAdapter.getDefaultAdapter().enable()/disable() — 需要 BLUETOOTH_CONNECT (API31+)。
+        或通过 Shizuku 执行 shell 命令 `settings put global bluetooth_on 0/1`。
+      files_needed: ["GlobalActionRegistry.kt (修改)", "strings.xml (新增)"]
+      bridge_needed: "可选 BluetoothBridge"
+      new_registry: false
+
+    - id: A-SET-004
+      name: "Brightness"
+      complexity: low
+      implementation_pattern: "模式 A: simpleSingleNonNullArgAction<Int> in GlobalActionRegistry"
+      details: |
+        Settings.System.putInt(contentResolver, SCREEN_BRIGHTNESS, value)
+        + Settings.System.putInt(contentResolver, SCREEN_BRIGHTNESS_MODE, MANUAL)
+        需要 WRITE_SETTINGS 或 Shizuku。参数: 0-255 亮度值。
+      files_needed: ["GlobalActionRegistry.kt (修改)", "strings.xml (新增)"]
+      bridge_needed: false
+      new_registry: false
+
+    - id: A-SET-005
+      name: "Dark Theme"
+      complexity: medium
+      implementation_pattern: "模式 A: emptyArgAction + Shizuku shell"
+      details: |
+        API 29+: UiModeManager.setNightMode() 或 `cmd uimode night yes/no`
+        或 Settings.Secure `ui_night_mode` (2=on, 1=off)。
+      files_needed: ["GlobalActionRegistry.kt (修改)", "strings.xml (新增)"]
+      bridge_needed: false
+      new_registry: false
+
+    - id: A-SET-016
+      name: "WiFi Configure (Enable/Disable)"
+      complexity: low
+      implementation_pattern: "模式 A: inline lambda"
+      details: |
+        API < 29: WifiManager.setWifiEnabled()
+        API 29+: 需 shell `svc wifi enable/disable` 通过 Shizuku。
+        ConnectivityManagerBridge 已有 WifiManager 引用可复用。
+      files_needed: ["GlobalActionRegistry.kt (修改)", "strings.xml (新增)"]
+      bridge_needed: "复用 ConnectivityManagerBridge"
+      new_registry: false
+
+    - id: A-SET-033
+      name: "Torch On/Off"
+      complexity: low
+      implementation_pattern: "模式 A: emptyArgAction"
+      details: |
+        CameraManager.setTorchMode(cameraId, enabled)
+        新增 CameraManagerBridge 或直接 inline。
+      files_needed: ["GlobalActionRegistry.kt (修改)", "strings.xml (新增)", "可选 CameraManagerBridge.kt"]
+      bridge_needed: "可选"
+      new_registry: false
+
+    - id: A-SND-001
+      name: "Volume Change"
+      complexity: medium
+      implementation_pattern: "模式 A: simpleSingleNonNullArgAction<Int>"
+      details: |
+        AudioManager.setStreamVolume(streamType, volume, 0)
+        streamType: STREAM_MUSIC/RING/NOTIFICATION/ALARM/SYSTEM
+        需要新建 AudioManagerBridge 或 inline。参数需要 stream 类型 + 目标音量。
+      files_needed: ["新建 SoundActionRegistry.kt", "strings.xml", "可选 AudioManagerBridge.kt"]
+      bridge_needed: "推荐 AudioManagerBridge"
+      new_registry: "推荐新建 SoundActionRegistry (ID=0x5C)"
+
+    - id: A-SND-005
+      name: "Play/Stop Sound"
+      complexity: high
+      implementation_pattern: "模式 B: 自定义 SingleArgAction"
+      details: |
+        需要 MediaPlayer / SoundPool 管理。播放指定文件或 URI。
+        需要管理生命周期（播放/停止）。文件路径参数 + 可选循环。
+      files_needed: ["action/PlaySoundAction.kt", "SoundActionRegistry.kt", "strings.xml"]
+      bridge_needed: false
+      new_registry: "归入 SoundActionRegistry"
+
+    - id: A-SND-006
+      name: "Silent/Vibrate Mode"
+      complexity: low
+      implementation_pattern: "模式 A: simpleSingleNonNullArgAction<Int>"
+      details: |
+        AudioManager.setRingerMode(RINGER_MODE_NORMAL/VIBRATE/SILENT)
+        需要 NotificationPolicy access 或 DND 权限。
+      files_needed: ["SoundActionRegistry.kt", "strings.xml"]
+      bridge_needed: "复用 AudioManagerBridge"
+      new_registry: "归入 SoundActionRegistry"
+
+    - id: A-SND-007
+      name: "Speak Text (TTS)"
+      complexity: medium
+      implementation_pattern: "模式 B: 自定义 Action"
+      details: |
+        TextToSpeech 需要异步初始化，speak() 后等待完成。
+        需要管理 TTS 引擎生命周期。支持变量模板文本（VarRefAction 模式）。
+      files_needed: ["action/SpeakTextAction.kt 或 TtsBridge.kt", "SoundActionRegistry.kt", "strings.xml"]
+      bridge_needed: "推荐 TtsBridge"
+      new_registry: "归入 SoundActionRegistry"
+
+    - id: A-SND-014
+      name: "Do Not Disturb"
+      complexity: medium
+      implementation_pattern: "模式 A: simpleSingleNonNullArgAction<Int>"
+      details: |
+        NotificationManager.setInterruptionFilter(INTERRUPTION_FILTER_NONE/ALL/PRIORITY)
+        需要 NotificationPolicy access 权限。
+      files_needed: ["SoundActionRegistry.kt", "strings.xml", "可选 NotificationManagerBridge.kt"]
+      bridge_needed: "推荐 NotificationManagerBridge"
+      new_registry: "归入 SoundActionRegistry"
+
+    - id: A-UI-001
+      name: "Display Notification"
+      complexity: high
+      implementation_pattern: "模式 B: 自定义 ArgumentAction"
+      details: |
+        需要 NotificationChannel 管理、构建 Notification.Builder。
+        参数: 标题、内容、频道 ID、优先级、是否持久化。
+        需要处理权限（POST_NOTIFICATIONS API 33+）。
+      files_needed: ["action/DisplayNotificationAction.kt", "新建 UiActionRegistry.kt 或归入 TextActionRegistry", "strings.xml"]
+      bridge_needed: "推荐 NotificationManagerBridge"
+      new_registry: "推荐新建 UiActionRegistry (ID=0x5D)"
+
+    - id: A-UI-002
+      name: "Display Dialog"
+      complexity: high
+      implementation_pattern: "模式 B: 自定义 Action"
+      details: |
+        需要 overlay window (TYPE_ACCESSIBILITY_OVERLAY 或 TYPE_SYSTEM_ALERT)。
+        类似 OverlayToastBridge 的实现但加输入和按钮。可复用其 WindowManager 模式。
+      files_needed: ["action/DisplayDialogAction.kt", "bridge/OverlayDialogBridge.kt", "UiActionRegistry.kt", "strings.xml", "布局 XML"]
+      bridge_needed: "是（OverlayDialogBridge）"
+      new_registry: "归入 UiActionRegistry"
+
+    - id: A-UI-007
+      name: "Toast Message"
+      complexity: low
+      implementation_pattern: "已有: TextActionRegistry.makeToast"
+      details: |
+        ⚠️ 已实现！TextActionRegistry.makeToast 已经通过 overlayToastBridge.showOverlayToast() 实现 Toast。
+        如果需要独立入口，只需在新 Registry 增加一个委托到 makeToast 的选项。
+      files_needed: ["无需新增，已存在"]
+      bridge_needed: false
+      new_registry: false
+
+    - id: A-NET-001
+      name: "HTTP Request"
+      complexity: high
+      implementation_pattern: "模式 B: 自定义 ArgumentAction"
+      details: |
+        需要 OkHttp/HttpURLConnection。参数: URL、Method、Headers、Body。
+        结果: status code、response body。
+        需要处理超时、SSL、异步执行。
+      files_needed: ["action/HttpRequestAction.kt", "新建 NetworkActionRegistry.kt", "strings.xml"]
+      bridge_needed: false
+      new_registry: "推荐新建 NetworkActionRegistry (ID=0x5E)"
+
+    - id: A-MEDIA-001
+      name: "Control Media"
+      complexity: medium
+      implementation_pattern: "模式 A: emptyArgAction"
+      details: |
+        MediaSessionManager → getActiveSessions() → sendMediaAction (play/pause/next/prev/stop)。
+        或使用 KeyEvent 方式发送媒体按键。
+        需要 NotificationListener 权限获取 active sessions。
+      files_needed: ["新建 MediaActionRegistry.kt 或归入 GlobalActionRegistry", "strings.xml", "可选 MediaSessionBridge.kt"]
+      bridge_needed: "推荐 MediaSessionBridge"
+      new_registry: "可归入 GlobalActionRegistry"
+
+    - id: A-INT-001
+      name: "Enable/Disable Macro"
+      complexity: medium
+      implementation_pattern: "模式 A: 参考 ControlActionRegistry.disableTask"
+      details: |
+        已有类似实现: ControlActionRegistry.disableTask 通过 LocalTaskManager.removeTask() + TaskStorage.toggleTaskFilename()。
+        新实现需要通过任务名或 ID 查找并启用/禁用。
+      files_needed: ["ControlActionRegistry.kt (修改)", "strings.xml"]
+      bridge_needed: false
+      new_registry: false
+
+    - id: A-INT-005
+      name: "Export Macros"
+      complexity: high
+      implementation_pattern: "模式 B: 自定义 Action"
+      details: |
+        需要序列化任务为 JSON，写入文件或分享。
+        涉及文件 I/O、任务查询、格式化。
+      files_needed: ["action/ExportMacrosAction.kt", "ControlActionRegistry.kt (修改)", "strings.xml"]
+      bridge_needed: false
+      new_registry: false
+
+  constraints:
+    - id: C-DEV-002
+      name: "Device Locked/Unlocked"
+      complexity: low
+      implementation_pattern: "booleanCriterion in GlobalCriterionRegistry"
+      details: |
+        KeyguardManager.isKeyguardLocked() (API 16+) 或 isDeviceLocked() (API 22+)。
+        新增 `KeyguardManagerBridge` 或直接 inline。
+      files_needed: ["GlobalCriterionRegistry.kt (修改)", "strings.xml"]
+      bridge_needed: "可选 KeyguardManagerBridge"
+
+    - id: C-NET-006
+      name: "Airplane Mode"
+      complexity: low
+      implementation_pattern: "booleanCriterion in NetworkCriterionRegistry"
+      details: |
+        Settings.Global.getInt(contentResolver, Settings.Global.AIRPLANE_MODE_ON, 0) != 0
+        或使用 ConnectivityManagerBridge 扩展。
+      files_needed: ["NetworkCriterionRegistry.kt (修改)", "strings.xml"]
+      bridge_needed: false
+
+    - id: C-APP-003
+      name: "Headphone Connection"
+      complexity: low
+      implementation_pattern: "booleanCriterion in GlobalCriterionRegistry"
+      details: |
+        AudioManager.isWiredHeadsetOn() 或 AudioDeviceInfo 查询。
+        API 23+: AudioManager.getDevices(GET_DEVICES_OUTPUTS) 检查 TYPE_WIRED_HEADSET/TYPE_BLUETOOTH_A2DP。
+      files_needed: ["GlobalCriterionRegistry.kt (修改)", "strings.xml"]
+      bridge_needed: "推荐 AudioManagerBridge"
+
+    - id: C-PHONE-001
+      name: "Call State"
+      complexity: low
+      implementation_pattern: "unaryEqualCriterion in GlobalCriterionRegistry"
+      details: |
+        TelephonyManager.getCallState() → CALL_STATE_IDLE/RINGING/OFFHOOK
+        已有 EventCriterionRegistry 中 callStateChanged 事件处理的基础。
+      files_needed: ["GlobalCriterionRegistry.kt (修改)", "strings.xml"]
+      bridge_needed: "可选 TelephonyManagerBridge"
+
+    - id: C-SYS-004
+      name: "Dark Mode"
+      complexity: low
+      implementation_pattern: "booleanCriterion in GlobalCriterionRegistry"
+      details: |
+        context.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK == UI_MODE_NIGHT_YES
+        或 UiModeManager.getNightMode()。
+      files_needed: ["GlobalCriterionRegistry.kt (修改)", "strings.xml"]
+      bridge_needed: false
+
+    - id: C-INT-002
+      name: "Macro Running"
+      complexity: medium
+      implementation_pattern: "自定义 Criterion 或 booleanCriterion"
+      details: |
+        需要查询 LocalTaskManager 中是否有指定任务正在运行。
+        需要参数: 任务名或 ID。可能需要扩展 TaskRuntime 查询接口。
+      files_needed: ["GlobalCriterionRegistry.kt 或新文件", "strings.xml"]
+      bridge_needed: false
+
+# ==============================================================================
+# 6. RECOMMENDED BATCH IMPLEMENTATION GROUPING
+# ==============================================================================
+recommended_grouping:
+
+  group_1_settings_no_bridge:
+    name: "设备设置类（直接 inline，无需 Bridge）"
+    priority: 1
+    estimated_file_changes: 3  # GlobalActionRegistry.kt + GlobalCriterionRegistry.kt + strings.xml
+    items:
+      - A-SET-002  # Auto Rotate
+      - A-SET-004  # Brightness
+      - A-SET-005  # Dark Theme
+      - A-SET-016  # WiFi Configure
+      - A-SET-033  # Torch
+      - A-SET-003  # Bluetooth Configure
+      - C-DEV-002  # Device Locked
+      - C-SYS-004  # Dark Mode
+      - C-NET-006  # Airplane Mode
+      - C-PHONE-001  # Call State
+      - C-APP-003  # Headphone Connection
+    rationale: "全部可在已有 Registry 中用 inline lambda 实现，单次提交覆盖"
+
+  group_2_sound_actions:
+    name: "声音操作（新建 SoundActionRegistry + AudioManagerBridge）"
+    priority: 2
+    estimated_file_changes: 5  # AudioManagerBridge.kt + SoundActionRegistry.kt + BootstrapOptionRegistry.kt + AppletOptionFactory.kt + strings.xml
+    items:
+      - A-SND-001  # Volume Change
+      - A-SND-006  # Silent/Vibrate Mode
+      - A-SND-014  # Do Not Disturb
+      - A-SND-007  # Speak Text (TTS)
+      - A-SND-005  # Play/Stop Sound
+    rationale: "共享 AudioManagerBridge，新 Registry 一次性注册"
+
+  group_3_ui_actions:
+    name: "UI 操作（需要 overlay 和通知）"
+    priority: 3
+    estimated_file_changes: 6
+    items:
+      - A-UI-001  # Display Notification
+      - A-UI-002  # Display Dialog
+      - A-UI-007  # Toast (已有，确认无需新增)
+    rationale: "需要处理 overlay window 和通知权限，复杂度较高"
+
+  group_4_network_and_internal:
+    name: "网络和内部操作"
+    priority: 4
+    estimated_file_changes: 5
+    items:
+      - A-NET-001  # HTTP Request
+      - A-MEDIA-001  # Control Media
+      - A-INT-001  # Enable/Disable Macro
+      - A-INT-005  # Export Macros
+      - C-INT-002  # Macro Running
+    rationale: "各自独立，复杂度从中到高"
+
+# ==============================================================================
+# 7. KEY IMPLEMENTATION CHECKLIST (新增 Action 标准步骤)
+# ==============================================================================
+implementation_checklist:
+  add_action_inline:
+    description: "在已有 Registry 中添加 inline Action（最简路径）"
+    steps:
+      - "1. strings.xml 添加标题字符串（如 <string name=\"set_brightness\">设置亮度</string>）"
+      - "2. 如需反转，添加 not_xxx 字符串"
+      - "3. 在目标 *Registry.kt 中添加 @AppletOrdinal(next_ordinal) val xxx = appletOption(R.string.xxx) { ... }"
+      - "4. 如需参数，链式调用 .withValueArgument<T>(R.string.xxx, VariantArgType.XXX)"
+      - "5. 如需 Shizuku 权限，添加 .shizukuOnly()"
+      - "6. 编译检查: ./gradlew :app:compileDebugKotlin"
+
+  add_action_with_class:
+    description: "添加自定义 Action 类"
+    steps:
+      - "1. 在 action/ 目录创建继承 SingleArgAction 或 ArgumentAction 的类"
+      - "2. 实现 doAction() 方法"
+      - "3. 如需自定义序列化，覆写 serializeArgumentToString / deserializeArgumentFromString"
+      - "4. 在 *Registry.kt 中注册"
+      - "5. strings.xml 添加字符串"
+
+  add_new_registry:
+    description: "创建全新的 Registry"
+    steps:
+      - "1. BootstrapOptionRegistry companion 添加 ID 常量（如 const val ID_SOUND_ACTION_REGISTRY = 0x5C）"
+      - "2. 创建 XxxActionRegistry(id: Int) : AppletOptionRegistry(id)"
+      - "3. BootstrapOptionRegistry 类体添加 PhantomFlow 入口 + AppletOrdinal"
+      - "4. BootstrapOptionRegistry.actionFlowOptions 或 criterionFlowOptions 数组添加引用"
+      - "5. AppletOptionFactory 实例化 Registry 并加入 allRegistries 数组"
+      - "6. strings.xml 添加分类标题字符串"
+
+  add_bridge:
+    description: "创建系统 API Bridge"
+    steps:
+      - "1. 在 bridge/ 目录创建 object XxxBridge"
+      - "2. private val service by lazy { ContextBridge.getContext().getSystemService(Xxx::class.java) }"
+      - "3. 提供 val 属性（查询）或 fun（操作）"
+
+# ==============================================================================
+# 8. OPEN QUESTIONS & GAPS
+# ==============================================================================
+open_questions:
+  - question: "A-UI-007 Toast Message 是否需要独立入口？"
+    context: "TextActionRegistry.makeToast 已实现相同功能（overlayToastBridge.showOverlayToast）"
+    type: nice_to_know
+    affects: ["A-UI-007"]
+
+  - question: "A-SND-014 Do Not Disturb 需要 NotificationPolicy access，这是否需要用户在系统设置中手动授权？"
+    context: "Shizuku 可能可以绕过，但 A11y 模式下可能需要引导用户"
+    type: decision_blocker
+    affects: ["A-SND-014"]
+
+  - question: "A-SET-003 Bluetooth API 在 Android 12+ 需要 BLUETOOTH_CONNECT 运行时权限，Shizuku 模式下是否可以直接通过 shell 操作？"
+    context: "A11y 模式无法 programmatically enable/disable bluetooth"
+    type: research
+    affects: ["A-SET-003"]
+
+  - question: "A-NET-001 HTTP Request 需要确认 ssl/ 模块是否已封装可用的 HTTP client"
+    context: "项目有 ssl/ 模块但未深入研究内部实现"
+    type: research
+    affects: ["A-NET-001"]
+
+gaps:
+  - area: "ssl/ 模块内部实现"
+    description: "未详细分析 ssl/ 模块是否提供 HTTP client 封装"
+    impact: research_blocker
+    affects: ["A-NET-001"]
+
+  - area: "权限模型文档"
+    description: "各动作在 A11y 模式 vs Shizuku 模式下的权限差异未系统化"
+    impact: nice_to_know
+    affects: ["A-SET-002", "A-SET-003", "A-SET-016", "A-SND-014"]

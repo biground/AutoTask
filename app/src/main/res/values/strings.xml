@@ -765,4 +765,69 @@
     <string name="ocr_region_select">选择识别区域</string>
     <string name="ocr_region_full_screen">全屏</string>
     <string name="ocr_result_preview">识别结果预览</string>
+
+    <!-- 动作：设备设置 -->
+    <string name="set_auto_rotate">设置自动旋转</string>
+    <string name="toggle_bluetooth">切换蓝牙</string>
+    <string name="set_brightness">设置亮度</string>
+    <string name="toggle_dark_theme">切换深色主题</string>
+    <string name="toggle_wifi">切换 WIFI</string>
+    <string name="toggle_torch">切换手电筒</string>
+
+    <!-- 动作：声音 -->
+    <string name="set_volume">设置音量</string>
+    <string name="play_sound">播放声音</string>
+    <string name="set_ringer_mode">设置铃声模式</string>
+    <string name="speak_text">朗读文本</string>
+    <string name="set_dnd">设置免打扰</string>
+
+    <!-- 动作：界面 -->
+    <string name="display_notification">显示通知</string>
+    <string name="display_dialog">显示对话框</string>
+
+    <!-- 动作：网络/内部 -->
+    <string name="http_request">HTTP 请求</string>
+    <string name="control_media">媒体控制</string>
+    <string name="toggle_macro">切换宏</string>
+    <string name="export_macros">导出宏</string>
+
+    <!-- 约束 -->
+    <string name="is_device_locked">设备已锁定</string>
+    <string name="not_is_device_locked">设备未锁定</string>
+    <string name="is_airplane_mode">飞行模式已开启</string>
+    <string name="not_is_airplane_mode">飞行模式未开启</string>
+    <string name="is_headphone_connected">耳机已连接</string>
+    <string name="not_is_headphone_connected">耳机未连接</string>
+    <string name="is_call_state">通话状态是</string>
+    <string name="not_is_call_state">通话状态不是</string>
+    <string name="is_dark_mode">深色模式已开启</string>
+    <string name="not_is_dark_mode">深色模式未开启</string>
+    <string name="is_macro_running">宏正在运行</string>
+    <string name="not_is_macro_running">宏未在运行</string>
+
+    <!-- Registry 分类标题 -->
+    <string name="sound_actions">声音操作</string>
+    <string name="ui_actions">界面操作</string>
+    <string name="network_internal_actions">网络与内部操作</string>
+
+    <!-- 参数描述 -->
+    <string name="brightness_value">亮度值</string>
+    <string name="volume_level">音量大小</string>
+    <string name="stream_type">音频流类型</string>
+    <string name="ringer_mode">铃声模式</string>
+    <string name="tts_text">朗读内容</string>
+    <string name="sound_file_path">声音文件路径</string>
+    <string name="notification_title">通知标题</string>
+    <string name="notification_text">通知正文</string>
+    <string name="dialog_title">对话框标题</string>
+    <string name="dialog_content">对话框内容</string>
+    <string name="dialog_timeout">对话框超时时间</string>
+    <string name="http_url">请求地址</string>
+    <string name="http_method">请求方法</string>
+    <string name="http_headers">请求头</string>
+    <string name="http_body">请求体</string>
+    <string name="http_response_code">响应状态码</string>
+    <string name="http_response_body">响应内容</string>
+    <string name="media_action">媒体操作</string>
+    <string name="macro_name">宏名称</string>
 </resources>

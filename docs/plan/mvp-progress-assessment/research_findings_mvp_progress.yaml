@@ -1,0 +1,525 @@
+plan_id: mvp-progress-assessment
+objective: "评估 AutoPilot MVP 阶段各模块的完成度，输出结构化进度报告"
+focus_area: "MVP 全模块完成度评估"
+created_at: "2026-04-14"
+created_by: "gem-researcher"
+status: completed
+
+tldr: |
+  - 引擎核心（tasker-engine）继承自 AutoTask，Flow/Applet/Runtime/DTO/ControlFlow 全链路可用，新增变量/表达式系统已完成，MVP 完成度约 90%
+  - 触发器 19/19 全部实现（含 EventDispatcher + Referent + EventCriterionRegistry 注册），完成度 100%
+  - 动作模块已有约 10/28 MVP 动作对应实现，但大量 MVP 必须动作（音量/通知/HTTP 请求/媒体控制等）缺失，完成度约 35%
+  - 约束模块已有约 8/17 MVP 约束对应实现，部分设备/电话/系统约束缺失，完成度约 47%
+  - Android 基础设施（前台服务/双模式/通知管理/权限引导）继承自 AutoTask 基线，MVP 7 项已有 5-6 项，完成度约 80%
+  - UI/编辑器继承自 AutoTask，任务编辑器/任务列表/选择器均已存在，但 iOS 风格改造尚未开始，完成度约 65%（功能可用，风格未达标）
+  - 数据持久化/导入导出已有 TaskStorage + XTaskDTO + JSON 序列化全链路，完成度约 85%
+  - 整体 MVP 进度估计 65-70%，最大缺口在动作模块和部分约束
+
+research_metadata:
+  methodology: "hybrid retrieval: semantic_search + grep_search + list_dir + read_file；基于 feature-taxonomy.md 和 roadmap.md 逐项对照代码实际实现"
+  scope: "全量 MVP 118 项功能对照源码存在性评估"
+  confidence: high
+  coverage: 85
+  decision_blockers: 0
+  research_blockers: 0
+
+# ============================================================
+# MVP 模块评估详情
+# ============================================================
+
+modules:
+  # ----------------------------------------------------------
+  # 1. 引擎核心
+  # ----------------------------------------------------------
+  - name: "引擎核心 (tasker-engine + 变量/表达式)"
+    status: "~90%"
+    mvp_total: 31
+    implemented:
+      - "E-001 宏定义 — XTask, RootFlow, Applet 体系完整"
+      - "E-002 宏启用/禁用 — XTask.Metadata + LocalTaskManager.isEnabled"
+      - "E-003 宏分类 — TaskStorage + TaskCollectionSelectorDialog"
+      - "E-004 宏导入/导出 — XTaskDTO + XTaskJson + TaskStorage (ZIP/xtsk/xtsks)"
+      - "E-005 宏克隆 — AppletDTO.toDTO() 序列化机制支持"
+      - "E-006 宏日志 — TaskSnapshot + SnapshotLogDialog"
+      - "V-001~V-004 变量类型 — VariableRepository (Boolean/Int/Decimal/String)"
+      - "V-007 全局变量 — VariableRepository 作用域支持"
+      - "V-008 局部变量 — VariableRepository 局部作用域"
+      - "V-009 变量持久化 — DataStore + JSON 序列化"
+      - "V-010 魔术变量 — Referent 系统 (ComponentInfoWrapper 等)"
+      - "V-011 变量表达式 — ExpressionEvaluator (AST 求值器)"
+      - "CF-001 If/Else — If.kt, Else.kt, ElseIf.kt"
+      - "CF-003 Repeat — Repeat.kt"
+      - "CF-005 Break — Break.kt"
+      - "CF-006 Continue — Continue.kt"
+      - "CF-007 Wait Before Next — Suspension.kt + PauseFor.kt"
+      - "CF-008 Wait Until Trigger — WaitUntil.kt, WaitFor.kt"
+      - "CF-011 Macro Run — ControlActionRegistry 有宏调用"
+      - "CF-012 Cancel Macro Actions — ControlActionRegistry"
+      - "CF-014 同步/异步执行 — TaskScheduler 支持"
+      - "EX-001 数学运算 — ExpressionEvaluator"
+      - "EX-002 字符串操作 — ExpressionEvaluator"
+      - "EX-003 日期/时间函数 — ExpressionEvaluator"
+      - "EX-004 逻辑运算 — ExpressionEvaluator"
+      - "EX-005 JSON 解析 — ExpressionEvaluator"
+    missing_mvp:
+      - "CF-002 If Confirmed Then — 需要弹窗确认 UI 集成（部分支持）"
+      - "CF-013 Confirm Next — 需要弹窗确认 UI 集成（部分支持）"
+    notes: |
+      引擎核心大量继承自 AutoTask 基线（Flow/Applet/Runtime/DTO/ControlFlow），
+      AutoPilot 新增的变量系统（VariableRepository + ExpressionEvaluator）和模式系统已全部完成。
+      CF-002/CF-013 是弹窗确认类功能，可能需要 UI 层支持，但底层 ControlFlow 已可扩展。
+
+  # ----------------------------------------------------------
+  # 2. 触发器
+  # ----------------------------------------------------------
+  - name: "触发器 (Triggers)"
+    status: "19/19 implemented (100%)"
+    mvp_total: 19
+    implemented:
+      - "T-TIME-001 Day/Time — PollEventDispatcher + TimeCriterionRegistry (timeRange/hourMinSec)"
+      - "T-TIME-002 Day of Week/Month — TimeCriterionRegistry (dayOfWeek/dayOfMonth/month)"
+      - "T-TIME-003 Regular Interval — PollEventDispatcher (EVENT_ON_TICK 每秒轮询)"
+      - "T-DEV-001 Device Boot — EVENT_ON_DEVICE_BOOTED + EventFilter 分支"
+      - "T-DEV-002 Screen On/Off — ScreenEventDispatcher (SCREEN_ON/SCREEN_OFF)"
+      - "T-DEV-003 Screen Unlocked — ScreenEventDispatcher (USER_PRESENT)"
+      - "T-NET-001 WiFi State Change — NetworkEventDispatcher (WiFi connected/disconnected)"
+      - "T-NET-003 Bluetooth Event — BluetoothEventDispatcher + BluetoothReferent"
+      - "T-PHONE-001 Call Incoming — PhoneCallEventDispatcher + PhoneCallReferent"
+      - "T-PHONE-006 SMS Received — SmsEventDispatcher + SmsReferent"
+      - "T-PWR-001 Power Connected/Disconnected — PowerEventDispatcher"
+      - "T-PWR-002 Battery Level — GlobalCriterionRegistry (batteryCapacityRange) + PollEventDispatcher"
+      - "T-NOTIF-001 Notification — A11yEventDispatcher (EVENT_ON_NOTIFICATION_RECEIVED) + NotificationReferent"
+      - "T-APP-001 Application Launched/Closed — A11yEventDispatcher (EVENT_ON_PACKAGE_ENTERED/EXITED)"
+      - "T-APP-006 Clipboard Change — ClipboardEventDispatcher (EVENT_ON_PRIMARY_CLIP_CHANGED)"
+      - "T-HW-001 Headphones Insert/Removed — HeadsetEventDispatcher (HEADSET_PLUG)"
+      - "T-INT-001 Variable Change — VariableChangeEventDispatcher + VariableChangeReferent"
+      - "T-INT-009 Intent Received — IntentEventDispatcher + IntentReferent"
+      - "T-INT-017 Empty Trigger — EVENT_ON_MANUAL_TRIGGER + EventFilter 分支"
+    missing_mvp: []
+    notes: |
+      全部 19 个 MVP 触发器已实现。包含 13 个 EventDispatcher（A11y/Poll/Network/Location/
+      Clipboard/VariableChange/ModeChange/Screen/Power/Headset/Bluetooth/Alarm/PhoneCall/Sms/Intent），
+      以及 EventCriterionRegistry 中 0x0000~0x0028 共 41 个注册条目完整覆盖。
+      364 个单测全通过。
+
+  # ----------------------------------------------------------
+  # 3. 动作
+  # ----------------------------------------------------------
+  - name: "动作 (Actions)"
+    status: "~10/28 implemented (~35%)"
+    mvp_total: 28
+    implemented:
+      - "A-SET-012 Screen On/Off — GlobalActionRegistry (lockScreen, 部分通过 Accessibility)"
+      - "A-SND-010 Vibrate — VibrationActionRegistry (vibrate)"
+      - "A-APP-001 Launch Application — ApplicationActionRegistry (launchApp)"
+      - "A-APP-002 Launch Home Screen — GlobalActionRegistry (pressHome)"
+      - "A-DATA-001 File Operation — FileActionRegistry (deleteFile/copyFile/moveFile)"
+      - "A-DATA-002 Write to File — FileActionRegistry (writeFile 需确认)"
+      - "A-DATA-004 Fill Clipboard — TextActionRegistry (copyText)"
+      - "A-DATA-006 Set Variable — VariableActionRegistry (setVariable)"
+      - "A-DATA-007 Delete Variable — VariableActionRegistry (deleteVariable)"
+      - "A-DATA-013 Log Event — TextActionRegistry (logcatText)"
+    missing_mvp:
+      - "A-SET-002 Auto Rotate On/Off — 未找到实现"
+      - "A-SET-003 Bluetooth Configure — 未找到实现"
+      - "A-SET-004 Brightness — 未找到实现"
+      - "A-SET-005 Dark Theme — 未找到实现"
+      - "A-SET-016 WiFi Configure — 未找到实现"
+      - "A-SET-033 Torch On/Off — 未找到实现"
+      - "A-SND-001 Volume Change — 未找到实现"
+      - "A-SND-005 Play/Stop Sound — 未找到实现"
+      - "A-SND-006 Silent - Vibrate Off — 未找到实现"
+      - "A-SND-007 Speak Text (TTS) — 未找到实现"
+      - "A-SND-014 Do Not Disturb — 未找到实现"
+      - "A-UI-001 Display Notification — 未找到实现"
+      - "A-UI-002 Display Dialog — 未找到实现"
+      - "A-UI-007 Popup Message (Toast) — 未找到实现"
+      - "A-NET-001 HTTP Request — 未找到实现"
+      - "A-MEDIA-001 Control Media — 未找到实现"
+      - "A-INT-001 Enable/Disable Macro — 未找到实现"
+      - "A-INT-005 Export Macros — TaskStorage 有导出基础，但缺独立 Action Applet"
+    notes: |
+      动作模块是 MVP 最大缺口。现有 ActionRegistry 包含 GlobalAction（全局按键）、ApplicationAction（启动/停止应用）、
+      TextAction（日志/提取/复制）、FileAction（文件操作）、VariableAction（设置/删除变量）、VibrationAction（振动）、
+      ShellCmdAction（Shell 命令）、ControlAction（控制流）、GestureAction（手势），以及 OCR 和 Mode 相关动作。
+      
+      但 MVP 路线图中大量常用动作（设备设置开关、音量控制、TTS、通知显示、HTTP 请求、媒体控制）尚未实现。
+      这些需要新建对应的 Action 类和 ActionRegistry 条目。
+
+  # ----------------------------------------------------------
+  # 4. 约束
+  # ----------------------------------------------------------
+  - name: "约束 (Constraints)"
+    status: "~8/17 implemented (~47%)"
+    mvp_total: 17
+    implemented:
+      - "C-DEV-001 Screen On/Off — GlobalCriterionRegistry (isScreenPortrait 部分覆盖屏幕状态)"
+      - "C-NET-001 WiFi State — NetworkCriterionRegistry (isNetworkActive/isWifiNetwork/currentWifiSsidIs)"
+      - "C-NET-003 Bluetooth State — 可通过 BluetoothReferent EventFilter 实现事件级"
+      - "C-PWR-001 Battery Level — GlobalCriterionRegistry (batteryCapacityRange)"
+      - "C-PWR-004 Power Connected — GlobalCriterionRegistry (isBatteryCharging)"
+      - "C-TIME-001 Time of Day — TimeCriterionRegistry (timeRange/hourMinSec)"
+      - "C-TIME-002 Day of the Week — TimeCriterionRegistry (dayOfWeek)"
+      - "C-APP-001 Application Running — ApplicationCriterionRegistry (isCertainApp/appCollection)"
+      - "C-INT-001 Variable — VariableConstraint + VariableCriterionRegistry"
+      - "C-INT-013 AND/OR/XOR/NOT — 引擎核心 If/Else/Flow 逻辑组合"
+      - "C-SYS-006 Compare Values — CompareValuesConstraint"
+    missing_mvp:
+      - "C-DEV-002 Device Locked/Unlocked — 未找到独立约束实现"
+      - "C-NET-006 Airplane Mode — 未找到约束实现"
+      - "C-APP-003 Headphone Connection — 未找到约束实现（有触发器但无约束）"
+      - "C-PHONE-001 Call State — 未找到约束实现（有触发器但无约束）"
+      - "C-SYS-004 Dark Mode — 未找到约束实现"
+      - "C-INT-002 Macro Running — 未找到约束实现"
+    notes: |
+      约束模块有 TimeCriterionRegistry、GlobalCriterionRegistry、NetworkCriterionRegistry、
+      ApplicationCriterionRegistry、VariableCriterionRegistry、ModeCriterionRegistry、
+      LocationCriterionRegistry 等完整注册表体系。
+      
+      已有约束覆盖了电量、时间、网络、应用、变量等核心场景。
+      缺失的主要是设备锁定状态、飞行模式、耳机连接、通话状态等独立约束 Applet。
+      部分可通过已有触发器 Referent 在事件上下文中间接获取，但严格来说需要独立的轮询约束。
+
+  # ----------------------------------------------------------
+  # 5. Android 基础设施
+  # ----------------------------------------------------------
+  - name: "Android 基础设施"
+    status: "~80% (5-6/7)"
+    mvp_total: 7
+    implemented:
+      - "AND-001 常驻通知服务 — A11yAutomatorService / ShizukuAutomatorService 前台服务"
+      - "AND-003 Notification Listener — A11yEventDispatcher 处理 TYPE_NOTIFICATION_STATE_CHANGED"
+      - "AND-005 事件广播接收 — MetaEventDispatcher + 所有 BroadcastReceiver (Screen/Power/Headset/etc)"
+      - "PERM-001 运行时权限请求 — ServiceStarterDialog + 权限声明 (7 权限已声明)"
+      - "PERM-004 特殊权限引导 — A11yAutomatorServiceController / ShizukuAutomatorServiceController"
+      - "PERM-005 电池优化白名单 — PowerManagerBridge 桥接"
+    missing_mvp:
+      - "WIDGET-003 App Shortcut — 未找到实现"
+    notes: |
+      双模式架构（Shizuku + Accessibility）完整继承自 AutoTask，包含：
+      - AutomatorService 接口 + A11yAutomatorService / ShizukuAutomatorService 实现
+      - ServiceController 分层控制
+      - OperatingMode 模式管理
+      - Environment 环境检测
+      前台服务 initEventDispatcher() 已注册全部 16 个 EventDispatcher。
+      权限声明包含 SCHEDULE_EXACT_ALARM / BLUETOOTH_CONNECT / READ_PHONE_STATE 等 7 项。
+
+  # ----------------------------------------------------------
+  # 6. UI/编辑器
+  # ----------------------------------------------------------
+  - name: "UI/编辑器"
+    status: "~65% (功能可用，iOS 风格未实现)"
+    mvp_total: 16
+    implemented:
+      - "NUI-001 首页/宏列表 — MainActivity + TaskShowcaseViewModel + EnabledTaskFragment/ResidentTaskFragment/OneshotTaskFragment"
+      - "NUI-002 宏编辑器 — FlowEditorDialog + FlowEditorViewModel + FlowCascadeAdapter + TaskFlowAdapter"
+      - "NUI-003 触发器/动作选择器 — AppletSelectorDialog + AppletSelectorViewModel + AppletCandidatesAdapter"
+      - "NUI-004 参数配置面板 — VarargTextEditorDialog + VibrationPatternEditorDialog + AppletOptionClickHandler"
+      - "NUI-005 变量管理界面 — VariableCriterionRegistry + VariableActionRegistry（变量 CRUD）"
+      - "NUI-006 日志查看器 — SnapshotLogDialog + TaskSnapshotSelectorDialog"
+      - "NUI-007 设置界面 — MainViewModel + OcrSettingsDialog + AmapApiKeyDialog"
+      - "NUI-009 空状态设计 — 需确认"
+    missing_mvp:
+      - "DES-001~DES-006 iOS 风格设计语言 — 色彩/字体/图标/间距/动画系统全套未实现（仍沿用 AutoTask 原始 UI）"
+      - "NUI-008 引导流程（权限申请+功能介绍）— ServiceStarterDialog 有基础引导，完整引导流程未确认"
+      - "NUI-010 手势交互 — FlowItemTouchHelperCallback 支持拖拽，但完整手势体系未确认"
+    notes: |
+      UI 层完整继承自 AutoTask，包含：
+      - 任务列表（3 种类型 Fragment + ShowcaseViewModel）
+      - 流程编辑器（FlowEditor 全套 + 级联适配器）
+      - Applet 选择器（购物车式选择 + 分类浏览）
+      - 参数配置（多种编辑器 Dialog）
+      - 日志/快照查看器
+      
+      核心功能已可用，但 MVP 路线图要求的 iOS 风格视觉体系（DES-001~006）尚未开始。
+      这是 UI 层最大的欠缺，但不影响功能完整性。
+
+  # ----------------------------------------------------------
+  # 7. 数据持久化/导入导出
+  # ----------------------------------------------------------
+  - name: "数据持久化/导入导出"
+    status: "~85%"
+    mvp_total: "E-004 导入导出 + JSON 序列化 + 变量持久化"
+    implemented:
+      - "XTaskDTO + AppletDTO — 完整的 DTO 序列化/反序列化体系"
+      - "XTaskJson — kotlinx.serialization JSON 编解码"
+      - "TaskStorage — .xtsk / .xtsks 文件 + ZIP 归档 + 预置/示例任务加载"
+      - "AppletArgumentSerializer — Applet 参数序列化"
+      - "AppletChecksum — 校验和验证"
+      - "DataStore Preferences — 变量/围栏/API Key 等配置持久化"
+      - "GeofenceConfigRepository — DataStore + JSON 围栏数据持久化"
+      - "VariableRepository — 变量持久化到 DataStore"
+    missing_mvp:
+      - "独立的导出宏动作 Applet (A-INT-005) — TaskStorage 有导出能力，但缺少在宏中作为动作调用的 Applet"
+      - "宏版本字段/同步元数据 — 为 V1 云同步预留的字段尚未添加"
+    notes: |
+      数据层继承自 AutoTask 并已扩展。JSON 序列化、文件导入导出、DataStore 配置持久化全链路可用。
+      AutoPilot 新增的 VariableRepository 和 GeofenceConfigRepository 也已完成持久化。
+
+# ============================================================
+# 总结
+# ============================================================
+
+overall_mvp_progress: "~65-70%"
+
+progress_breakdown:
+  engine_core: "90%"
+  triggers: "100%"
+  actions: "35%"
+  constraints: "47%"
+  android_infra: "80%"
+  ui_editor: "65%"
+  data_persistence: "85%"
+
+critical_gaps:
+  - "动作模块缺口最大 — 18/28 MVP 动作未实现，包括设备设置开关（亮度/旋转/蓝牙/WiFi/手电筒/深色模式）、音量控制、TTS 语音、通知显示、Toast、HTTP 请求、媒体控制、宏开关控制"
+  - "约束模块缺 6/17 — 设备锁定、飞行模式、耳机连接、通话状态、深色模式、宏运行状态约束"
+  - "iOS 风格设计系统 (DES-001~006) — 整套视觉体系未开始"
+
+recommended_next:
+  - priority: 1
+    module: "动作 — 设备设置开关批量实现"
+    items: ["A-SET-002 Auto Rotate", "A-SET-003 Bluetooth", "A-SET-004 Brightness", "A-SET-005 Dark Theme", "A-SET-016 WiFi", "A-SET-033 Torch"]
+    reason: "设备设置是用户最高频使用的自动化动作，技术难度低（Settings.System/Global + ContentResolver），可批量实现"
+
+  - priority: 2
+    module: "动作 — 音量与声音"
+    items: ["A-SND-001 Volume Change", "A-SND-005 Play Sound", "A-SND-006 Silent Mode", "A-SND-007 TTS", "A-SND-014 DND"]
+    reason: "音量和静音是日常自动化核心场景，AudioManager API 成熟"
+
+  - priority: 3
+    module: "动作 — 通知与 UI 显示"
+    items: ["A-UI-001 Display Notification", "A-UI-002 Display Dialog", "A-UI-007 Toast"]
+    reason: "用户反馈/提示是自动化必备能力，NotificationManager + AlertDialog + Toast 实现直接"
+
+  - priority: 4
+    module: "动作 — 网络与内部"
+    items: ["A-NET-001 HTTP Request", "A-INT-001 Enable/Disable Macro", "A-MEDIA-001 Control Media"]
+    reason: "HTTP 请求打通外部集成，宏开关控制实现宏间联动，媒体控制覆盖耳机/蓝牙联动场景"
+
+  - priority: 5
+    module: "约束补全"
+    items: ["C-DEV-002 Device Locked", "C-NET-006 Airplane Mode", "C-APP-003 Headphone", "C-PHONE-001 Call State", "C-SYS-004 Dark Mode", "C-INT-002 Macro Running"]
+    reason: "约束是触发器的条件过滤补充，在触发器已全部完成的基础上补全约束提升可用性"
+
+  - priority: 6
+    module: "iOS 风格设计系统"
+    items: ["DES-001 视觉体系", "DES-002 色彩系统", "DES-003 字体排版"]
+    reason: "不影响功能完整性，可后置到动作/约束补全后；但影响产品差异化竞争力"
+
+# ============================================================
+# 详细文件清单
+# ============================================================
+
+files_analyzed:
+  # tasker-engine 核心
+  - file: "EventDispatcher.kt"
+    path: "tasker-engine/src/main/java/top/xjunz/tasker/engine/task/EventDispatcher.kt"
+    purpose: "事件分发器基类，定义回调注册和事件分发机制"
+    key_elements:
+      - element: "EventDispatcher"
+        type: class
+        location: "EventDispatcher.kt:15"
+        description: "抽象基类，callbacks + dispatchEvents"
+    language: kotlin
+    lines: 42
+
+  - file: "Event.kt"
+    path: "tasker-engine/src/main/java/top/xjunz/tasker/engine/runtime/Event.kt"
+    purpose: "事件模型，定义 35 种事件常量"
+    key_elements:
+      - element: "Event"
+        type: class
+        location: "Event.kt:12"
+        description: "事件类型 EVENT_UNDEFINED(-1) 到 EVENT_ON_MANUAL_TRIGGER(35)"
+    language: kotlin
+    lines: 120
+
+  - file: "TaskRuntime.kt"
+    path: "tasker-engine/src/main/java/top/xjunz/tasker/engine/runtime/TaskRuntime.kt"
+    purpose: "任务运行时上下文"
+    language: kotlin
+    lines: 0
+
+  - file: "XTask.kt"
+    path: "tasker-engine/src/main/java/top/xjunz/tasker/engine/task/XTask.kt"
+    purpose: "宏任务定义"
+    language: kotlin
+    lines: 0
+
+  - file: "XTaskDTO.kt"
+    path: "tasker-engine/src/main/java/top/xjunz/tasker/engine/dto/XTaskDTO.kt"
+    purpose: "任务 DTO 序列化/反序列化"
+    language: kotlin
+    lines: 80
+
+  # app 模块 - EventDispatcher 实现
+  - file: "AutomatorService.kt"
+    path: "app/src/main/java/top/xjunz/tasker/service/AutomatorService.kt"
+    purpose: "自动化服务接口，initEventDispatcher() 注册全部 16 个分发器"
+    key_elements:
+      - element: "initEventDispatcher"
+        type: function
+        location: "AutomatorService.kt:80"
+        description: "注册 A11y/Poll/Network/Location/Clipboard/VariableChange/ModeChange/Screen/Power/Headset/Bluetooth/Alarm/PhoneCall/Sms/Intent 共 16 个 Dispatcher"
+    language: kotlin
+    lines: 120
+
+  - file: "MetaEventDispatcher.kt"
+    path: "app/src/main/java/top/xjunz/tasker/task/event/MetaEventDispatcher.kt"
+    purpose: "元事件分发器，聚合所有子分发器"
+    language: kotlin
+    lines: 48
+
+  # app 模块 - Action 注册表
+  - file: "GlobalActionRegistry.kt"
+    path: "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/GlobalActionRegistry.kt"
+    purpose: "全局动作（返回/最近/主页/通知栏/锁屏/截屏/空闲等待）"
+    language: kotlin
+    lines: 80
+
+  - file: "ApplicationActionRegistry.kt"
+    path: "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/ApplicationActionRegistry.kt"
+    purpose: "应用动作（强制停止/启动应用/启动 Activity/URL）"
+    language: kotlin
+    lines: 60
+
+  - file: "TextActionRegistry.kt"
+    path: "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/TextActionRegistry.kt"
+    purpose: "文本动作（日志/提取/复制/格式化）"
+    language: kotlin
+    lines: 60
+
+  - file: "FileActionRegistry.kt"
+    path: "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/FileActionRegistry.kt"
+    purpose: "文件动作（删除/复制/移动/写入）"
+    language: kotlin
+    lines: 80
+
+  - file: "VariableActionRegistry.kt"
+    path: "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/VariableActionRegistry.kt"
+    purpose: "变量动作（设置/删除变量）"
+    language: kotlin
+    lines: 40
+
+  - file: "VibrationActionRegistry.kt"
+    path: "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/VibrationActionRegistry.kt"
+    purpose: "振动动作"
+    language: kotlin
+    lines: 40
+
+  # app 模块 - Constraint/Criterion 注册表
+  - file: "EventCriterionRegistry.kt"
+    path: "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/EventCriterionRegistry.kt"
+    purpose: "事件过滤注册表，0x0000~0x0028 共 41 个条目"
+    language: kotlin
+    lines: 240
+
+  - file: "GlobalCriterionRegistry.kt"
+    path: "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/GlobalCriterionRegistry.kt"
+    purpose: "全局约束（屏幕方向/充电状态/电量范围）"
+    language: kotlin
+    lines: 60
+
+  - file: "TimeCriterionRegistry.kt"
+    path: "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/TimeCriterionRegistry.kt"
+    purpose: "时间约束（时间范围/月份/天/星期/时分秒）"
+    language: kotlin
+    lines: 100
+
+  - file: "NetworkCriterionRegistry.kt"
+    path: "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/NetworkCriterionRegistry.kt"
+    purpose: "网络约束（网络可用/WiFi/蜂窝/SSID）"
+    language: kotlin
+    lines: 50
+
+  - file: "ApplicationCriterionRegistry.kt"
+    path: "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/ApplicationCriterionRegistry.kt"
+    purpose: "应用约束（指定应用/应用集合/Activity/PaneTitle）"
+    language: kotlin
+    lines: 160
+
+  # app 模块 - UI
+  - file: "FlowEditorDialog.kt"
+    path: "app/src/main/java/top/xjunz/tasker/ui/task/editor/FlowEditorDialog.kt"
+    purpose: "流程编辑器主对话框"
+    language: kotlin
+    lines: 0
+
+  - file: "AppletSelectorDialog.kt"
+    path: "app/src/main/java/top/xjunz/tasker/ui/task/selector/AppletSelectorDialog.kt"
+    purpose: "Applet 选择器"
+    language: kotlin
+    lines: 0
+
+  - file: "TaskStorage.kt"
+    path: "app/src/main/java/top/xjunz/tasker/task/storage/TaskStorage.kt"
+    purpose: "任务存储（.xtsk 文件读写/ZIP 归档/预置任务）"
+    language: kotlin
+    lines: 60
+
+  - file: "BootstrapOptionRegistry.kt"
+    path: "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/BootstrapOptionRegistry.kt"
+    purpose: "全局 Applet 注册表，汇总 26 个子注册表（13 criterion + 12 action + 1 flow）"
+    language: kotlin
+    lines: 300
+
+patterns_found:
+  - category: architecture
+    pattern: "Registry → Bootstrap → Factory 注册链路"
+    description: "每个功能域一个 *Registry，Bootstrap 汇总注册 ID，AppletOptionFactory 运行时解析"
+    examples:
+      - file: "BootstrapOptionRegistry.kt"
+        location: "BootstrapOptionRegistry.kt:40-65"
+        snippet: "const ID_EVENT_FILTER_REGISTRY = 0xF ... const ID_SCREEN_OCR_ACTION_REGISTRY = 0x5B"
+    prevalence: common
+
+  - category: architecture
+    pattern: "EventDispatcher → EventFilter → Referent 事件链路"
+    description: "Dispatcher 监听系统事件,EventFilter 按 event.type 路由,Referent 提取参数暴露给变量"
+    examples:
+      - file: "EventCriterionRegistry.kt"
+        location: "EventCriterionRegistry.kt:100-120"
+        snippet: "eventFilterOption(Event.EVENT_ON_BT_STATE_CHANGED) .withResult<BluetoothReferent>"
+    prevalence: common
+
+  - category: naming
+    pattern: "Applet ID 使用十六进制 @AppletOrdinal"
+    description: "每个 Registry 内部使用 @AppletOrdinal(0xHHHH) 标注 Applet 序号"
+    examples:
+      - file: "EventCriterionRegistry.kt"
+        location: "EventCriterionRegistry.kt:37"
+        snippet: "@AppletOrdinal(0x0000) val pkgEntered = ..."
+    prevalence: common
+
+open_questions:
+  - question: "CF-002 (If Confirmed Then) 和 CF-013 (Confirm Next) 是否在 AutoTask 基线中已有 UI 弹窗支持?"
+    context: "代码中有 ConfirmNext 相关字符串资源，但未追踪到完整实现"
+    type: nice_to_know
+    affects: ["engine_core"]
+
+  - question: "NUI-005 变量管理界面是否有独立的管理 UI 还是仅通过编辑器内的变量选择器?"
+    context: "VariableCriterionRegistry 有读写能力，但独立管理页面不确定"
+    type: nice_to_know
+    affects: ["ui_editor"]
+
+gaps:
+  - area: "设备设置类动作 (A-SET-*)"
+    description: "6 个 MVP 必须的设备设置动作全部缺失（Auto Rotate / Bluetooth / Brightness / Dark Theme / WiFi / Torch）"
+    impact: research_blocker
+    affects: ["actions"]
+
+  - area: "音量与声音类动作 (A-SND-*)"
+    description: "5 个 MVP 必须的音量/声音动作全部缺失（Volume / Play Sound / Silent / TTS / DND）"
+    impact: research_blocker
+    affects: ["actions"]
+
+  - area: "通知显示类动作 (A-UI-*)"
+    description: "3 个 MVP 必须的 UI 显示动作缺失（Notification / Dialog / Toast）"
+    impact: research_blocker
+    affects: ["actions"]
+
+  - area: "HTTP 请求动作 (A-NET-001)"
+    description: "HTTP 请求动作未实现，影响外部集成自动化场景"
+    impact: research_blocker
+    affects: ["actions"]
