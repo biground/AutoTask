@@ -1,0 +1,789 @@
+plan_id: trigger-infrastructure
+objective: |
+  全面调研 AutoPilot（基于 AutoTask fork）代码库中现有的触发器（Trigger）基础设施，
+  评估 19 个 MVP 触发器的覆盖度，识别需要新建的事件分发器、BroadcastReceiver、权限等。
+focus_area: trigger-infrastructure
+created_at: "2026-04-13"
+created_by: "gem-researcher"
+status: completed
+
+tldr: |
+  - AutoTask 已有成熟的事件分发架构：EventDispatcher(抽象) → MetaEventDispatcher(聚合) → 6 个子分发器，EventFilter 作为 Applet 匹配事件类型，Referent 接口暴露事件参数给变量系统。
+  - 当前已定义 19 个事件常量（Event.kt），已注册 6 个 EventDispatcher 子类（A11y/Poll/Network/Clipboard/Location/Variable/ModeChange），EventCriterionRegistry 注册了 18 个事件过滤选项。
+  - 19 个 MVP 触发器中：5 个已完全实现（T-APP-001/T-NOTIF-001/T-APP-006/T-NET-001/T-INT-001），2 个部分实现（T-TIME-003/T-PWR-002），12 个需新建。
+  - 新建触发器主要需要：新增 Event 常量、新 EventDispatcher 子类（BroadcastReceiver 驱动）、新 EventFilter 分支、新 Referent 类、EventCriterionRegistry 注册。
+  - 关键缺失：BroadcastReceiver 系列（Boot/Screen/Power/Headphone/SMS/Call/Bluetooth/Intent）、AlarmManager 调度器（精确时间触发）、NotificationListenerService 增强。
+
+research_metadata:
+  methodology: |
+    混合检索：semantic_search 发现 EventDispatcher 子类和事件常量体系，grep_search 精确匹配所有 Event 类型引用、
+    EventFilter 分支、Referent 实现、Registry 注册链路。逐文件 read_file 深入分析实现细节。
+    3 轮研究：Pass 1 发现基础设施核心文件，Pass 2 追踪注册链路和 Android 服务绑定，Pass 3 逐一评估 19 个 MVP 触发器覆盖度。
+  scope: |
+    覆盖 tasker-engine/ (Event.kt, EventDispatcher.kt, Referent.kt, XTask.kt)
+    和 app/src/main/ (全部 EventDispatcher 子类、EventFilter、EventCriterionRegistry、
+    BootstrapOptionRegistry、AppletOptionFactory、AutomatorService、A11yAutomatorService、
+    AndroidManifest.xml、Referent 实现类、AutoStarter)。
+  confidence: high
+  coverage: 95  # 所有事件/触发器相关文件均已检查
+  decision_blockers: 0
+  research_blockers: 0
+
+# ============================================================
+# 一、现有事件分发基础设施
+# ============================================================
+
+existing_infrastructure:
+
+  event_model:
+    description: |
+      Event 是一个不可变事件对象，包含事件类型 (int)、组件信息 (ComponentInfo: pkgName/actName/paneTitle)
+      和 SparseArray<Any> extras。通过 Event.obtain() 工厂方法创建。
+    file: tasker-engine/src/main/java/top/xjunz/tasker/engine/runtime/Event.kt
+    event_constants:
+      - { id: 1,  name: EVENT_ON_PACKAGE_ENTERED,      description: "应用进入前台" }
+      - { id: 2,  name: EVENT_ON_PACKAGE_EXITED,        description: "应用离开前台" }
+      - { id: 3,  name: EVENT_ON_CONTENT_CHANGED,       description: "窗口内容变化" }
+      - { id: 4,  name: EVENT_ON_NOTIFICATION_RECEIVED, description: "状态栏通知接收" }
+      - { id: 5,  name: EVENT_ON_NEW_WINDOW,            description: "新窗口弹出" }
+      - { id: 6,  name: EVENT_ON_PRIMARY_CLIP_CHANGED,  description: "剪贴板变化" }
+      - { id: 7,  name: EVENT_ON_TICK,                  description: "定时轮询(每秒)" }
+      - { id: 8,  name: EVENT_ON_TOAST_RECEIVED,        description: "Toast 通知接收" }
+      - { id: 9,  name: EVENT_ON_FILE_CREATED,          description: "文件创建" }
+      - { id: 10, name: EVENT_ON_FILE_DELETED,          description: "文件删除" }
+      - { id: 11, name: EVENT_ON_WIFI_CONNECTED,        description: "WiFi 连接" }
+      - { id: 12, name: EVENT_ON_WIFI_DISCONNECTED,     description: "WiFi 断开" }
+      - { id: 13, name: EVENT_ON_NETWORK_AVAILABLE,     description: "网络可用" }
+      - { id: 14, name: EVENT_ON_NETWORK_UNAVAILABLE,   description: "网络不可用" }
+      - { id: 15, name: EVENT_ON_VARIABLE_CHANGED,      description: "变量值变化 (AutoPilot 新增)" }
+      - { id: 16, name: EVENT_ON_MODE_CHANGED,          description: "模式变化 (AutoPilot 新增)" }
+      - { id: 17, name: EVENT_ON_GEOFENCE_ENTERED,      description: "进入地理围栏 (AutoPilot 新增)" }
+      - { id: 18, name: EVENT_ON_GEOFENCE_EXITED,       description: "离开地理围栏 (AutoPilot 新增)" }
+      - { id: 19, name: EVENT_ON_LOCATION_ARRIVED,      description: "到达指定位置 (AutoPilot 新增)" }
+    next_available_event_id: 20
+
+  event_dispatcher_hierarchy:
+    base_class:
+      file: tasker-engine/src/main/java/top/xjunz/tasker/engine/task/EventDispatcher.kt
+      description: |
+        抽象基类，维护 ArraySet<Callback> 回调列表。
+        子类必须实现 onRegistered()（初始化监听）和 destroy()（清理资源）。
+        通过 dispatchEvents(vararg Event) 向所有回调广播事件。
+        Callback 是函数式接口 fun onEvents(events: Array<Event>)。
+
+    meta_dispatcher:
+      file: app/src/main/java/top/xjunz/tasker/task/event/MetaEventDispatcher.kt
+      description: |
+        聚合分发器，内部维护 ArrayMap<Class<*>, EventDispatcher> 所有子分发器。
+        registerEventDispatcher() 注册子分发器并调用其 onRegistered()。
+        addCallback/removeCallback 会传播到所有子分发器。
+        是 AutomatorService.eventDispatcher 的实际类型。
+
+    concrete_dispatchers:
+      - name: A11yEventDispatcher
+        file: app/src/main/java/top/xjunz/tasker/task/event/A11yEventDispatcher.kt
+        events_dispatched:
+          - EVENT_ON_PACKAGE_ENTERED
+          - EVENT_ON_PACKAGE_EXITED
+          - EVENT_ON_CONTENT_CHANGED
+          - EVENT_ON_NOTIFICATION_RECEIVED
+          - EVENT_ON_TOAST_RECEIVED
+          - EVENT_ON_NEW_WINDOW
+        mechanism: |
+          监听 AccessibilityEvent（TYPE_NOTIFICATION_STATE_CHANGED / TYPE_WINDOW_STATE_CHANGED / TYPE_WINDOW_CONTENT_CHANGED），
+          解析包名/Activity/PaneTitle 生成 Event。需 BIND_ACCESSIBILITY_SERVICE 权限。
+          运行在独立 HandlerCompat.createAsync(looper) 协程分发器上。
+
+      - name: PollEventDispatcher
+        file: app/src/main/java/top/xjunz/tasker/task/event/PollEventDispatcher.kt
+        events_dispatched:
+          - EVENT_ON_TICK
+        mechanism: |
+          每秒通过 Handler.postDelayed 发送 EVENT_ON_TICK，携带 EXTRA_TICK_TIME_MILLS。
+          这是定时/轮询类触发器的基础——TimeCriterionRegistry 中的条件在 EVENT_ON_TICK 时被评估。
+
+      - name: NetworkEventDispatcher
+        file: app/src/main/java/top/xjunz/tasker/task/event/NetworkEventDispatcher.kt
+        events_dispatched:
+          - EVENT_ON_WIFI_CONNECTED
+          - EVENT_ON_WIFI_DISCONNECTED
+          - EVENT_ON_NETWORK_AVAILABLE
+          - EVENT_ON_NETWORK_UNAVAILABLE
+        mechanism: |
+          注册 ConnectivityManager.registerDefaultNetworkCallback()，
+          监听 onAvailable / onUnavailable / onCapabilitiesChanged。
+          WiFi SSID 通过 ConnectivityManagerBridge 获取。
+
+      - name: ClipboardEventDispatcher
+        file: app/src/main/java/top/xjunz/tasker/task/event/ClipboardEventDispatcher.kt
+        events_dispatched:
+          - EVENT_ON_PRIMARY_CLIP_CHANGED
+        mechanism: |
+          实现 ClipboardManager.OnPrimaryClipChangedListener。
+          注意：当前在 AutomatorService.initEventDispatcher() 中被注释掉（未启用）。
+        status: disabled_in_code
+
+      - name: LocationEventDispatcher
+        file: app/src/main/java/top/xjunz/tasker/task/location/LocationEventDispatcher.kt
+        events_dispatched:
+          - EVENT_ON_GEOFENCE_ENTERED
+          - EVENT_ON_GEOFENCE_EXITED
+          - EVENT_ON_LOCATION_ARRIVED
+        mechanism: |
+          使用高德 GeoFenceClient SDK，通过 BroadcastReceiver 接收围栏事件。
+          AutoPilot 新增实现。
+
+      - name: VariableChangeEventDispatcher
+        file: app/src/main/java/top/xjunz/tasker/task/variable/VariableChangeEventDispatcher.kt
+        events_dispatched:
+          - EVENT_ON_VARIABLE_CHANGED
+        mechanism: |
+          监听 VariableRepository.observeChanges() Flow，
+          将 VariableChangeEvent.Set/Deleted 转换为引擎 Event。
+          AutoPilot 新增实现。
+        status: implemented_but_not_registered_in_initEventDispatcher
+
+      - name: ModeChangeEventDispatcher
+        file: app/src/main/java/top/xjunz/tasker/task/mode/ModeChangeEventDispatcher.kt
+        events_dispatched:
+          - EVENT_ON_MODE_CHANGED
+        mechanism: |
+          监听 ModeRepository.observeChanges() Flow，
+          将 Activated/Deactivated 转换为引擎 Event。
+          AutoPilot 新增实现。
+        status: implemented_but_not_registered_in_initEventDispatcher
+
+  event_filter:
+    file: app/src/main/java/top/xjunz/tasker/task/applet/criterion/EventFilter.kt
+    description: |
+      EventFilter 是一个 Applet，构造时接收 eventType (int)。
+      apply() 方法在 TaskRuntime.events 中查找匹配的 Event，
+      找到后根据事件类型返回对应的 Referent 对象（封装事件参数）。
+      关键 switch 分支：
+        - NOTIFICATION/TOAST → NotificationReferent
+        - PRIMARY_CLIP_CHANGED → 直接返回剪贴板文本
+        - TICK → EMPTY_SUCCESS（无附加数据）
+        - WIFI_CONNECTED/DISCONNECTED → WiFi SSID
+        - VARIABLE_CHANGED → VariableChangeReferent
+        - MODE_CHANGED → ModeChangeReferent
+        - GEOFENCE → GeofenceReferent
+        - 其他 → ComponentInfoWrapper
+
+    file_event_criterion:
+      file: app/src/main/java/top/xjunz/tasker/task/applet/criterion/FileEventCriterion.kt
+      description: |
+        特殊事件过滤器，不依赖 Event 对象，而是通过轮询 File.exists() 检测文件创建/删除。
+        使用 Shizuku 模式。
+
+  referent_system:
+    base_interface:
+      file: tasker-engine/src/main/java/top/xjunz/tasker/engine/runtime/Referent.kt
+      description: |
+        接口，定义 getReferredValue(which: Int, runtime: TaskRuntime): Any?。
+        which 参数按约定索引对应 EventCriterionRegistry 中 .withResult<>() 声明的顺序。
+        asResult() 封装为 AppletResult.succeeded(this)。
+
+    implementations:
+      - name: ComponentInfoWrapper
+        file: app/src/main/java/top/xjunz/tasker/task/applet/flow/ref/ComponentInfoWrapper.kt
+        values: { 0: "self", 1: "packageName", 2: "label" }
+
+      - name: NotificationReferent
+        file: app/src/main/java/top/xjunz/tasker/task/applet/flow/ref/NotificationReferent.kt
+        values: { 0: "self", 1: "paneTitle(内容)", 2: "componentInfo", 3: "label(应用名)" }
+
+      - name: UiObjectReferent
+        file: app/src/main/java/top/xjunz/tasker/task/applet/flow/ref/UiObjectReferent.kt
+        values: "AccessibilityNodeInfo 相关属性"
+
+      - name: VariableChangeReferent
+        file: app/src/main/java/top/xjunz/tasker/task/applet/flow/ref/VariableChangeReferent.kt
+        values: { 0: "self", 1: "variableName", 2: "oldValue", 3: "newValue" }
+
+      - name: ModeChangeReferent
+        file: app/src/main/java/top/xjunz/tasker/task/applet/flow/ref/ModeChangeReferent.kt
+        values: { 0: "self", 1: "modeName", 2: "changeType", 3: "previousModeName" }
+
+      - name: GeofenceReferent
+        file: app/src/main/java/top/xjunz/tasker/task/applet/flow/ref/GeofenceReferent.kt
+        values: { 0: "self", 1: "name", 2: "lat", 3: "lng", 4: "transition" }
+
+  registration_chain:
+    description: |
+      新触发器注册需要修改以下文件（按顺序）：
+      1. Event.kt — 新增事件常量
+      2. 新建 *EventDispatcher 子类 — 实现事件源监听
+      3. EventFilter.kt — 在 apply() switch 中新增分支处理
+      4. （可选）新建 *Referent — 封装事件参数
+      5. EventCriterionRegistry.kt — 注册事件过滤选项（@AppletOrdinal + eventFilterOption）
+      6. AutomatorService.initEventDispatcher() — 注册新分发器到 MetaEventDispatcher
+      7. strings.xml — 新增字符串资源
+
+    key_registries:
+      - name: EventCriterionRegistry
+        file: app/src/main/java/top/xjunz/tasker/task/applet/option/registry/EventCriterionRegistry.kt
+        id: "0x0F (BootstrapOptionRegistry.ID_EVENT_FILTER_REGISTRY)"
+        current_entries: 18
+        description: |
+          每个事件通过 @AppletOrdinal 标注序号，通过 eventFilterOption(eventType, labelRes) 创建。
+          每个选项可链式调用 .withResult<T>() 声明输出参数（对应 Referent.getReferredValue(which)）。
+
+      - name: BootstrapOptionRegistry
+        file: app/src/main/java/top/xjunz/tasker/task/applet/option/registry/BootstrapOptionRegistry.kt
+        description: |
+          顶层注册表，定义所有子注册表的 ID 常量（ID_EVENT_FILTER_REGISTRY = 0x0F 等），
+          并在 getRegistryOptions() 中将 When/WaitFor 流程关联到 eventCriteria。
+
+      - name: AppletOptionFactory
+        file: app/src/main/java/top/xjunz/tasker/task/applet/option/AppletOptionFactory.kt
+        description: |
+          单例工厂，持有所有 Registry 实例，通过 allRegistries 数组统一管理。
+          preloadIfNeeded() 调用所有 Registry 的 parseDeclaredOptions()。
+
+  task_scheduling:
+    resident_scheduler:
+      file: app/src/main/java/top/xjunz/tasker/task/runtime/ResidentTaskScheduler.kt
+      description: |
+        实现 EventDispatcher.Callback，接收所有事件，遍历已启用的常驻任务，
+        为每个任务创建 TaskRuntime 并 launch 协程执行。
+        作为 MetaEventDispatcher 的回调注册。
+
+    oneshot_scheduler:
+      file: app/src/main/java/top/xjunz/tasker/task/runtime/OneshotTaskScheduler.kt
+      description: "一次性任务调度器，也作为 MetaEventDispatcher 的回调。"
+
+  android_services:
+    accessibility_service:
+      file: app/src/main/java/top/xjunz/tasker/service/A11yAutomatorService.kt
+      manifest_entry: |
+        <service android:name=".service.A11yAutomatorService"
+            android:foregroundServiceType="specialUse|location"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+      description: |
+        主入口服务，实现 AutomatorService 接口。
+        initEventDispatcher() 注册所有子分发器。
+        同时用于浮动布局审查器 (FloatingInspector)。
+
+    shizuku_service:
+      file: app/src/main/java/top/xjunz/tasker/service/ShizukuAutomatorService.kt
+      description: "Shizuku 模式的服务实现，也实现 AutomatorService 接口。"
+
+    auto_starter:
+      file: app/src/main/java/top/xjunz/tasker/autostart/AutoStarter.kt
+      description: |
+        BroadcastReceiver，监听 BOOT_COMPLETED / LOCKED_BOOT_COMPLETED，
+        通过 Shizuku 绑定服务。仅用于自动启动服务，不分发事件。
+
+# ============================================================
+# 二、MVP 触发器覆盖度评估
+# ============================================================
+
+trigger_coverage:
+  summary:
+    fully_implemented: 5
+    partially_implemented: 2
+    needs_new: 12
+
+  details:
+    - id: T-TIME-001
+      name: "Day/Time Trigger（指定日期时间触发）"
+      status: needs_new
+      analysis: |
+        AutoTask 的 TimeCriterionRegistry 提供了 timeRange / isSpecifiedTime / hourMinSec / dayOfWeek / dayOfMonth / month
+        等条件，但这些都是**约束（Criterion）**而非**触发器**——它们在 EVENT_ON_TICK 时作为 If 条件被评估，
+        而不是在精确时间点主动触发。
+        需要新建 AlarmEventDispatcher，使用 AlarmManager.setExactAndAllowWhileIdle() 调度精确时间事件，
+        新增 EVENT_ON_ALARM_FIRED 常量。
+      required_work:
+        - "Event.kt: 新增 EVENT_ON_ALARM_FIRED (20)"
+        - "新建 AlarmEventDispatcher: 使用 AlarmManager + BroadcastReceiver"
+        - "新建 AlarmReferent: 暴露触发时间"
+        - "EventFilter.kt: 新增 EVENT_ON_ALARM_FIRED 分支"
+        - "EventCriterionRegistry: 新增 alarmFired 选项"
+        - "AndroidManifest: 新增 BroadcastReceiver 接收闹钟广播"
+        - "权限: SCHEDULE_EXACT_ALARM (Android 12+)"
+
+    - id: T-TIME-002
+      name: "Day of Week/Month（按周几/号数触发）"
+      status: needs_new
+      analysis: |
+        与 T-TIME-001 类似，需要 AlarmManager 调度。可复用 T-TIME-001 的 AlarmEventDispatcher，
+        通过不同的调度规则（重复闹钟 setRepeating 或每日触发+条件过滤）实现。
+        TimeCriterionRegistry.dayOfWeek / dayOfMonth 可作为附加条件。
+      required_work:
+        - "与 T-TIME-001 共用 AlarmEventDispatcher"
+        - "调度逻辑支持 day-of-week 和 day-of-month 重复规则"
+
+    - id: T-TIME-003
+      name: "Regular Interval（定时间隔触发）"
+      status: partially_implemented
+      analysis: |
+        PollEventDispatcher 已实现每秒 EVENT_ON_TICK 轮询，配合 TimeCriterionRegistry 的条件
+        可以实现"每 N 秒/分钟"的效果。但精度仅为 1 秒轮询匹配，不是精确的 interval 调度。
+        对于 MVP 来说可能已足够——用 EVENT_ON_TICK + 时间范围条件 近似实现。
+        如需精确间隔，需新建 IntervalEventDispatcher 使用 Handler.postDelayed 或 AlarmManager。
+      existing_support:
+        - "PollEventDispatcher: EVENT_ON_TICK 每秒轮询"
+        - "TimeCriterionRegistry: 时间范围/精确时间条件"
+
+    - id: T-DEV-001
+      name: "Device Boot（设备开机）"
+      status: needs_new
+      analysis: |
+        AutoStarter.kt 已有 BOOT_COMPLETED 接收器，但它直接绑定 Shizuku 服务，
+        不会分发引擎 Event。需要新建 BootEventDispatcher 或修改 AutoStarter 
+        在服务启动后分发 EVENT_ON_DEVICE_BOOTED。
+      required_work:
+        - "Event.kt: 新增 EVENT_ON_DEVICE_BOOTED (21)"
+        - "修改 AutoStarter 或 AutomatorService: 服务初始化后分发开机事件"
+        - "EventFilter.kt: 新增分支"
+        - "EventCriterionRegistry: 新增 deviceBooted 选项"
+
+    - id: T-DEV-002
+      name: "Screen On/Off（屏幕亮灭）"
+      status: needs_new
+      analysis: |
+        需要 BroadcastReceiver 监听 ACTION_SCREEN_ON / ACTION_SCREEN_OFF。
+        这属于无需权限的系统广播。
+      required_work:
+        - "Event.kt: 新增 EVENT_ON_SCREEN_ON (22) / EVENT_ON_SCREEN_OFF (23)"
+        - "新建 ScreenEventDispatcher: BroadcastReceiver 注册 SCREEN_ON/OFF IntentFilter"
+        - "EventFilter/EventCriterionRegistry 注册"
+
+    - id: T-DEV-003
+      name: "Screen Unlocked（屏幕解锁）"
+      status: needs_new
+      analysis: |
+        需要 BroadcastReceiver 监听 ACTION_USER_PRESENT。
+        可与 T-DEV-002 的 ScreenEventDispatcher 合并。
+      required_work:
+        - "Event.kt: 新增 EVENT_ON_SCREEN_UNLOCKED (24)"
+        - "合并到 ScreenEventDispatcher: 增加 USER_PRESENT 监听"
+        - "EventFilter/EventCriterionRegistry 注册"
+
+    - id: T-NET-001
+      name: "WiFi State Change（WiFi 状态变化）"
+      status: fully_implemented
+      analysis: |
+        NetworkEventDispatcher 已完整实现 WiFi 连接/断开事件，
+        EventCriterionRegistry 已注册 wifiConnected / wifiDisconnected。
+        Referent 返回 WiFi SSID。
+      existing_files:
+        - "app/.../task/event/NetworkEventDispatcher.kt"
+        - "EventCriterionRegistry: wifiConnected (0x0009) / wifiDisconnected (0x0010)"
+
+    - id: T-NET-003
+      name: "Bluetooth Event（蓝牙事件）"
+      status: needs_new
+      analysis: |
+        完全缺失。需要新建 BluetoothEventDispatcher，
+        监听 BluetoothAdapter.ACTION_STATE_CHANGED / BluetoothDevice.ACTION_ACL_CONNECTED/DISCONNECTED。
+      required_work:
+        - "Event.kt: 新增 EVENT_ON_BT_STATE_CHANGED / EVENT_ON_BT_DEVICE_CONNECTED / EVENT_ON_BT_DEVICE_DISCONNECTED"
+        - "新建 BluetoothEventDispatcher: BroadcastReceiver"
+        - "新建 BluetoothReferent: 设备名、MAC 地址"
+        - "权限: BLUETOOTH_CONNECT (Android 12+)"
+
+    - id: T-PHONE-001
+      name: "Call Incoming（来电）"
+      status: needs_new
+      analysis: |
+        完全缺失。需要 TelephonyManager / PhoneStateListener 或 BroadcastReceiver (ACTION_PHONE_STATE_CHANGED)。
+      required_work:
+        - "Event.kt: 新增 EVENT_ON_CALL_INCOMING / EVENT_ON_CALL_ANSWERED / EVENT_ON_CALL_ENDED"
+        - "新建 PhoneCallEventDispatcher: TelephonyCallback (Android 12+) 或 PhoneStateListener"
+        - "新建 PhoneCallReferent: 来电号码"
+        - "权限: READ_PHONE_STATE, READ_CALL_LOG"
+
+    - id: T-PHONE-006
+      name: "SMS Received（短信接收）"
+      status: needs_new
+      analysis: |
+        完全缺失。需要 BroadcastReceiver 监听 Telephony.Sms.Intents.SMS_RECEIVED_ACTION。
+      required_work:
+        - "Event.kt: 新增 EVENT_ON_SMS_RECEIVED"
+        - "新建 SmsEventDispatcher: BroadcastReceiver"
+        - "新建 SmsReferent: 发送方号码、短信内容"
+        - "权限: RECEIVE_SMS, READ_SMS"
+        - "AndroidManifest: 注册静态 Receiver"
+
+    - id: T-PWR-001
+      name: "Power Connected/Disconnected（电源连接/断开）"
+      status: needs_new
+      analysis: |
+        GlobalCriterionRegistry 有 isBatteryCharging 约束（轮询检查），
+        但没有主动触发的事件。需要 BroadcastReceiver 监听 ACTION_POWER_CONNECTED / ACTION_POWER_DISCONNECTED。
+      required_work:
+        - "Event.kt: 新增 EVENT_ON_POWER_CONNECTED / EVENT_ON_POWER_DISCONNECTED"
+        - "新建 PowerEventDispatcher: BroadcastReceiver"
+        - "EventFilter/EventCriterionRegistry 注册"
+        - "无额外权限需求"
+
+    - id: T-PWR-002
+      name: "Battery Level（电量变化触发）"
+      status: partially_implemented
+      analysis: |
+        GlobalCriterionRegistry.batteryCapacityRange 可在 EVENT_ON_TICK 时检测电量范围。
+        但这是轮询约束而非精确的电量变化事件。
+        如需精确"电量到 X% 时触发"，应监听 ACTION_BATTERY_CHANGED 广播 或使用 BatteryManager。
+        MVP 阶段可用现有轮询方案（1 秒检查一次），以后可优化为 BroadcastReceiver。
+      existing_support:
+        - "GlobalCriterionRegistry: isBatteryCharging / batteryCapacityRange"
+        - "BatteryManagerBridge: capacity / isCharging"
+
+    - id: T-NOTIF-001
+      name: "Notification（通知接收）"
+      status: fully_implemented
+      analysis: |
+        A11yEventDispatcher 通过 AccessibilityEvent.TYPE_NOTIFICATION_STATE_CHANGED
+        捕获通知事件。EventCriterionRegistry 注册了 notificationReceived (0x0003) 和 toastReceived (0x0004)。
+        NotificationReferent 暴露通知内容、来源应用等参数。
+        注意：此实现依赖 AccessibilityService 而非 NotificationListenerService。
+      existing_files:
+        - "A11yEventDispatcher: TYPE_NOTIFICATION_STATE_CHANGED 分支"
+        - "EventCriterionRegistry: notificationReceived / toastReceived"
+        - "NotificationReferent.kt"
+      limitation: |
+        通过 Accessibility 捕获通知，信息量有限（仅 pkgName + className）。
+        NotificationListenerService 可获得更丰富的通知详情（标题、文本、Intent 等），
+        但 MVP 阶段 Accessibility 方式已足够。
+
+    - id: T-APP-001
+      name: "Application Launched/Closed（应用启动/关闭）"
+      status: fully_implemented
+      analysis: |
+        A11yEventDispatcher 已实现 EVENT_ON_PACKAGE_ENTERED / EVENT_ON_PACKAGE_EXITED。
+        EventCriterionRegistry 注册了 pkgEntered (0x0000) / pkgExited (0x0001)。
+        ComponentInfoWrapper Referent 暴露包名、Activity 名、应用名。
+      existing_files:
+        - "A11yEventDispatcher: TYPE_WINDOW_STATE_CHANGED 分支"
+        - "EventCriterionRegistry: pkgEntered / pkgExited"
+        - "ComponentInfoWrapper.kt"
+
+    - id: T-APP-006
+      name: "Clipboard Change（剪贴板变化）"
+      status: fully_implemented
+      analysis: |
+        ClipboardEventDispatcher 已完整实现，但在 AutomatorService.initEventDispatcher() 中被注释掉。
+        EventFilter 已有 EVENT_ON_PRIMARY_CLIP_CHANGED 分支。
+        仅需取消注释即可启用。
+      required_work:
+        - "AutomatorService.initEventDispatcher(): 取消 ClipboardEventDispatcher 注释"
+        - "EventCriterionRegistry: 取消 primaryClipChanged 注释"
+      note: "代码已写好，只是被禁用了"
+
+    - id: T-HW-001
+      name: "Headphones Insert/Removed（耳机插入/拔出）"
+      status: needs_new
+      analysis: |
+        完全缺失。需要 BroadcastReceiver 监听 AudioManager.ACTION_HEADSET_PLUG 
+        或 AudioManager.ACTION_AUDIO_BECOMING_NOISY。
+      required_work:
+        - "Event.kt: 新增 EVENT_ON_HEADSET_PLUGGED / EVENT_ON_HEADSET_UNPLUGGED"
+        - "新建 HeadsetEventDispatcher: BroadcastReceiver"
+        - "EventFilter/EventCriterionRegistry 注册"
+        - "无额外权限需求"
+
+    - id: T-INT-001
+      name: "Variable Change（变量值变化）"
+      status: fully_implemented
+      analysis: |
+        VariableChangeEventDispatcher 已完整实现，监听 VariableRepository 变化 Flow。
+        EventCriterionRegistry 注册了 variableChanged (0x0013)。
+        VariableChangeReferent 暴露变量名、旧值、新值。
+        注意：尚未在 AutomatorService.initEventDispatcher() 中注册。
+      required_work:
+        - "AutomatorService.initEventDispatcher(): 注册 VariableChangeEventDispatcher"
+      existing_files:
+        - "VariableChangeEventDispatcher.kt"
+        - "EventCriterionRegistry: variableChanged"
+        - "VariableChangeReferent.kt"
+
+    - id: T-INT-009
+      name: "Intent Received（接收 Android Intent）"
+      status: needs_new
+      analysis: |
+        完全缺失。需要动态注册 BroadcastReceiver，用户配置 Intent Action/Category/Extra 等过滤条件。
+        这是一个通用的 Intent 监听器，允许用户捕获任意广播。
+      required_work:
+        - "Event.kt: 新增 EVENT_ON_INTENT_RECEIVED"
+        - "新建 IntentEventDispatcher: 动态 BroadcastReceiver，支持用户配置 IntentFilter"
+        - "新建 IntentReferent: action, category, extras"
+        - "EventFilter/EventCriterionRegistry 注册"
+        - "UI: Intent 配置面板（Action/Category/Data URI 输入）"
+
+    - id: T-INT-017
+      name: "Empty Trigger（手动触发/空触发器）"
+      status: needs_new
+      analysis: |
+        概念上很简单——一个不监听任何事件的"占位触发器"，宏仅在手动触发时运行。
+        在 AutoTask 中，TYPE_ONESHOT 任务（一次性任务）已有类似机制——不需要事件就能执行。
+        可能不需要新 Event 常量，只需在 EventCriterionRegistry 注册一个"手动触发"选项，
+        或直接使用 OneshotTaskScheduler 的手动执行能力。
+      required_work:
+        - "EventCriterionRegistry: 新增 emptyTrigger / manualTrigger 选项"
+        - "可能新增 EVENT_ON_MANUAL_TRIGGER 常量，由 UI 按钮或 Shortcut 触发"
+
+# ============================================================
+# 三、Android 基础设施依赖
+# ============================================================
+
+android_dependencies:
+
+  broadcast_receivers_needed:
+    - trigger: T-DEV-001
+      action: "ACTION_BOOT_COMPLETED / ACTION_LOCKED_BOOT_COMPLETED"
+      type: static  # 已在 Manifest 注册（AutoStarter），需改造
+      note: "已有 AutoStarter，需新增事件分发逻辑"
+
+    - trigger: T-DEV-002
+      action: "ACTION_SCREEN_ON / ACTION_SCREEN_OFF"
+      type: dynamic  # 只能动态注册
+
+    - trigger: T-DEV-003
+      action: "ACTION_USER_PRESENT"
+      type: dynamic
+
+    - trigger: T-NET-003
+      action: "BluetoothAdapter.ACTION_STATE_CHANGED / BluetoothDevice.ACTION_ACL_*"
+      type: dynamic
+
+    - trigger: T-PHONE-001
+      action: "TelephonyManager.ACTION_PHONE_STATE_CHANGED"
+      type: dynamic
+      note: "推荐使用 TelephonyCallback (API 31+)"
+
+    - trigger: T-PHONE-006
+      action: "Telephony.Sms.Intents.SMS_RECEIVED_ACTION"
+      type: static_or_dynamic  # 静态可保证冷启动接收
+
+    - trigger: T-PWR-001
+      action: "ACTION_POWER_CONNECTED / ACTION_POWER_DISCONNECTED"
+      type: dynamic
+
+    - trigger: T-HW-001
+      action: "AudioManager.ACTION_HEADSET_PLUG"
+      type: dynamic
+
+    - trigger: T-INT-009
+      action: "用户自定义 Action"
+      type: dynamic
+
+    - trigger: T-TIME-001
+      action: "AlarmManager PendingIntent → BroadcastReceiver"
+      type: dynamic
+
+  notification_listener_service:
+    current_status: "未使用 NotificationListenerService，通过 AccessibilityService 捕获通知"
+    needed_for: "T-NOTIF-001 增强版（获取通知标题、文本、大图标等详细信息）"
+    priority: "MVP 不需要，V1 考虑"
+
+  foreground_service:
+    current_status: |
+      A11yAutomatorService 已声明 foregroundServiceType="specialUse|location"。
+      所有 EventDispatcher 运行在此服务进程中。
+    needed_for: |
+      所有触发器都依赖 AutomatorService 运行。
+      AlarmManager 调度的闹钟可能需要唤醒前台服务。
+
+  permissions_summary:
+    already_declared:
+      - { permission: RECEIVE_BOOT_COMPLETED, for: "T-DEV-001" }
+      - { permission: ACCESS_NETWORK_STATE, for: "T-NET-001" }
+      - { permission: ACCESS_WIFI_STATE, for: "T-NET-001" }
+      - { permission: VIBRATE, for: "振动动作" }
+      - { permission: WAKE_LOCK, for: "后台保活" }
+      - { permission: SYSTEM_ALERT_WINDOW, for: "浮动窗口" }
+      - { permission: INTERNET, for: "网络" }
+      - { permission: ACCESS_FINE_LOCATION, for: "地理围栏" }
+      - { permission: ACCESS_COARSE_LOCATION, for: "地理围栏" }
+      - { permission: ACCESS_BACKGROUND_LOCATION, for: "地理围栏" }
+      - { permission: FOREGROUND_SERVICE_LOCATION, for: "前台服务" }
+      - { permission: BIND_ACCESSIBILITY_SERVICE, for: "辅助功能服务" }
+
+    needs_to_add:
+      - { permission: SCHEDULE_EXACT_ALARM, for: "T-TIME-001/002 AlarmManager (Android 12+)", priority: high }
+      - { permission: USE_EXACT_ALARM, for: "T-TIME-001/002 备选 (Android 13+)", priority: high }
+      - { permission: BLUETOOTH_CONNECT, for: "T-NET-003 蓝牙 (Android 12+)", priority: medium }
+      - { permission: READ_PHONE_STATE, for: "T-PHONE-001 来电", priority: medium }
+      - { permission: READ_CALL_LOG, for: "T-PHONE-001 来电号码", priority: medium }
+      - { permission: RECEIVE_SMS, for: "T-PHONE-006 短信", priority: medium }
+      - { permission: READ_SMS, for: "T-PHONE-006 短信内容", priority: medium }
+
+# ============================================================
+# 四、关键文件路径
+# ============================================================
+
+key_files:
+
+  engine_core:
+    - path: tasker-engine/src/main/java/top/xjunz/tasker/engine/runtime/Event.kt
+      purpose: "事件模型 + 所有事件类型常量定义"
+    - path: tasker-engine/src/main/java/top/xjunz/tasker/engine/task/EventDispatcher.kt
+      purpose: "事件分发器抽象基类"
+    - path: tasker-engine/src/main/java/top/xjunz/tasker/engine/runtime/Referent.kt
+      purpose: "事件结果引用接口"
+    - path: tasker-engine/src/main/java/top/xjunz/tasker/engine/task/XTask.kt
+      purpose: "任务模型（TYPE_RESIDENT / TYPE_ONESHOT）"
+
+  event_dispatchers:
+    - path: app/src/main/java/top/xjunz/tasker/task/event/MetaEventDispatcher.kt
+      purpose: "聚合分发器，管理所有子分发器"
+    - path: app/src/main/java/top/xjunz/tasker/task/event/A11yEventDispatcher.kt
+      purpose: "AccessibilityEvent 驱动的事件分发"
+    - path: app/src/main/java/top/xjunz/tasker/task/event/PollEventDispatcher.kt
+      purpose: "每秒轮询分发 EVENT_ON_TICK"
+    - path: app/src/main/java/top/xjunz/tasker/task/event/NetworkEventDispatcher.kt
+      purpose: "网络状态变化分发"
+    - path: app/src/main/java/top/xjunz/tasker/task/event/ClipboardEventDispatcher.kt
+      purpose: "剪贴板变化分发（代码已有但被禁用）"
+    - path: app/src/main/java/top/xjunz/tasker/task/variable/VariableChangeEventDispatcher.kt
+      purpose: "变量变化分发（AutoPilot 新增）"
+    - path: app/src/main/java/top/xjunz/tasker/task/mode/ModeChangeEventDispatcher.kt
+      purpose: "模式变化分发（AutoPilot 新增）"
+    - path: app/src/main/java/top/xjunz/tasker/task/location/LocationEventDispatcher.kt
+      purpose: "地理围栏事件分发（AutoPilot 新增）"
+
+  event_filter_and_referents:
+    - path: app/src/main/java/top/xjunz/tasker/task/applet/criterion/EventFilter.kt
+      purpose: "事件匹配 Applet，switch 分支处理各事件类型"
+    - path: app/src/main/java/top/xjunz/tasker/task/applet/criterion/FileEventCriterion.kt
+      purpose: "文件创建/删除事件（轮询检测）"
+    - path: app/src/main/java/top/xjunz/tasker/task/applet/flow/ref/ComponentInfoWrapper.kt
+      purpose: "app 包名/Activity/标签 引用"
+    - path: app/src/main/java/top/xjunz/tasker/task/applet/flow/ref/NotificationReferent.kt
+      purpose: "通知事件引用"
+    - path: app/src/main/java/top/xjunz/tasker/task/applet/flow/ref/VariableChangeReferent.kt
+      purpose: "变量变化事件引用"
+    - path: app/src/main/java/top/xjunz/tasker/task/applet/flow/ref/ModeChangeReferent.kt
+      purpose: "模式变化事件引用"
+    - path: app/src/main/java/top/xjunz/tasker/task/applet/flow/ref/GeofenceReferent.kt
+      purpose: "地理围栏事件引用"
+
+  registration_chain:
+    - path: app/src/main/java/top/xjunz/tasker/task/applet/option/registry/EventCriterionRegistry.kt
+      purpose: "所有事件触发器的注册表"
+    - path: app/src/main/java/top/xjunz/tasker/task/applet/option/registry/BootstrapOptionRegistry.kt
+      purpose: "顶层注册表，定义所有 Registry ID 常量"
+    - path: app/src/main/java/top/xjunz/tasker/task/applet/option/AppletOptionFactory.kt
+      purpose: "单例工厂，持有所有 Registry 实例"
+    - path: app/src/main/java/top/xjunz/tasker/task/applet/option/registry/TimeCriterionRegistry.kt
+      purpose: "时间相关约束（timeRange / dayOfWeek / month）"
+    - path: app/src/main/java/top/xjunz/tasker/task/applet/option/registry/GlobalCriterionRegistry.kt
+      purpose: "设备状态约束（充电/电量/屏幕方向）"
+
+  service_and_android:
+    - path: app/src/main/java/top/xjunz/tasker/service/AutomatorService.kt
+      purpose: "服务接口，initEventDispatcher() 注册所有分发器"
+    - path: app/src/main/java/top/xjunz/tasker/service/A11yAutomatorService.kt
+      purpose: "AccessibilityService 实现"
+    - path: app/src/main/java/top/xjunz/tasker/service/ShizukuAutomatorService.kt
+      purpose: "Shizuku 服务实现"
+    - path: app/src/main/java/top/xjunz/tasker/autostart/AutoStarter.kt
+      purpose: "BOOT_COMPLETED 广播接收器"
+    - path: app/src/main/java/top/xjunz/tasker/task/runtime/ResidentTaskScheduler.kt
+      purpose: "常驻任务调度（事件→任务执行）"
+    - path: app/src/main/AndroidManifest.xml
+      purpose: "权限声明 + 服务/接收器注册"
+
+# ============================================================
+# 五、实现建议
+# ============================================================
+
+implementation_recommendations:
+
+  batch_strategy:
+    wave_1_quick_wins:
+      description: "启用已有代码 + 简单 BroadcastReceiver 事件"
+      triggers:
+        - { id: T-APP-006, effort: minimal, reason: "取消注释 ClipboardEventDispatcher" }
+        - { id: T-INT-001, effort: minimal, reason: "在 initEventDispatcher 注册 VariableChangeEventDispatcher" }
+        - { id: T-INT-017, effort: low, reason: "EventCriterionRegistry 新增空触发器选项" }
+        - { id: T-DEV-001, effort: low, reason: "修改 AutoStarter 或服务启动逻辑分发开机事件" }
+        - { id: T-PWR-001, effort: low, reason: "简单 BroadcastReceiver (ACTION_POWER_CONNECTED)" }
+        - { id: T-DEV-002, effort: low, reason: "简单 BroadcastReceiver (SCREEN_ON/OFF)" }
+        - { id: T-DEV-003, effort: low, reason: "合并到 ScreenEventDispatcher (USER_PRESENT)" }
+        - { id: T-HW-001, effort: low, reason: "简单 BroadcastReceiver (HEADSET_PLUG)" }
+
+    wave_2_medium_effort:
+      description: "需要额外权限和更复杂逻辑的触发器"
+      triggers:
+        - { id: T-TIME-003, effort: medium, reason: "已基本可用(TICK+条件)，可选优化精确间隔" }
+        - { id: T-PWR-002, effort: medium, reason: "已基本可用(TICK+电量条件)，可选优化为广播" }
+        - { id: T-NET-003, effort: medium, reason: "BluetoothEventDispatcher + BLUETOOTH_CONNECT 权限" }
+
+    wave_3_complex:
+      description: "需要 AlarmManager 调度或敏感权限的触发器"
+      triggers:
+        - { id: T-TIME-001, effort: high, reason: "AlarmEventDispatcher + AlarmManager + SCHEDULE_EXACT_ALARM" }
+        - { id: T-TIME-002, effort: high, reason: "复用 AlarmEventDispatcher + 重复规则" }
+        - { id: T-PHONE-001, effort: high, reason: "TelephonyCallback + READ_PHONE_STATE 权限" }
+        - { id: T-PHONE-006, effort: high, reason: "SMS BroadcastReceiver + RECEIVE_SMS 权限" }
+        - { id: T-INT-009, effort: high, reason: "动态 IntentFilter + 用户配置 UI" }
+
+  new_event_constants_needed:
+    - { id: 20, name: EVENT_ON_ALARM_FIRED, for: "T-TIME-001/002" }
+    - { id: 21, name: EVENT_ON_DEVICE_BOOTED, for: "T-DEV-001" }
+    - { id: 22, name: EVENT_ON_SCREEN_ON, for: "T-DEV-002" }
+    - { id: 23, name: EVENT_ON_SCREEN_OFF, for: "T-DEV-002" }
+    - { id: 24, name: EVENT_ON_SCREEN_UNLOCKED, for: "T-DEV-003" }
+    - { id: 25, name: EVENT_ON_BT_STATE_CHANGED, for: "T-NET-003" }
+    - { id: 26, name: EVENT_ON_BT_DEVICE_CONNECTED, for: "T-NET-003" }
+    - { id: 27, name: EVENT_ON_BT_DEVICE_DISCONNECTED, for: "T-NET-003" }
+    - { id: 28, name: EVENT_ON_CALL_STATE_CHANGED, for: "T-PHONE-001" }
+    - { id: 29, name: EVENT_ON_SMS_RECEIVED, for: "T-PHONE-006" }
+    - { id: 30, name: EVENT_ON_POWER_CONNECTED, for: "T-PWR-001" }
+    - { id: 31, name: EVENT_ON_POWER_DISCONNECTED, for: "T-PWR-001" }
+    - { id: 32, name: EVENT_ON_HEADSET_PLUGGED, for: "T-HW-001" }
+    - { id: 33, name: EVENT_ON_HEADSET_UNPLUGGED, for: "T-HW-001" }
+    - { id: 34, name: EVENT_ON_INTENT_RECEIVED, for: "T-INT-009" }
+    - { id: 35, name: EVENT_ON_MANUAL_TRIGGER, for: "T-INT-017" }
+
+  new_dispatchers_needed:
+    - name: AlarmEventDispatcher
+      for: "T-TIME-001, T-TIME-002"
+      mechanism: "AlarmManager.setExactAndAllowWhileIdle() + BroadcastReceiver"
+
+    - name: ScreenEventDispatcher
+      for: "T-DEV-002, T-DEV-003"
+      mechanism: "BroadcastReceiver (SCREEN_ON/OFF/USER_PRESENT)"
+
+    - name: PowerEventDispatcher
+      for: "T-PWR-001"
+      mechanism: "BroadcastReceiver (POWER_CONNECTED/DISCONNECTED)"
+
+    - name: BluetoothEventDispatcher
+      for: "T-NET-003"
+      mechanism: "BroadcastReceiver (BT_STATE_CHANGED/ACL_CONNECTED/DISCONNECTED)"
+
+    - name: PhoneCallEventDispatcher
+      for: "T-PHONE-001"
+      mechanism: "TelephonyCallback (API 31+)"
+
+    - name: SmsEventDispatcher
+      for: "T-PHONE-006"
+      mechanism: "BroadcastReceiver (SMS_RECEIVED)"
+
+    - name: HeadsetEventDispatcher
+      for: "T-HW-001"
+      mechanism: "BroadcastReceiver (ACTION_HEADSET_PLUG)"
+
+    - name: IntentEventDispatcher
+      for: "T-INT-009"
+      mechanism: "动态 BroadcastReceiver，IntentFilter 由用户配置"
+
+  architectural_pattern:
+    description: |
+      所有新 EventDispatcher 应遵循以下模式：
+      1. 继承 EventDispatcher()
+      2. onRegistered() 中注册 BroadcastReceiver / Callback
+      3. 回调中创建 Event.obtain(EVENT_TYPE) 并通过 dispatchEvents() 广播
+      4. destroy() 中注销所有监听
+      5. 在 EventFilter.apply() 的 when 分支中处理新事件类型
+      6. 如需暴露事件参数，创建 *Referent 实现类
+      7. 在 EventCriterionRegistry 中注册选项
+      8. 在 AutomatorService.initEventDispatcher() 中注册分发器
+
+open_questions: []
+
+gaps: []

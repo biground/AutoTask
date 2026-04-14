@@ -1,0 +1,1088 @@
+plan_id: ocr-screen-recognition
+objective: "深入研究实现屏幕 OCR 识别功能的技术细节：截图 API、ML Kit API、Applet 模式、Registry 注册、VariantArgType、权限与触发时机"
+focus_area: "截图 API 详细实现、ML Kit V2 API、Applet/Criterion/Action 模式、Registry ID 分配、VariantArgType 类型体系"
+created_at: "2026-04-10"
+created_by: researcher
+status: completed
+
+tldr: |
+  - 截图 API 有两条路径：(1) A11y Service takeScreenshot → async callback → HardwareBuffer → Bitmap (Android 11+, 已在 InspectorViewOverlay 使用)
+    (2) Shizuku UiAutomation.takeScreenshot() → sync 返回 Bitmap (API 28+, UiAutomatorBridge 已封装)
+  - ML Kit bundled 中文模块 com.google.mlkit:text-recognition-chinese 不依赖 GMS，API: InputImage.fromBitmap → TextRecognizer.process → Text(blocks → lines → elements + boundingBox + confidence)
+  - Applet 模式分两种：Criterion<T,V> 用于约束（自动处理 invert + values 提取），直接继承 Applet() 重写 apply() 用于自定义逻辑（如 GeofenceConstraint）
+  - 下一个可用 Criterion Registry ID = 0x1B，Action Registry ID = 0x5B；下一个 BootstrapOptionRegistry @AppletOrdinal: criterion = 0x001A，action = 0x0045
+  - VariantArgType 定义了 12 种 INT 变体、7 种 TEXT 变体、5 种 LONG/BITS 变体，OCR 可复用 TEXT_* 系列，无需新增
+
+research_metadata:
+  methodology: "hybrid retrieval: semantic_search + grep_search + read_file，3 passes. 第一轮搜索截图 API 和已有研究文档；第二轮深入 Criterion/Action/Registry 源码；第三轮分析 VariantArgType 和 withResult 模式"
+  scope: "app/src/main (service/, task/applet/, task/inspector/), tasker-engine/src/main (engine/applet/), ui-automator/src/main, hidden-apis/, app/build.gradle, docs/"
+  confidence: high
+  coverage: 95
+  decision_blockers: 0
+  research_blockers: 0
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 1. 截图 API 详细分析
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+screenshot_api_analysis:
+  summary: "项目有两条截图路径，均返回 Bitmap，可直接传入 ML Kit"
+
+  # ── 路径 1: A11y Service 截图 ──
+  a11y_service_screenshot:
+    location: "app/src/main/java/top/xjunz/tasker/task/inspector/overlay/InspectorViewOverlay.kt:209-244"
+    api: "AccessibilityService.takeScreenshot(displayId: Int, executor: Executor, callback: TakeScreenshotCallback)"
+    api_level: "Android 11+ (API 30)"
+    return_type: "异步回调 → ScreenshotResult → HardwareBuffer → Bitmap"
+    permission: "automator_service.xml 已声明 android:canTakeScreenshot=\"true\"，无需额外权限"
+    call_pattern: |
+      # 实际代码（InspectorViewOverlay.kt:209-211）
+      a11yAutomatorService.takeScreenshot(
+          Display.DEFAULT_DISPLAY, 
+          Dispatchers.Main.asExecutor(), 
+          screenshotCallback
+      )
+    callback_pattern: |
+      # 实际代码（InspectorViewOverlay.kt:217-244）
+      object : AccessibilityService.TakeScreenshotCallback {
+          override fun onSuccess(result: AccessibilityService.ScreenshotResult) {
+              result.hardwareBuffer.use { buffer ->
+                  screenshot = Bitmap.wrapHardwareBuffer(buffer, result.colorSpace)
+                      ?.clip(binding.inspectorView.visibleBounds)  // 可选裁剪
+              }
+          }
+          override fun onFailure(errorCode: Int) {
+              // 截图失败处理
+          }
+      }
+    coroutine_wrapping_needed: true
+    coroutine_wrapping_pattern: |
+      # 推荐协程封装方式（suspendCancellableCoroutine）
+      suspend fun takeScreenshotA11y(crop: Rect? = null): Bitmap? = 
+          suspendCancellableCoroutine { continuation ->
+              a11yAutomatorService.takeScreenshot(
+                  Display.DEFAULT_DISPLAY,
+                  Dispatchers.Main.asExecutor(),
+                  object : AccessibilityService.TakeScreenshotCallback {
+                      override fun onSuccess(result: ScreenshotResult) {
+                          result.hardwareBuffer.use { buffer ->
+                              val bitmap = Bitmap.wrapHardwareBuffer(buffer, result.colorSpace)
+                              continuation.resume(crop?.let { bitmap?.clip(it) } ?: bitmap, null)
+                          }
+                      }
+                      override fun onFailure(errorCode: Int) {
+                          continuation.resume(null, null)
+                      }
+                  }
+              )
+          }
+    access_in_applet: |
+      通过 Environment 全局访问:
+      - import top.xjunz.tasker.service.a11yAutomatorService  →  a11yAutomatorService.takeScreenshot(...)
+      - 注意: A11y 模式下 IUiAutomationConnection.takeScreenshot() 返回 unsupportedOperation()
+        只能通过 AccessibilityService 实例方法截图
+    notes:
+      - "截图前需隐藏浮窗 (rootView.isVisible = false)，否则会截到 overlay"
+      - "Bitmap.wrapHardwareBuffer 返回的是 HARDWARE config Bitmap，ML Kit InputImage.fromBitmap 支持"
+
+  # ── 路径 2: Shizuku/UiAutomation 截图 ──
+  shizuku_screenshot:
+    location: "ui-automator/src/main/java/androidx/test/uiautomator/bridge/UiAutomatorBridge.java:132-148"
+    api: "mUiAutomation.takeScreenshot()"
+    api_level: "Android 9+ (API 28)"
+    return_type: "同步返回 Bitmap (或 null)"
+    permission: "需要 Shizuku 特权模式运行"
+    call_pattern: |
+      # 实际代码 (UiAutomatorBridge.java:132-148)
+      public boolean takeScreenshot(File storePath, int quality) {
+          Bitmap screenshot = mUiAutomation.takeScreenshot();
+          if (screenshot == null) return false;
+          // 保存为 PNG ...
+          screenshot.recycle();
+          return true;
+      }
+    direct_bitmap_access: |
+      # OCR 不需要保存文件，直接用 Bitmap:
+      val bitmap: Bitmap? = uiAutomation.takeScreenshot()  // Environment.uiAutomation
+    access_in_applet: |
+      通过 Environment 全局访问:
+      - import top.xjunz.tasker.service.uiAutomation
+      - val bitmap = uiAutomation.takeScreenshot()  // 同步调用
+    notes:
+      - "仅 Shizuku 模式可用 (ShizukuAutomatorService)"
+      - "A11y 模式下此接口抛 unsupportedOperation"
+      - "同步调用，在协程中直接使用 withContext(Dispatchers.IO) 包裹即可"
+
+  # ── hidden-apis AIDL 接口 ──
+  hidden_api_aidl:
+    location: "hidden-apis/src/main/aidl/android/app/IUiAutomationConnection.aidl:24"
+    signature: "Bitmap takeScreenshot(in Rect crop, int rotation)"
+    note: "支持裁剪区域 (Rect crop) 和旋转参数，但 A11y 模式实现为 unsupportedOperation"
+
+  # ── 统一截图服务设计建议 ──
+  unified_screenshot_service: |
+    需要创建 ScreenshotProvider 统一两种模式:
+    
+    interface ScreenshotProvider {
+        suspend fun takeScreenshot(crop: Rect? = null): Bitmap?
+    }
+    
+    实现策略:
+    - A11y 模式: 使用 suspendCancellableCoroutine 包装 AccessibilityService.takeScreenshot
+    - Shizuku 模式: 直接调用 uiAutomation.takeScreenshot() (同步)
+    - 通过 OperatingMode.CURRENT 判断当前模式自动选择路径
+    
+    Applet 中获取截图:
+    - TaskRuntime 不直接持有截图能力
+    - 需通过 Environment.currentService 获取 AutomatorService
+    - 或在 OCR Applet 构造时注入 ScreenshotProvider
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 2. ML Kit Text Recognition V2 API 详情
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+mlkit_text_recognition:
+  summary: "ML Kit V2 text recognition，bundled 模式不依赖 GMS，支持中文"
+
+  dependencies:
+    # bundled 版本（模型打包进 APK，不需要 Google Play Services）
+    chinese_bundled:
+      maven: "com.google.mlkit:text-recognition-chinese:16.0.1"
+      model_size: "~26 MB"
+      gms_required: false
+      note: "推荐：离线可用，无 GMS 依赖，含拉丁+中日韩文识别"
+    
+    latin_only:
+      maven: "com.google.mlkit:text-recognition:16.0.1"
+      model_size: "~4 MB"
+      note: "仅拉丁文字，体积小"
+
+    # 非 bundled 版本（需要 GMS 下载模型，国内不可用）
+    chinese_gms:
+      maven: "com.google.android.gms:play-services-mlkit-text-recognition-chinese:16.0.1"
+      gms_required: true
+      note: "不推荐：国内设备无 GMS"
+
+  gradle_config: |
+    # app/build.gradle dependencies 中添加:
+    implementation 'com.google.mlkit:text-recognition-chinese:16.0.1'
+
+  api_usage:
+    create_recognizer: |
+      // 中文识别客户端
+      val recognizer = TextRecognition.getClient(ChineseTextRecognizerOptions.Builder().build())
+      
+      // 仅拉丁文（轻量）
+      // val recognizer = TextRecognition.getClient(TextRecognizerOptions.Builder().build())
+
+    create_input_image: |
+      // 从 Bitmap 创建（截图场景）
+      val inputImage = InputImage.fromBitmap(bitmap, 0)  // rotation = 0
+      
+      // 也支持从其他来源创建:
+      // InputImage.fromMediaImage(image, rotation)
+      // InputImage.fromByteBuffer(buffer, width, height, rotation, format)
+      // InputImage.fromFilePath(context, uri)
+
+    process_image: |
+      // 异步处理（返回 Task<Text>）
+      recognizer.process(inputImage)
+          .addOnSuccessListener { text: Text ->
+              // text.text — 完整文本
+              // text.textBlocks — 文本块列表
+          }
+          .addOnFailureListener { e: Exception ->
+              // 处理错误
+          }
+      
+      // 协程化（推荐）:
+      suspend fun recognizeText(bitmap: Bitmap): Text? = suspendCancellableCoroutine { cont ->
+          val inputImage = InputImage.fromBitmap(bitmap, 0)
+          recognizer.process(inputImage)
+              .addOnSuccessListener { cont.resume(it, null) }
+              .addOnFailureListener { cont.resume(null, null) }
+      }
+      // 或使用 kotlinx-coroutines-play-services 的 .await() 扩展
+
+    text_object_structure: |
+      Text 对象层次结构:
+      Text
+      ├── text: String                    # 完整识别文本
+      ├── textBlocks: List<TextBlock>     # 文本块（段落级别）
+      │   ├── text: String
+      │   ├── boundingBox: Rect?          # 边界框（相对于原图）
+      │   ├── cornerPoints: Point[]?
+      │   ├── recognizedLanguage: String
+      │   ├── confidence: Float?          # V2 置信度
+      │   └── lines: List<Line>           # 行
+      │       ├── text: String
+      │       ├── boundingBox: Rect?
+      │       ├── confidence: Float?
+      │       └── elements: List<Element> # 词/字
+      │           ├── text: String
+      │           ├── boundingBox: Rect?
+      │           └── confidence: Float?
+
+    first_time_loading: |
+      首次调用 recognizer.process() 时会加载模型到内存（~1-2s），
+      后续调用不需要重新加载。
+      建议: 在 OCR Applet 中缓存 recognizer 实例（单例模式）。
+
+  performance_notes:
+    - "全屏 1080p 截图 OCR 典型耗时: 100-500ms (视文字量和设备性能)"
+    - "模型首次加载: ~1-2s"
+    - "内存占用: ~50-100 MB (模型加载后)"
+    - "建议支持区域裁剪以减少处理时间"
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 3. 现有 Applet 模式深度分析
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+applet_patterns:
+
+  # ── Criterion 基类模式 ──
+  criterion_base_pattern:
+    location: "tasker-engine/src/main/java/top/xjunz/tasker/engine/applet/criterion/Criterion.kt"
+    signature: "abstract class Criterion<T, V> : Applet()"
+    flow: |
+      1. apply(runtime) 被调用
+      2. getMatchValue(runtime) → 从 values 取第一个值（用户配置的匹配值）
+      3. getMatchTarget(runtime) → 如果 isScoped，从 runtime.getTarget() 取；否则从 runtime.getReferenceArgument 取
+      4. matchTarget(target, value) → 子类实现具体匹配逻辑
+      5. 自动处理 isInverted（取反）
+      6. runtime.updateFingerprint(raw.actual)
+    key_methods:
+      - "matchTarget(target: T, value: V): AppletResult — 子类必须实现"
+      - "getDefaultMatchValue(runtime) — 可选覆盖，提供默认值"
+    value_extraction: |
+      values 是 Applet.values (SortedMap<Int, Any?>)
+      getMatchValue() 取 values.values.firstOrNull()
+      更复杂的多参数约束直接在 apply() 中按索引取:
+        values[0], values[1], values[2] ...
+
+  # ── DslCriterion 工厂模式 ──
+  dsl_criterion_pattern:
+    location: "tasker-engine/src/main/java/top/xjunz/tasker/engine/applet/criterion/DslCriterion.kt"
+    usage: |
+      通过 createCriterion<T, V> { target, value -> Boolean } 工厂函数创建
+      适用于简单的匹配逻辑，无需创建独立类
+    example: |
+      # TextCriterionRegistry.kt
+      val equalsTo = invertibleAppletOption(R.string.format_text_content) {
+          createCriterion<String, String> { t, v ->
+              AppletResult.resultOf(t) { it == v }
+          }
+      }.withRefArgument<String>(R.string.text)
+        .withValueArgument<String>(R.string.content)
+        .hasCompositeTitle()
+
+  # ── 直接继承 Applet 的自定义约束模式（GeofenceConstraint 参考）──
+  custom_applet_pattern:
+    location: "app/src/main/java/top/xjunz/tasker/task/applet/criterion/GeofenceConstraint.kt"
+    signature: "class GeofenceConstraint(...) : Applet()"
+    flow: |
+      1. 不使用 Criterion 基类，直接继承 Applet
+      2. 在 apply(runtime) 中手动从 values[] 读取参数
+      3. 手动处理 isInverted
+      4. 返回 AppletResult.emptyResult(matched) 或 AppletResult.EMPTY_FAILURE
+    value_reading_pattern: |
+      # GeofenceConstraint.kt:66-68
+      val targetLat = (values[0] as? Number)?.toDouble() ?: return AppletResult.EMPTY_FAILURE
+      val targetLng = (values[1] as? Number)?.toDouble() ?: return AppletResult.EMPTY_FAILURE  
+      val targetRadius = (values[2] as? Number)?.toFloat() ?: return AppletResult.EMPTY_FAILURE
+    inversion_pattern: |
+      # GeofenceConstraint.kt:72-76
+      return if (isInverted) {
+          AppletResult.emptyResult(!matched)
+      } else {
+          AppletResult.emptyResult(matched)
+      }
+    notes:
+      - "适用于需要外部依赖注入的场景（如 locationProvider, distanceCalculator）"
+      - "OCR Constraint 建议使用此模式，注入 screenshotProvider 和 textRecognizer"
+
+  # ── NumberRangeCriterion 模式 ──
+  number_range_criterion_pattern:
+    location: "app/src/main/java/top/xjunz/tasker/task/applet/criterion/NumberRangeCriterion.kt"
+    signature: "class NumberRangeCriterion<R, T : Number>(mapper: (R) -> T) : Criterion<R, List<T>>()"
+    note: "展示了 Criterion 如何使用泛型 mapper 函数提取数值"
+
+  # ── invertibleAppletOption 用法 ──
+  invertible_option_pattern:
+    location: "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/AppletOptionRegistry.kt:61"
+    signature: "protected fun invertibleAppletOption(title: Int, creator: () -> Applet): AppletOption"
+    usage: |
+      创建支持取反的约束选项。用户在 UI 中可切换"是/否"。
+      实际设置 Applet.isInverted = true
+      Criterion 基类自动处理取反；自定义 Applet 需手动处理。
+    example: |
+      @AppletOrdinal(0x0000)
+      val geofenceInside = invertibleAppletOption(R.string.geofence_inside) {
+          GeofenceConstraint.withAMap(locationProvider)
+      }.withValueArgument<Double>(R.string.geofence_latitude)
+        .withValueArgument<Double>(R.string.geofence_longitude)
+
+  # ── AppletResult 使用模式 ──
+  applet_result_patterns:
+    location: "tasker-engine/src/main/java/top/xjunz/tasker/engine/applet/base/AppletResult.kt"
+    key_methods:
+      - "EMPTY_SUCCESS — 空成功结果（单例）"
+      - "EMPTY_FAILURE — 空失败结果（单例）"
+      - "emptyResult(success: Boolean) — 根据 boolean 返回成功/失败"
+      - "succeeded(returned: Any?) — 成功 + 附带返回数据（供下游引用）"
+      - "failed(actual: Any?) — 失败 + 附带实际值（用于调试/fingerprint）"
+      - "resultOf(actualValue, isSuccessful: (T) -> Boolean) — Criterion 常用: 自动根据匹配结果生成 result"
+    returned_field: |
+      AppletResult.returned 用于将数据传递给下游 Applet:
+      - 在 Action 中返回 AppletResult.succeeded(recognizedText) 
+      - 下游可通过 runtime.getReferenceArgument() 获取
+    actual_field: |
+      AppletResult.actual 用于 Criterion 记录实际匹配值（调试用/fingerprint）
+
+  # ── Action 基类模式 ──
+  action_base_patterns:
+    action_base:
+      location: "tasker-engine/src/main/java/top/xjunz/tasker/engine/applet/action/Action.kt"
+      signature: "abstract class Action : Applet()"
+      note: "supportsAnywayRelation = true，无其他特殊逻辑"
+
+    argument_action:
+      location: "tasker-engine/src/main/java/top/xjunz/tasker/engine/applet/action/ArgumentAction.kt"
+      signature: "abstract class ArgumentAction : Action()"
+      flow: |
+        apply(runtime) → 构建 args 数组 (values + references 混合) → doAction(args, runtime)
+        args[i] = getArgument(i, runtime) — 自动区分 value 和 reference
+      note: "适合多参数动作"
+
+    single_arg_action:
+      location: "tasker-engine/src/main/java/top/xjunz/tasker/engine/applet/action/SingleArgAction.kt"
+      signature: "abstract class SingleArgAction<Arg> : ArgumentAction()"
+      note: "单参数动作的便捷基类"
+
+    action_variable_setting: |
+      Action 设置变量的方式:
+      1. 通过 AppletResult.succeeded(value) 返回结果
+         - 在 Registry 中用 .withResult<Type>(R.string.xxx) 声明输出引用
+         - 下游通过 withRefArgument 绑定引用
+      2. 直接操作 VariableRepository
+         - 如 SetVariableAction: repositoryProvider().setVariable(variable)
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 4. Registry 和 Factory 注册模式
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+registry_and_factory:
+
+  # ── BootstrapOptionRegistry ID 分配 ──
+  bootstrap_registry_ids:
+    location: "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/BootstrapOptionRegistry.kt:36-65"
+    
+    criterion_registry_ids:
+      - { id: "0x00", name: "ID_BOOTSTRAP_REGISTRY", purpose: "元注册表" }
+      - { id: "0x0F", name: "ID_EVENT_FILTER_REGISTRY", purpose: "事件过滤" }
+      - { id: "0x10", name: "ID_APP_CRITERION_REGISTRY", purpose: "应用条件" }
+      - { id: "0x12", name: "ID_TIME_CRITERION_REGISTRY", purpose: "时间条件" }
+      - { id: "0x13", name: "ID_GLOBAL_CRITERION_REGISTRY", purpose: "全局条件" }
+      - { id: "0x14", name: "ID_NOTIFICATION_CRITERION_REGISTRY", purpose: "通知条件" }
+      - { id: "0x15", name: "ID_TEXT_CRITERION_REGISTRY", purpose: "文本条件" }
+      - { id: "0x16", name: "ID_UI_OBJECT_CRITERION_REGISTRY", purpose: "UI 对象条件" }
+      - { id: "0x17", name: "ID_NETWORK_CRITERION_REGISTRY", purpose: "网络条件" }
+      - { id: "0x18", name: "ID_VARIABLE_CRITERION_REGISTRY", purpose: "变量条件" }
+      - { id: "0x19", name: "ID_MODE_CRITERION_REGISTRY", purpose: "模式条件" }
+      - { id: "0x1A", name: "ID_LOCATION_CRITERION_REGISTRY", purpose: "位置条件 (geofence)" }
+      # ── 下一个可用 ──
+      - { id: "0x1B", name: "ID_SCREEN_OCR_CRITERION_REGISTRY (推荐)", purpose: "OCR 屏幕识别条件" }
+
+    action_registry_ids:
+      - { id: "0x50", name: "ID_GLOBAL_ACTION_REGISTRY", purpose: "全局动作" }
+      - { id: "0x51", name: "ID_UI_OBJECT_ACTION_REGISTRY", purpose: "UI 对象操作" }
+      - { id: "0x52", name: "ID_CONTROL_ACTION_REGISTRY", purpose: "控制动作" }
+      - { id: "0x53", name: "ID_APP_ACTION_REGISTRY", purpose: "应用动作" }
+      - { id: "0x54", name: "ID_TEXT_ACTION_REGISTRY", purpose: "文本动作" }
+      - { id: "0x55", name: "ID_GESTURE_ACTION_REGISTRY", purpose: "手势动作" }
+      - { id: "0x56", name: "ID_SHELL_CMD_ACTION_REGISTRY", purpose: "Shell 命令" }
+      - { id: "0x57", name: "ID_FILE_ACTION_REGISTRY", purpose: "文件动作" }
+      - { id: "0x58", name: "ID_VIBRATION_ACTION_REGISTRY", purpose: "振动动作" }
+      - { id: "0x59", name: "ID_VARIABLE_ACTION_REGISTRY", purpose: "变量动作" }
+      - { id: "0x5A", name: "ID_MODE_ACTION_REGISTRY", purpose: "模式动作" }
+      # ── 下一个可用 ──
+      - { id: "0x5B", name: "ID_SCREEN_OCR_ACTION_REGISTRY (推荐)", purpose: "OCR 屏幕识别动作" }
+
+    flow_registry_ids:
+      - { id: "0x60", name: "ID_UI_OBJECT_FLOW_REGISTRY", purpose: "UI 对象 Flow" }
+
+  # ── BootstrapOptionRegistry @AppletOrdinal 分配 ──
+  bootstrap_ordinals:
+    location: "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/BootstrapOptionRegistry.kt:148-300"
+    
+    criterion_flow_ordinals:
+      - { ordinal: "0x0010", name: "eventCriteria" }
+      - { ordinal: "0x0011", name: "appCriteria" }
+      - { ordinal: "0x0012", name: "uiObjectCriteria" }
+      - { ordinal: "0x0013", name: "timeCriteria" }
+      - { ordinal: "0x0014", name: "globalCriteria" }
+      - { ordinal: "0x0015", name: "textCriteria" }
+      - { ordinal: "0x0016", name: "networkCriteria" }
+      - { ordinal: "0x0017", name: "variableCriteria" }
+      - { ordinal: "0x0018", name: "modeCriteria" }
+      - { ordinal: "0x0019", name: "locationCriteria" }
+      # ── 下一个可用 ──
+      - { ordinal: "0x001A", name: "screenOcrCriteria (推荐)", purpose: "OCR 屏幕条件入口" }
+
+    action_flow_ordinals:
+      - { ordinal: "0x0020", name: "globalActions" }
+      - { ordinal: "0x0021", name: "uiObjectActions" }
+      - { ordinal: "0x0022", name: "gestureActions" }
+      - { ordinal: "0x0023", name: "textActions" }
+      - { ordinal: "0x0024", name: "appActions" }
+      - { ordinal: "0x0025", name: "controlActions" }
+      - { ordinal: "0x0030", name: "uiObjectFlows" }
+      - { ordinal: "0x0040", name: "shellCmdActions" }
+      - { ordinal: "0x0041", name: "fileActions" }
+      - { ordinal: "0x0042", name: "vibrationActions" }
+      - { ordinal: "0x0043", name: "variableActions" }
+      - { ordinal: "0x0044", name: "modeActions" }
+      # ── 下一个可用 ──
+      - { ordinal: "0x0045", name: "screenOcrActions (推荐)", purpose: "OCR 屏幕动作入口" }
+
+  # ── AppletOptionFactory 注册模式 ──
+  factory_registration:
+    location: "app/src/main/java/top/xjunz/tasker/task/applet/option/AppletOptionFactory.kt"
+    pattern: |
+      1. 在 BootstrapOptionRegistry companion object 中定义 ID 常量
+      2. 在 AppletOptionFactory 中创建 Registry 实例:
+         val screenOcrCriterionRegistry = ScreenOcrCriterionRegistry(
+             BootstrapOptionRegistry.ID_SCREEN_OCR_CRITERION_REGISTRY
+         )
+      3. 在 allRegistries 数组中注册:
+         private val allRegistries = arrayOf(
+             ...
+             screenOcrCriterionRegistry,  // 新增
+             ...
+         )
+      4. 在 BootstrapOptionRegistry 中添加 criterionFlowOptions 入口:
+         @AppletOrdinal(0x001A)
+         val screenOcrCriteria = flowOptionWithId<PhantomFlow>(
+             ID_SCREEN_OCR_CRITERION_REGISTRY, R.string.screen_ocr_criteria
+         )
+      5. 将 screenOcrCriteria 加入 criterionFlowOptions 数组
+
+  # ── Registry 内部注册示例（参考 LocationCriterionRegistry）──
+  inner_registry_example:
+    location: "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/LocationCriterionRegistry.kt"
+    code: |
+      class LocationCriterionRegistry(
+          id: Int,
+          private val locationProvider: () -> Pair<Double, Double>?
+      ) : AppletOptionRegistry(id) {
+      
+          @AppletOrdinal(0x0000)
+          val geofenceInside = invertibleAppletOption(R.string.geofence_inside) {
+              GeofenceConstraint.withAMap(locationProvider)
+          }.withValueArgument<Double>(R.string.geofence_latitude)
+            .withValueArgument<Double>(R.string.geofence_longitude)
+            .withValueArgument<Float>(R.string.geofence_radius)
+            .withValueArgument<String>(R.string.geofence_display_name)
+      }
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 5. VariantArgType 完整类型列表
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+variant_arg_types:
+  location: "app/src/main/java/top/xjunz/tasker/task/applet/value/VariantArgType.kt"
+  base_types: |
+    Applet.ARG_TYPE_TEXT      = 1
+    Applet.ARG_TYPE_INT       = 3
+    Applet.ARG_TYPE_FLOAT     = 4
+    Applet.ARG_TYPE_LONG      = 5
+    Applet.ARG_TYPE_REFERENCE = 0
+  
+  type_encoding: "variant = (subTypeIndex shl 16) or baseArgType"
+
+  none: { const: "NONE = -1", description: "无变体类型" }
+
+  long_variants:
+    - { const: "BITS_SWIPE", value: "1 shl 16 | LONG", description: "滑动参数位" }
+    - { const: "BITS_SCROLL", value: "2 shl 16 | LONG", description: "滚动参数位" }
+    - { const: "BITS_LONG_DURATION", value: "3 shl 16 | LONG", description: "长时间参数位" }
+    - { const: "LONG_TIME", value: "4 shl 16 | LONG", description: "时间戳" }
+    - { const: "BITS_BOUNDS", value: "5 shl 16 | LONG", description: "边界参数位" }
+
+  int_variants:
+    - { const: "INT_COORDINATE", value: "1 shl 16 | INT", description: "坐标 (x,y 打包)" }
+    - { const: "INT_INTERVAL", value: "2 shl 16 | INT", description: "时间间隔" }
+    - { const: "INT_INTERVAL_XY", value: "3 shl 16 | INT", description: "双时间间隔" }
+    - { const: "INT_QUANTITY", value: "4 shl 16 | INT", description: "数量" }
+    - { const: "INT_ROTATION", value: "5 shl 16 | INT", description: "旋转角度" }
+    - { const: "INT_TIME_OF_DAY", value: "6 shl 16 | INT", description: "一天中的时间" }
+    - { const: "INT_MONTH", value: "7 shl 16 | INT", description: "月份" }
+    - { const: "INT_DAY_OF_MONTH", value: "8 shl 16 | INT", description: "月中天" }
+    - { const: "INT_DAY_OF_WEEK", value: "9 shl 16 | INT", description: "星期几" }
+    - { const: "INT_HOUR_OF_DAY", value: "10 shl 16 | INT", description: "小时" }
+    - { const: "INT_MIN_OR_SEC", value: "11 shl 16 | INT", description: "分钟/秒" }
+    - { const: "INT_PERCENT", value: "12 shl 16 | INT", description: "百分比" }
+
+  text_variants:
+    - { const: "TEXT_PACKAGE_NAME", value: "1 shl 16 | TEXT", description: "包名选择器" }
+    - { const: "TEXT_ACTIVITY", value: "2 shl 16 | TEXT", description: "Activity 选择器" }
+    - { const: "TEXT_PANE_TITLE", value: "3 shl 16 | TEXT", description: "面板标题" }
+    - { const: "TEXT_GESTURES", value: "4 shl 16 | TEXT", description: "手势序列化" }
+    - { const: "TEXT_FILE_PATH", value: "5 shl 16 | TEXT", description: "文件路径选择器" }
+    - { const: "TEXT_FORMAT", value: "6 shl 16 | TEXT | MASK_IGNORE", description: "格式化模板" }
+    - { const: "TEXT_VIBRATION_PATTERN", value: "7 shl 16 | TEXT", description: "振动模式" }
+
+  ocr_relevant_types: |
+    OCR 功能可用的现有类型:
+    - VariantArgType.NONE — 普通文本参数（默认文本输入框）
+    - withValueArgument<String>(R.string.xxx) 不指定 VariantArgType → 普通文本输入
+    
+    注意：没有 TEXT_SINGLE_LINE / TEXT_MULTI_LINE / TEXT_VARIABLE_NAME 在 VariantArgType 中定义。
+    这些在 plan.yaml 文档中出现但尚未实现。
+    
+    实际项目中文本参数直接用:
+    .withValueArgument<String>(R.string.label_name) — 自动生成文本输入框
+    
+    匹配模式选择（包含/精确/正则）:
+    - 不需要「选择框」VariantArgType，参考 TextCriterionRegistry 做法:
+      为每种匹配模式注册独立的 Applet 选项 (equalsTo / contains / matches 等)
+    - 用户在 UI 选择不同的条件项（而非在单个条件中选择匹配模式）
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 6. 截图权限和触发时机
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+screenshot_permission_and_timing:
+
+  permission_summary: |
+    - A11y 模式: 无需额外权限。automator_service.xml 已声明 canTakeScreenshot="true"
+    - Shizuku 模式: 需要 Shizuku 授权（用户已授权后自动可用）
+    - 不需要 MediaProjection（MediaProjection 是用于持续屏幕录制/投屏的 API，OCR 截图不需要）
+
+  applet_apply_screenshot_access: |
+    在 Applet.apply(runtime: TaskRuntime) 中获取截图:
+    
+    方案 A (推荐): 构造注入 Provider
+      class OcrTextCriterion(
+          private val screenshotProvider: suspend () -> Bitmap?
+      ) : Applet() {
+          override suspend fun apply(runtime: TaskRuntime): AppletResult {
+              val bitmap = screenshotProvider() ?: return AppletResult.EMPTY_FAILURE
+              // OCR 处理...
+          }
+      }
+    
+    方案 B: 直接通过 Environment 全局访问
+      import top.xjunz.tasker.service.uiAutomation
+      import top.xjunz.tasker.service.a11yAutomatorService
+      
+      override suspend fun apply(runtime: TaskRuntime): AppletResult {
+          // Shizuku 模式
+          val bitmap = uiAutomation.takeScreenshot()
+          // 或 A11y 模式 (需协程化)
+          val bitmap = takeScreenshotA11y()
+      }
+
+  sync_vs_async: |
+    - Shizuku 模式: uiAutomation.takeScreenshot() 是同步调用，直接返回 Bitmap
+    - A11y 模式: AccessibilityService.takeScreenshot() 是异步回调，需要 suspendCancellableCoroutine 包装
+    - 两种模式在 Applet 的 suspend fun apply() 中都可以无阻塞使用
+
+  task_runtime: |
+    TaskRuntime 本身不持有截图方法。
+    需要通过以下方式获取:
+    1. Environment.currentService → AutomatorService → uiAutomatorBridge → uiAutomation
+    2. 或直接 import top.xjunz.tasker.service.uiAutomation (顶级属性)
+    3. A11y 截图需要 import top.xjunz.tasker.service.a11yAutomatorService
+
+  existing_screenshot_action: |
+    GlobalActionRegistry 已有 takeScreenshot 动作 (AppletOrdinal 0x0006):
+    - 调用 uiAutomation.performGlobalAction(GLOBAL_ACTION_TAKE_SCREENSHOT)
+    - 这是系统截图动作 (触发系统截图 UI), 不返回 Bitmap
+    - OCR 需要的是直接获取 Bitmap 的截图, 不是此功能
+    - 标记为 .premiumOnly() 和 .restrictApiLevel(P)
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 7. 完整 CriterionRegistry 列表和 ID
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+criterion_registry_complete_list:
+  - { id: "0x0F", class: "EventCriterionRegistry", file: "EventCriterionRegistry.kt", purpose: "事件条件 (应用进入/退出/通知/文件/地理围栏事件)" }
+  - { id: "0x10", class: "ApplicationCriterionRegistry", file: "ApplicationCriterionRegistry.kt", purpose: "应用条件 (前台应用匹配)" }
+  - { id: "0x12", class: "TimeCriterionRegistry", file: "TimeCriterionRegistry.kt", purpose: "时间条件 (时间范围/星期/月份)" }
+  - { id: "0x13", class: "GlobalCriterionRegistry", file: "GlobalCriterionRegistry.kt", purpose: "全局条件 (电量/充电/锁屏/方向)" }
+  - { id: "0x14", class: "NetworkCriterionRegistry", file: "NetworkCriterionRegistry.kt", purpose: "网络条件" }
+  - { id: "0x15", class: "TextCriterionRegistry", file: "TextCriterionRegistry.kt", purpose: "文本条件 (equals/contains/matches等)" }
+  - { id: "0x16", class: "UiObjectCriterionRegistry", file: "UiObjectCriterionRegistry.kt", purpose: "UI 对象条件 (text/desc/id/bounds等)" }
+  - { id: "0x17", class: "NetworkCriterionRegistry", file: "NetworkCriterionRegistry.kt", purpose: "网络条件 (WiFi/移动数据)" }
+  - { id: "0x18", class: "VariableCriterionRegistry", file: "VariableCriterionRegistry.kt", purpose: "变量条件 (变量值检查/比较)" }
+  - { id: "0x19", class: "ModeCriterionRegistry", file: "ModeCriterionRegistry.kt", purpose: "模式条件" }
+  - { id: "0x1A", class: "LocationCriterionRegistry", file: "LocationCriterionRegistry.kt", purpose: "位置条件 (地理围栏)" }
+
+action_registry_complete_list:
+  - { id: "0x50", class: "GlobalActionRegistry", file: "GlobalActionRegistry.kt", purpose: "全局动作 (返回/主页/截图/旋转)" }
+  - { id: "0x51", class: "UiObjectActionRegistry", file: "UiObjectActionRegistry.kt", purpose: "UI 对象操作 (点击/输入/滚动)" }
+  - { id: "0x52", class: "ControlActionRegistry", file: "ControlActionRegistry.kt", purpose: "控制动作 (循环/跳出)" }
+  - { id: "0x53", class: "ApplicationActionRegistry", file: "ApplicationActionRegistry.kt", purpose: "应用动作 (启动/停止)" }
+  - { id: "0x54", class: "TextActionRegistry", file: "TextActionRegistry.kt", purpose: "文本动作" }
+  - { id: "0x55", class: "GestureActionRegistry", file: "GestureActionRegistry.kt", purpose: "手势动作 (滑动/手势)" }
+  - { id: "0x56", class: "ShellCmdActionRegistry", file: "ShellCmdActionRegistry.kt", purpose: "Shell 命令" }
+  - { id: "0x57", class: "FileActionRegistry", file: "FileActionRegistry.kt", purpose: "文件动作" }
+  - { id: "0x58", class: "VibrationActionRegistry", file: "VibrationActionRegistry.kt", purpose: "振动动作" }
+  - { id: "0x59", class: "VariableActionRegistry", file: "VariableActionRegistry.kt", purpose: "变量动作 (设置/删除)" }
+  - { id: "0x5A", class: "ModeActionRegistry", file: "ModeActionRegistry.kt", purpose: "模式动作" }
+
+flow_registry_complete_list:
+  - { id: "0x60", class: "UiObjectFlowRegistry", file: "UiObjectFlowRegistry.kt", purpose: "UI 对象 Flow (Contains/Matches)" }
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 8. 推荐的 OCR Constraint/Action 实现方案
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+recommended_ocr_implementation:
+
+  # ── A. OCR Criterion（约束：屏幕上是否包含指定文字）──
+  ocr_criterion:
+    class_name: "OcrTextCriterion"
+    base_class: "Applet()"
+    file_path: "app/src/main/java/top/xjunz/tasker/task/applet/criterion/OcrTextCriterion.kt"
+    design: |
+      class OcrTextCriterion(
+          private val screenshotProvider: suspend () -> Bitmap?,
+          private val textRecognizer: TextRecognizer
+      ) : Applet() {
+      
+          override suspend fun apply(runtime: TaskRuntime): AppletResult {
+              val keyword = values[0] as? String ?: return AppletResult.EMPTY_FAILURE
+              
+              val bitmap = screenshotProvider() ?: return AppletResult.EMPTY_FAILURE
+              try {
+                  val inputImage = InputImage.fromBitmap(bitmap, 0)
+                  val text = recognizeText(inputImage) ?: return AppletResult.EMPTY_FAILURE
+                  
+                  val fullText = text.text
+                  val matched = fullText.contains(keyword)
+                  
+                  return if (isInverted) {
+                      AppletResult.emptyResult(!matched)
+                  } else {
+                      AppletResult.emptyResult(matched)
+                  }
+              } finally {
+                  bitmap.recycle()
+              }
+          }
+      }
+    
+    registry_options: |
+      # 参考 TextCriterionRegistry 为每种匹配模式注册独立选项
+      @AppletOrdinal(0x0000)
+      val ocrTextContains = invertibleAppletOption(R.string.ocr_screen_contains_text) {
+          OcrTextCriterion(screenshotProvider, recognizer)
+      }.withValueArgument<String>(R.string.ocr_keyword)
+      
+      @AppletOrdinal(0x0001)
+      val ocrTextEquals = invertibleAppletOption(R.string.ocr_screen_text_equals) {
+          OcrTextExactCriterion(screenshotProvider, recognizer)
+      }.withValueArgument<String>(R.string.ocr_target_text)
+      
+      @AppletOrdinal(0x0002)
+      val ocrTextMatches = invertibleAppletOption(R.string.ocr_screen_text_matches) {
+          OcrTextRegexCriterion(screenshotProvider, recognizer)
+      }.withValueArgument<String>(R.string.ocr_regex_pattern)
+
+  # ── B. OCR Action（动作：执行 OCR 并输出文本到变量）──
+  ocr_action:
+    class_name: "OcrRecognizeAction"
+    base_class: "Action()"
+    file_path: "app/src/main/java/top/xjunz/tasker/task/applet/action/OcrRecognizeAction.kt"
+    design: |
+      class OcrRecognizeAction(
+          private val screenshotProvider: suspend () -> Bitmap?,
+          private val textRecognizer: TextRecognizer
+      ) : Action() {
+      
+          override suspend fun apply(runtime: TaskRuntime): AppletResult {
+              val bitmap = screenshotProvider() ?: return AppletResult.EMPTY_FAILURE
+              try {
+                  val inputImage = InputImage.fromBitmap(bitmap, 0)
+                  val text = recognizeText(inputImage) ?: return AppletResult.EMPTY_FAILURE
+                  
+                  // 返回识别的完整文本，供下游通过 .withResult 引用
+                  return AppletResult.succeeded(text.text)
+              } finally {
+                  bitmap.recycle()
+              }
+          }
+      }
+    
+    registry_options: |
+      @AppletOrdinal(0x0000)
+      val recognizeScreenText = appletOption(R.string.ocr_recognize_screen) {
+          OcrRecognizeAction(screenshotProvider, recognizer)
+      }.withResult<String>(R.string.ocr_recognized_text)  // 输出引用：识别的文本
+      
+      # 后续可扩展：
+      # - 区域截图 OCR (.withValueArgument<Long>(R.string.ocr_region, VariantArgType.BITS_BOUNDS))
+      # - OCR 识别结果含坐标信息
+
+  # ── C. ScreenOcrCriterionRegistry ──
+  ocr_criterion_registry:
+    class_name: "ScreenOcrCriterionRegistry"
+    file_path: "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/ScreenOcrCriterionRegistry.kt"
+    id: "0x1B"
+
+  # ── D. ScreenOcrActionRegistry ──
+  ocr_action_registry:
+    class_name: "ScreenOcrActionRegistry"
+    file_path: "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/ScreenOcrActionRegistry.kt"
+    id: "0x5B"
+
+  # ── E. TextRecognizer 单例管理 ──
+  recognizer_singleton: |
+    建议创建 OcrManager 单例管理 TextRecognizer 生命周期:
+    
+    object OcrManager {
+        private var recognizer: TextRecognizer? = null
+        
+        fun getRecognizer(): TextRecognizer {
+            return recognizer ?: TextRecognition.getClient(
+                ChineseTextRecognizerOptions.Builder().build()
+            ).also { recognizer = it }
+        }
+        
+        suspend fun recognizeText(bitmap: Bitmap): Text? {
+            val input = InputImage.fromBitmap(bitmap, 0)
+            return suspendCancellableCoroutine { cont ->
+                getRecognizer().process(input)
+                    .addOnSuccessListener { cont.resume(it, null) }
+                    .addOnFailureListener { cont.resume(null, null) }
+            }
+        }
+        
+        fun release() {
+            recognizer?.close()
+            recognizer = null
+        }
+    }
+
+  # ── F. 完整注册步骤清单 ──
+  registration_checklist:
+    - step: "1. 添加 ML Kit 依赖"
+      detail: "app/build.gradle → implementation 'com.google.mlkit:text-recognition-chinese:16.0.1'"
+    
+    - step: "2. 创建 OcrManager 单例"
+      detail: "app/.../task/ocr/OcrManager.kt — 封装 TextRecognizer + 截图 Provider"
+    
+    - step: "3. 创建 OcrTextCriterion / OcrRecognizeAction"
+      detail: "app/.../task/applet/criterion/OcrTextCriterion.kt, app/.../task/applet/action/OcrRecognizeAction.kt"
+    
+    - step: "4. 创建 ScreenOcrCriterionRegistry + ScreenOcrActionRegistry"
+      detail: "app/.../option/registry/ScreenOcrCriterionRegistry.kt, ScreenOcrActionRegistry.kt"
+    
+    - step: "5. BootstrapOptionRegistry 添加 ID 常量"
+      detail: |
+        const val ID_SCREEN_OCR_CRITERION_REGISTRY = 0x1B
+        const val ID_SCREEN_OCR_ACTION_REGISTRY = 0x5B
+    
+    - step: "6. BootstrapOptionRegistry 添加入口选项"
+      detail: |
+        @AppletOrdinal(0x001A) val screenOcrCriteria = flowOptionWithId<PhantomFlow>(...)
+        @AppletOrdinal(0x0045) val screenOcrActions = flowOptionWithId<PhantomFlow>(...)
+    
+    - step: "7. 注册到 criterionFlowOptions / actionFlowOptions 数组"
+      detail: "在 getRegistryOptions() 使用的数组中加入新选项"
+    
+    - step: "8. AppletOptionFactory 注册 Registry 实例"
+      detail: |
+        val screenOcrCriterionRegistry = ScreenOcrCriterionRegistry(
+            BootstrapOptionRegistry.ID_SCREEN_OCR_CRITERION_REGISTRY
+        )
+        并添加到 allRegistries 数组
+    
+    - step: "9. 添加字符串资源"
+      detail: "app/src/main/res/values/strings.xml — 添加 OCR 相关字符串"
+    
+    - step: "10. 编写单元测试"
+      detail: "OcrTextCriterionTest, OcrRecognizeActionTest (mock 截图和 TextRecognizer)"
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 9. 文件分析
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+files_analyzed:
+  - file: "VariantArgType.kt"
+    path: "app/src/main/java/top/xjunz/tasker/task/applet/value/VariantArgType.kt"
+    purpose: "定义所有变体参数类型常量（INT_*/TEXT_*/LONG_* 等）"
+    key_elements:
+      - element: "VariantArgType object"
+        type: class
+        location: "VariantArgType.kt:13"
+        description: "单例对象，定义 NONE/-1, 5 种 LONG 变体, 12 种 INT 变体, 7 种 TEXT 变体"
+      - element: "MASK_IGNORE_VARIANT_TYPE_WHEN_MATCHING"
+        type: variable
+        location: "VariantArgType.kt:18"
+        description: "1 shl 24 位掩码，标记 TEXT_FORMAT 等不参与类型匹配的变体"
+      - element: "getRawType(variantType)"
+        type: function
+        location: "VariantArgType.kt:68"
+        description: "提取原始基础类型 (variantType and 0xFFFF)"
+    language: kotlin
+    lines: 70
+
+  - file: "BootstrapOptionRegistry.kt"
+    path: "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/BootstrapOptionRegistry.kt"
+    purpose: "中央注册表：定义所有 Registry ID 常量 + 所有 Flow/Criterion/Action 入口选项"
+    key_elements:
+      - element: "companion object IDs"
+        type: pattern
+        location: "BootstrapOptionRegistry.kt:36-65"
+        description: "所有 Registry ID 常量定义（criterion: 0x0F-0x1A, action: 0x50-0x5A, flow: 0x60）"
+      - element: "criterionFlowOptions"
+        type: variable
+        location: "BootstrapOptionRegistry.kt:115-125"
+        description: "约束入口数组，If 条件中的可选约束类别列表"
+      - element: "actionFlowOptions"
+        type: variable
+        location: "BootstrapOptionRegistry.kt:127-139"
+        description: "动作入口数组，Do 动作中的可选动作类别列表"
+      - element: "@AppletOrdinal(0x0019) locationCriteria"
+        type: variable
+        location: "BootstrapOptionRegistry.kt:250"
+        description: "最后一个 criterion 入口 ordinal = 0x0019"
+      - element: "@AppletOrdinal(0x0044) modeActions"
+        type: variable
+        location: "BootstrapOptionRegistry.kt:290"
+        description: "最后一个 action 入口 ordinal = 0x0044"
+    language: kotlin
+    lines: 291
+
+  - file: "AppletOptionFactory.kt"
+    path: "app/src/main/java/top/xjunz/tasker/task/applet/option/AppletOptionFactory.kt"
+    purpose: "Applet 工厂单例，管理所有 Registry 实例和 Applet 创建"
+    key_elements:
+      - element: "allRegistries"
+        type: variable
+        location: "AppletOptionFactory.kt:140-166"
+        description: "所有 Registry 实例的数组，循序注册"
+      - element: "preloadIfNeeded()"
+        type: function
+        location: "AppletOptionFactory.kt:183"
+        description: "遍历 allRegistries 调用 parseDeclaredOptions()"
+    language: kotlin
+    lines: 200
+
+  - file: "Criterion.kt"
+    path: "tasker-engine/src/main/java/top/xjunz/tasker/engine/applet/criterion/Criterion.kt"
+    purpose: "约束基类，封装 target/value 提取、取反、fingerprint 更新"
+    key_elements:
+      - element: "abstract fun matchTarget(target: T, value: V): AppletResult"
+        type: function
+        location: "Criterion.kt:80"
+        description: "子类实现匹配逻辑"
+      - element: "final override suspend fun apply(runtime)"
+        type: function
+        location: "Criterion.kt:63-78"
+        description: "自动处理 getMatchValue + getMatchTarget + isInverted + fingerprint"
+    language: kotlin
+    lines: 81
+
+  - file: "AppletResult.kt"
+    path: "tasker-engine/src/main/java/top/xjunz/tasker/engine/applet/base/AppletResult.kt"
+    purpose: "Applet 执行结果，携带成功/失败状态 + 返回值 + 实际值"
+    key_elements:
+      - element: "succeeded(returned)"
+        type: function
+        location: "AppletResult.kt:49"
+        description: "成功结果 + 附带返回数据（用于 Action 输出到下游引用）"
+      - element: "resultOf(actualValue, isSuccessful)"
+        type: function
+        location: "AppletResult.kt:63"
+        description: "Criterion 用: 根据匹配函数结果自动生成 result"
+    language: kotlin
+    lines: 82
+
+  - file: "GeofenceConstraint.kt"
+    path: "app/src/main/java/top/xjunz/tasker/task/applet/criterion/GeofenceConstraint.kt"
+    purpose: "地理围栏约束实现 — OCR Criterion 的直接参考模板"
+    key_elements:
+      - element: "class GeofenceConstraint(locationProvider, distanceCalculator) : Applet()"
+        type: class
+        location: "GeofenceConstraint.kt:28-31"
+        description: "构造注入外部依赖，继承 Applet 而非 Criterion"
+      - element: "apply(runtime): 从 values[] 读参数 + 手动 isInverted"
+        type: function
+        location: "GeofenceConstraint.kt:62-76"
+        description: "values[0]/[1]/[2] 读取，手动处理 isInverted"
+    language: kotlin
+    lines: 77
+
+  - file: "LocationCriterionRegistry.kt"
+    path: "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/LocationCriterionRegistry.kt"
+    purpose: "位置条件注册表 — OCR Registry 的直接参考模板"
+    key_elements:
+      - element: "invertibleAppletOption + withValueArgument 链式注册"
+        type: pattern
+        location: "LocationCriterionRegistry.kt:22-28"
+        description: "完整的约束注册模式：可取反 + 多参数"
+    language: kotlin
+    lines: 29
+
+  - file: "TextCriterionRegistry.kt"
+    path: "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/TextCriterionRegistry.kt"
+    purpose: "文本条件注册表 — OCR 文本匹配选项的参考模板"
+    key_elements:
+      - element: "5 种文本匹配: equalsTo/startsWith/endsWith/contains/matches"
+        type: pattern
+        location: "TextCriterionRegistry.kt:25-69"
+        description: "每种匹配模式注册独立选项（而非在单个选项中选择匹配模式）"
+    language: kotlin
+    lines: 70
+
+  - file: "InspectorViewOverlay.kt"
+    path: "app/src/main/java/top/xjunz/tasker/task/inspector/overlay/InspectorViewOverlay.kt"
+    purpose: "Inspector 浮窗 — 包含 A11y 截图的完整实现参考"
+    key_elements:
+      - element: "takeScreenshot 调用"
+        type: function
+        location: "InspectorViewOverlay.kt:209-211"
+        description: "a11yAutomatorService.takeScreenshot(Display.DEFAULT_DISPLAY, executor, callback)"
+      - element: "screenshotCallback"
+        type: variable
+        location: "InspectorViewOverlay.kt:217-244"
+        description: "TakeScreenshotCallback → HardwareBuffer → Bitmap.wrapHardwareBuffer"
+    language: kotlin
+    lines: 280
+
+  - file: "UiAutomatorBridge.java"
+    path: "ui-automator/src/main/java/androidx/test/uiautomator/bridge/UiAutomatorBridge.java"
+    purpose: "UiAutomation 封装桥接层 — Shizuku 截图实现"
+    key_elements:
+      - element: "takeScreenshot(File, int)"
+        type: function
+        location: "UiAutomatorBridge.java:132-148"
+        description: "mUiAutomation.takeScreenshot() → Bitmap → 保存 PNG"
+    language: java
+    lines: 180
+
+  - file: "Environment.kt"
+    path: "app/src/main/java/top/xjunz/tasker/service/Environment.kt"
+    purpose: "全局环境工具 — 提供 currentService/uiAutomation/uiDevice 快捷访问"
+    key_elements:
+      - element: "inline val uiAutomation"
+        type: variable
+        location: "Environment.kt:34"
+        description: "UiAutomation get() = uiAutomatorBridge.uiAutomation"
+      - element: "inline val currentService"
+        type: variable
+        location: "Environment.kt:23"
+        description: "AutomatorService — 判断 A11y/Shizuku 模式自动选择"
+    language: kotlin
+    lines: 44
+
+  - file: "SetVariableAction.kt"
+    path: "app/src/main/java/top/xjunz/tasker/task/applet/action/SetVariableAction.kt"
+    purpose: "设置变量动作 — Action 使用 VariableRepository 的参考"
+    key_elements:
+      - element: "doAction(args, runtime) 从 args[] 获取参数"
+        type: function
+        location: "SetVariableAction.kt:33-60"
+        description: "ArgumentAction 的多参数 args 获取模式"
+    language: kotlin
+    lines: 80
+
+  - file: "AppletOptionRegistry.kt"
+    path: "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/AppletOptionRegistry.kt"
+    purpose: "Registry 基类 — 定义 option 注册、解析、创建的核心逻辑"
+    key_elements:
+      - element: "invertibleAppletOption(title, creator)"
+        type: function
+        location: "AppletOptionRegistry.kt:61"
+        description: "创建支持取反的约束选项"
+      - element: "appletOption(title, creator)"
+        type: function
+        location: "AppletOptionRegistry.kt:65"
+        description: "创建普通选项（动作等）"
+      - element: "parseDeclaredOptions()"
+        type: function
+        location: "AppletOptionRegistry.kt:22-47"
+        description: "反射解析 @AppletOrdinal 注解的字段"
+    language: kotlin
+    lines: 100
+
+  - file: "app/build.gradle"
+    path: "app/build.gradle"
+    purpose: "应用模块构建配置"
+    key_elements:
+      - element: "dependencies"
+        type: pattern
+        location: "app/build.gradle:72-128"
+        description: "无 ML Kit 依赖; 已有高德 SDK、Shizuku、ktor、lifecycle 等"
+    language: groovy
+    lines: 128
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 10. 模式总结
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+patterns_found:
+  - category: architecture
+    pattern: "withResult 输出引用模式"
+    description: |
+      Action 通过 AppletResult.succeeded(value) 返回结果，
+      在 Registry 中通过 .withResult<Type>(R.string.xxx) 声明可引用的输出，
+      下游 Applet 通过 .withRefArgument 绑定引用。
+      OCR Action 可通过此模式输出识别文本。
+    examples:
+      - file: "ControlActionRegistry.kt"
+        location: "app/.../registry/ControlActionRegistry.kt:69-71"
+        snippet: ".withResult<Repeat>(R.string.loop).withResult<Int>(R.string.repeated_count).withResult<String>(R.string.repeated_count)"
+      - file: "UiObjectFlowRegistry.kt"
+        location: "app/.../registry/UiObjectFlowRegistry.kt:23-25"
+        snippet: ".withResult<String>(R.string.ui_object_text).withResult<Int>(R.string.ui_object_center_coordinate, VariantArgType.INT_COORDINATE)"
+    prevalence: common
+
+  - category: architecture
+    pattern: "多匹配模式分拆为独立选项"
+    description: |
+      与其在单个 Applet 中提供"匹配模式"下拉选择（包含/精确/正则），
+      项目模式是为每种匹配模式注册独立的 AppletOption:
+      equalsTo, startsWith, endsWith, contains, matches
+      OCR 文字匹配应遵循相同模式。
+    examples:
+      - file: "TextCriterionRegistry.kt"
+        location: "app/.../registry/TextCriterionRegistry.kt:25-69"
+        snippet: "val equalsTo = ...\nval startsWith = ...\nval contains = ...\nval matches = ..."
+    prevalence: common
+
+  - category: architecture
+    pattern: "depInstance 注入模式"
+    description: |
+      Registry 构造函数接受外部依赖的 Provider:
+      - LocationCriterionRegistry(id, locationProvider: () -> Pair<Double, Double>?)
+      - VariableActionRegistry(id, repositoryProvider: () -> VariableRepository)
+      OCR Registry 应注入 screenshotProvider 和 textRecognizer。
+    examples:
+      - file: "LocationCriterionRegistry.kt"
+        location: "app/.../registry/LocationCriterionRegistry.kt:15-17"
+        snippet: "class LocationCriterionRegistry(id: Int, private val locationProvider: () -> Pair<Double, Double>?)"
+    prevalence: common
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 11. 开放问题和差距
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+open_questions:
+  - question: "A11y 模式截图在 Applet apply() 中是否会被覆盖层遮挡？"
+    context: "InspectorViewOverlay 截图前需隐藏 rootView。engine 的 Applet 执行时是否存在浮窗覆盖层？如有需先隐藏。"
+    type: research
+    affects: ["ocr-criterion", "ocr-action"]
+
+  - question: "OcrManager 的 TextRecognizer 是否需要在服务销毁时关闭？"
+    context: "ML Kit TextRecognizer 有 close() 方法释放模型内存。需要在 AutomatorService 生命周期中管理。"
+    type: nice_to_know
+    affects: ["ocr-manager"]
+
+gaps:
+  - area: "ScreenshotProvider 统一接口"
+    description: "需创建统一截图接口，自动选择 A11y/Shizuku 模式"
+    impact: research_blocker
+    affects: ["ocr-criterion", "ocr-action"]
+
+  - area: "Applet 中获取 A11y Service 实例"
+    description: |
+      A11y 截图需要 AccessibilityService 实例调用 takeScreenshot()。
+      ShellCmdAction 直接 import top.xjunz.tasker.service.uiAutomation 获取 UiAutomation。
+      A11y 截图需要 import top.xjunz.tasker.service.a11yAutomatorService。
+      需确认 Applet 执行时 A11y Service 实例是否始终可用。
+    impact: nice_to_know
+    affects: ["ocr-criterion"]

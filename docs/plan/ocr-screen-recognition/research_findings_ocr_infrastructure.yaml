@@ -1,0 +1,555 @@
+plan_id: ocr-screen-recognition
+objective: "分析 AutoPilot 项目中实现屏幕 OCR 识别所需的现有基础设施"
+focus_area: "截图能力、UI 文本获取、OCR SDK、Applet 约束模式"
+created_at: "2026-04-10"
+created_by: researcher
+status: completed
+
+tldr: |
+  - 项目已具备两种截图能力: (1) Accessibility Service 的 takeScreenshot (Android 11+, 已在 InspectorViewOverlay 中使用),
+    (2) Shizuku 模式下 UiAutomation.takeScreenshot() (通过 UiAutomatorBridge, 已封装为 takeScreenshot(File, int))
+  - 已有完善的 UI 文本获取能力: 通过 AccessibilityNodeInfo 获取 text/contentDescription/viewIdResourceName,
+    UiObjectCriterionRegistry 提供 textEquals/textContains/textPattern 等 6 种文本匹配约束
+  - 项目尚未引入任何 OCR SDK 依赖 (无 ML Kit, 无百度 OCR), 需从零集成
+  - OCR 功能规划在 V2 阶段, 涉及 EX-008 (OCR 文字识别) 和 A-SCR-012 (Text from Image OCR),
+    以及 T-APP-004 (Screenshot Content 触发器)、A-SCR-005/009 (截图文字检查动作)
+  - 关键风险: ML Kit 中文识别精度、截图性能开销、Accessibility Service 与 OCR 管线的线程协调
+
+research_metadata:
+  methodology: "hybrid retrieval: semantic_search + grep_search + read_file, 3 passes"
+  scope: "全项目源码 (app/, coroutine-ui-automator/, ui-automator/, hidden-apis/), 文档 (docs/), 构建配置 (build.gradle)"
+  confidence: high
+  coverage: 92
+  decision_blockers: 1  # ML Kit vs 百度 OCR 选型
+  research_blockers: 0
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 1. 现有截图能力
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+screenshot_capabilities:
+  summary: "项目已具备两种截图路径, 均可用于 OCR 输入"
+
+  accessibility_service_screenshot:
+    available: true
+    api_level: "Android 11+ (API 30)"
+    location: "app/src/main/java/top/xjunz/tasker/task/inspector/overlay/InspectorViewOverlay.kt:210-240"
+    mechanism: |
+      调用 AccessibilityService.takeScreenshot(displayId, executor, callback)
+      回调返回 ScreenshotResult, 通过 HardwareBuffer → Bitmap.wrapHardwareBuffer() 得到 Bitmap
+    config: "app/src/main/res/xml/automator_service.xml 已声明 android:canTakeScreenshot=\"true\""
+    current_usage: "仅用于 Inspector 浮窗截图 (调试工具), 非引擎核心管线"
+    pros:
+      - "无需额外权限 (Accessibility Service 已声明)"
+      - "API 简洁, 直接得到 Bitmap"
+    cons:
+      - "仅 Android 11+ 可用"
+      - "异步回调模式, 需协程包装"
+      - "Inspector 截图时会隐藏浮窗 rootView (rootView.isVisible = false 再截)"
+
+  shizuku_uiautomation_screenshot:
+    available: true
+    api_level: "Android 9+ (API 28, 通过 UiAutomation)"
+    location: "ui-automator/src/main/java/androidx/test/uiautomator/bridge/UiAutomatorBridge.java:132-148"
+    mechanism: |
+      mUiAutomation.takeScreenshot() → 返回 Bitmap
+      已封装为 takeScreenshot(File, int) 方法 (保存为 PNG)
+    access_path: |
+      ShizukuAutomatorService → PrivilegedUiAutomatorBridge → uiAutomation.takeScreenshot()
+      通过 Environment.uiAutomation 全局访问
+    pros:
+      - "同步调用, 返回 Bitmap"
+      - "更低 API 支持 (API 28+)"
+      - "不需要隐藏 UI 覆盖层"
+    cons:
+      - "仅 Shizuku 模式可用 (特权进程)"
+      - "A11yAutomatorService 的 IUiAutomationConnection.takeScreenshot() 返回 unsupportedOperation()"
+
+  hidden_api_aidl:
+    location: "hidden-apis/src/main/aidl/android/app/IUiAutomationConnection.aidl:24"
+    signature: "Bitmap takeScreenshot(in Rect crop, int rotation)"
+    note: "AIDL 接口定义, 可裁剪指定区域 + 旋转"
+
+  gap_for_ocr: |
+    截图能力已就绪, 但需要创建统一截图服务:
+    - 自动选择 A11y 或 Shizuku 截图路径
+    - 返回 Bitmap 供 OCR SDK 消费
+    - 支持区域裁剪 (Rect crop)
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 2. 现有 UI 文本获取能力 (无障碍服务)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ui_text_capabilities:
+  summary: "通过 AccessibilityNodeInfo 已有完整的文本获取和匹配能力"
+
+  node_text_access:
+    location: "app/.../registry/UiObjectCriterionRegistry.kt"
+    supported_properties:
+      - property: "text"
+        description: "AccessibilityNodeInfo.text — 控件文本内容"
+        criteria:
+          - "textEquals (精确匹配, 可取反)"
+          - "textStartsWith / textEndsWith"
+          - "textContains (包含匹配)"
+          - "textPattern (正则匹配)"
+          - "textLengthRange (文本长度范围)"
+      - property: "contentDescription"
+        description: "AccessibilityNodeInfo.contentDescription"
+        criteria: ["contentDesc (精确匹配)"]
+      - property: "viewIdResourceName"
+        description: "控件的 View ID"
+        criteria: ["withId (精确匹配)"]
+      - property: "className"
+        description: "控件类型 (类名)"
+        criteria: ["isType (预设数组匹配)"]
+
+  text_criterion_registry:
+    location: "app/.../registry/TextCriterionRegistry.kt"
+    description: "通用文本条件 (不依赖 AccessibilityNodeInfo)"
+    criteria:
+      - "equalsTo / startsWith / endsWith / contains / matches(regex)"
+
+  ui_object_flow:
+    contains_ui_object:
+      location: "app/.../flow/ContainsUiObject.kt"
+      description: |
+        在窗口节点树中递归搜索匹配的 UI 对象
+        使用 AccessibilityNodeInfo.findFirst() 遍历
+    ui_object_matches:
+      location: "app/.../flow/UiObjectMatches.kt"
+      description: "检查 UI 对象是否匹配 criterion scope 内的所有条件"
+
+  limitation_for_ocr: |
+    无障碍节点只能获取系统渲染的文本 (node.text), 无法识别:
+    - 图片中的文字 (ImageView 显示的文字)
+    - Canvas 绘制的文字
+    - 游戏画面中的文字
+    - PDF/网页图片中的文字
+    这正是 OCR 需要解决的核心场景
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 3. 现有 Applet 约束模式分析
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+applet_constraint_patterns:
+  criterion_directory: "app/src/main/java/top/xjunz/tasker/task/applet/criterion/"
+  existing_criteria:
+    - file: "BoundsCriterion.kt"
+      purpose: "UI 控件边界/位置约束 (left/right/top/bottom/width/height)"
+    - file: "CompareOp.kt"
+      purpose: "比较操作符定义"
+    - file: "CompareValuesConstraint.kt"
+      purpose: "值比较约束"
+    - file: "EventFilter.kt"
+      purpose: "事件过滤 (包括地理围栏事件等)"
+    - file: "FileEventCriterion.kt"
+      purpose: "文件事件约束"
+    - file: "GeofenceConstraint.kt"
+      purpose: "地理围栏约束 (最近实现)"
+    - file: "ModeConstraint.kt"
+      purpose: "模式约束"
+    - file: "NumberRangeCriterion.kt"
+      purpose: "数值范围约束"
+    - file: "VariableConstraint.kt"
+      purpose: "变量约束"
+
+  registry_pattern:
+    description: |
+      所有约束通过 *Registry 类注册, 使用 @AppletOrdinal 定义顺序
+      约束实现继承 Criterion<TargetType, ValueType> 或使用 propertyCriterion()/createCriterion() 工厂方法
+    example_registries:
+      - "UiObjectCriterionRegistry — UI 对象条件"
+      - "TextCriterionRegistry — 文本条件"
+      - "GlobalCriterionRegistry — 全局条件"
+      - "LocationCriterionRegistry — 位置条件"
+
+  ocr_integration_pattern: |
+    OCR 约束建议参考 GeofenceConstraint 模式:
+    - 创建 OcrTextCriterion 继承 Applet/Criterion
+    - 在 BootstrapOptionRegistry 中分配 ID
+    - 创建 ScreenOcrCriterionRegistry 注册 Applet
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 4. SDK 和依赖分析
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+sdk_dependencies:
+  current_ocr_deps: "无 — 项目尚未引入任何 OCR 相关依赖"
+  build_gradle_location: "app/build.gradle:72-128"
+
+  ml_kit_analysis:
+    name: "Google ML Kit Text Recognition"
+    maven_coord: "com.google.mlkit:text-recognition-chinese:16.x.x"
+    model_size: "~26 MB (中文模型, on-device)"
+    pros:
+      - "完全离线, 无网络依赖 (隐私友好)"
+      - "Google 官方维护, 持续更新"
+      - "支持中日韩文字识别 (text-recognition-chinese)"
+      - "支持拉丁/日文/韩文等多脚本"
+      - "免费, 无 API 调用限制"
+      - "Android 生态原生集成, 与 CameraX/Bitmap 直接适配"
+      - "API 简洁: InputImage.fromBitmap() → recognizer.process() → Text 对象"
+    cons:
+      - "模型大小增加 APK 体积 (~26 MB)"
+      - "中文手写体/艺术字识别精度一般"
+      - "首次加载模型有延迟 (~1-2s)"
+      - "需要 Google Play Services (部分国内设备缺失)"
+
+  baidu_ocr_analysis:
+    name: "百度 OCR SDK"
+    maven_coord: "需手动集成 AAR"
+    pros:
+      - "中文识别精度高 (尤其场景文字)"
+      - "不依赖 Google Play Services"
+      - "支持多种识别模式 (通用/高精度/手写体/身份证等)"
+    cons:
+      - "需要网络请求 (云端识别)"
+      - "有 API 调用限制和收费 (免费配额有限)"
+      - "需要注册百度开发者账号和 API Key"
+      - "隐私风险 (截图上传到百度服务器)"
+      - "离线 SDK 体积更大, 需单独集成"
+      - "SDK 文档和维护不如 Google 稳定"
+
+  recommendation: |
+    推荐方案: ML Kit 为主, 百度 OCR 为可选降级
+    理由:
+    1. ML Kit 离线识别 — 符合自动化引擎低延迟需求 (截图→识别→动作 全在本地)
+    2. 无 API 调用限制 — 高频 OCR (如 "屏幕出现文字 X 时触发") 不会被限流
+    3. 隐私 — 截图不出设备
+    4. AGENTS.md 已明确 "OCR 使用 ML Kit 或百度 OCR", ML Kit 应作为首选
+    
+    对于无 Google Play Services 的国内设备:
+    - ML Kit 的 unbundled 版本需要 GMS; bundled 版本打包模型到 APK 可不依赖 GMS
+    - 使用 com.google.mlkit:text-recognition-chinese (bundled) 而非 com.google.android.gms:play-services-mlkit-text-recognition
+    - 百度 OCR 作为 fallback, 可在设置中让用户填 API Key
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 5. Feature Taxonomy 中的相关功能 ID
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+feature_taxonomy_ids:
+  expression_engine:
+    - id: "EX-008"
+      name: "OCR 文字识别"
+      description: "从图片/截图中提取文字"
+      roadmap: V2
+      section: "一、核心引擎 > 1.4 表达式引擎"
+
+  triggers:
+    - id: "T-APP-003"
+      name: "Screen Content"
+      description: "屏幕上出现指定文本"
+      marker: "🟡 (需 Accessibility)"
+      roadmap: V2
+      note: "可能不需要 OCR (A11y node.text 即可), 但 OCR 增强可识别图片文字"
+    - id: "T-APP-004"
+      name: "Screenshot Content"
+      description: "截屏内容匹配"
+      marker: "🟡"
+      roadmap: V2
+      note: "需要截图 + OCR 完整管线"
+
+  actions:
+    - id: "A-SCR-004"
+      name: "Read Screen Contents"
+      description: "读取屏幕上的文字内容"
+      marker: "🟡"
+      roadmap: V2
+    - id: "A-SCR-005"
+      name: "Read Screenshot Contents"
+      description: "读取截图中的文字内容"
+      marker: "🟡"
+      roadmap: V2
+      note: "核心 OCR 动作"
+    - id: "A-SCR-006"
+      name: "Take Screenshot"
+      description: "截屏"
+      marker: "🟡"
+      roadmap: V2
+      note: "截图能力已存在, 需封装为引擎动作"
+    - id: "A-SCR-009"
+      name: "Check Text In Screenshot"
+      description: "检查截图中是否包含指定文本"
+      marker: "🟡"
+      roadmap: V2
+      note: "截图 + OCR + 文本匹配"
+    - id: "A-SCR-010"
+      name: "Check Text On Screen"
+      description: "检查屏幕上是否显示指定文本"
+      marker: "🟡"
+      roadmap: V2
+    - id: "A-SCR-012"
+      name: "Text from Image (OCR)"
+      description: "图片文字识别"
+      marker: "🟢🔴 (需本地化)"
+      roadmap: V2
+      localization: "使用 ML Kit 或百度 OCR"
+
+  constraints:
+    note: "Feature Taxonomy 中无独立 OCR 约束, 但 C-LOC 模式可扩展为 C-SCR (屏幕内容约束)"
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 6. 文件分析
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+files_analyzed:
+  - file: "A11yAutomatorService.kt"
+    path: "app/src/main/java/top/xjunz/tasker/service/A11yAutomatorService.kt"
+    purpose: "Accessibility 模式自动化服务, 提供 UI 事件监听和操控"
+    key_elements:
+      - element: "takeScreenshot (IUiAutomationConnection)"
+        type: function
+        location: "A11yAutomatorService.kt:301"
+        description: "返回 unsupportedOperation(), A11y 模式不支持通过此接口截图"
+      - element: "uiAutomatorBridge"
+        type: variable
+        location: "A11yAutomatorService.kt:109-110"
+        description: "A11yUiAutomatorBridge 实例, 封装 UiAutomation"
+    language: kotlin
+    lines: 337
+
+  - file: "ShizukuAutomatorService.kt"
+    path: "app/src/main/java/top/xjunz/tasker/service/ShizukuAutomatorService.kt"
+    purpose: "Shizuku 特权模式自动化服务"
+    key_elements:
+      - element: "uiAutomatorBridge"
+        type: variable
+        location: "ShizukuAutomatorService.kt:121-123"
+        description: "PrivilegedUiAutomatorBridge(uiAutomation), 可访问全部 UiAutomation API"
+      - element: "uiAutomation"
+        type: variable
+        location: "ShizukuAutomatorService.kt:66-67"
+        description: "UiAutomation 实例, 通过 UiAutomationHidden 连接"
+    language: kotlin
+    lines: 260
+
+  - file: "UiAutomatorBridge.java"
+    path: "ui-automator/src/main/java/androidx/test/uiautomator/bridge/UiAutomatorBridge.java"
+    purpose: "UI Automator 桥接层, 封装 UiAutomation 底层 API"
+    key_elements:
+      - element: "takeScreenshot(File, int)"
+        type: function
+        location: "UiAutomatorBridge.java:132-148"
+        description: "截图并保存为 PNG 文件, 调用 mUiAutomation.takeScreenshot()"
+    language: java
+    lines: 180
+
+  - file: "InspectorViewOverlay.kt"
+    path: "app/src/main/java/top/xjunz/tasker/task/inspector/overlay/InspectorViewOverlay.kt"
+    purpose: "Inspector 浮窗覆盖层, 用于调试时查看 UI 节点树和截图"
+    key_elements:
+      - element: "screenshotCallback"
+        type: variable
+        location: "InspectorViewOverlay.kt:220-240"
+        description: "AccessibilityService.TakeScreenshotCallback 实现, 将 HardwareBuffer 转为 Bitmap"
+      - element: "a11yAutomatorService.takeScreenshot()"
+        type: function
+        location: "InspectorViewOverlay.kt:213"
+        description: "调用 A11y Service takeScreenshot API (Android 11+)"
+    language: kotlin
+    lines: 280
+
+  - file: "automator_service.xml"
+    path: "app/src/main/res/xml/automator_service.xml"
+    purpose: "Accessibility Service 配置"
+    key_elements:
+      - element: "canTakeScreenshot"
+        type: pattern
+        location: "automator_service.xml:13"
+        description: "android:canTakeScreenshot=\"true\" — 已声明截图能力"
+    language: xml
+    lines: 17
+
+  - file: "UiObjectCriterionRegistry.kt"
+    path: "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/UiObjectCriterionRegistry.kt"
+    purpose: "UI 对象条件注册表 — 定义所有可用的节点匹配约束"
+    key_elements:
+      - element: "textEquals/textContains/textPattern"
+        type: function
+        location: "UiObjectCriterionRegistry.kt:170-215"
+        description: "基于 node.text 的文本匹配约束"
+      - element: "nodeTextCriterion"
+        type: function
+        location: "UiObjectCriterionRegistry.kt:49-55"
+        description: "工厂方法, 从 AccessibilityNodeInfo.text 提取文本并匹配"
+    language: kotlin
+    lines: 350
+
+  - file: "ContainsUiObject.kt"
+    path: "app/src/main/java/top/xjunz/tasker/task/applet/flow/ContainsUiObject.kt"
+    purpose: "在窗口节点树中递归搜索匹配的 UI 对象"
+    key_elements:
+      - element: "applyFlow"
+        type: function
+        location: "ContainsUiObject.kt:44-56"
+        description: "使用 root.findFirst() 递归遍历节点树, 匹配 criterion"
+    language: kotlin
+    lines: 65
+
+  - file: "CoroutineUiAutomatorBridge.kt"
+    path: "coroutine-ui-automator/src/main/java/top/xjunz/tasker/uiautomator/CoroutineUiAutomatorBridge.kt"
+    purpose: "协程化 UiAutomator 桥接, 核心事件处理和 UI 自动化控制"
+    key_elements:
+      - element: "uiAutomation"
+        type: variable
+        location: "CoroutineUiAutomatorBridge.kt:22"
+        description: "UiAutomation 实例, 所有 UI 操作的入口"
+    language: kotlin
+    lines: 120
+
+  - file: "app/build.gradle"
+    path: "app/build.gradle"
+    purpose: "应用模块构建配置"
+    key_elements:
+      - element: "dependencies"
+        type: pattern
+        location: "app/build.gradle:72-128"
+        description: "无 ML Kit / 百度 OCR 依赖; 已有高德地图 SDK"
+    language: groovy
+    lines: 128
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 7. 发现的模式
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+patterns_found:
+  - category: architecture
+    pattern: "双模式引擎: A11y Service + Shizuku"
+    description: |
+      项目支持两种运行模式:
+      - A11yAutomatorService (无障碍服务模式) — 普通权限
+      - ShizukuAutomatorService (Shizuku 特权模式) — UiAutomation 全能力
+      两者共享 AutomatorService 接口和 CoroutineUiAutomatorBridge 桥接层
+    examples:
+      - file: "A11yAutomatorService.kt"
+        location: "app/.../service/A11yAutomatorService.kt:59"
+        snippet: "class A11yAutomatorService : AccessibilityService(), AutomatorService, IUiAutomationConnection"
+      - file: "ShizukuAutomatorService.kt"
+        location: "app/.../service/ShizukuAutomatorService.kt:42"
+        snippet: "class ShizukuAutomatorService : AutomatorService"
+    prevalence: common
+
+  - category: architecture
+    pattern: "Applet 注册表模式"
+    description: |
+      所有 Applet (触发器/动作/约束) 通过 *Registry 类注册
+      使用 @AppletOrdinal 注解定义顺序
+      约束使用 Criterion<TargetType, ValueType> 泛型体系
+      OCR 约束应遵循此模式
+    examples:
+      - file: "UiObjectCriterionRegistry.kt"
+        location: "app/.../registry/UiObjectCriterionRegistry.kt:35"
+        snippet: "class UiObjectCriterionRegistry(id: Int) : AppletOptionRegistry(id)"
+      - file: "GeofenceConstraint.kt"
+        location: "app/.../criterion/GeofenceConstraint.kt"
+        snippet: "class GeofenceConstraint : Applet()"
+    prevalence: common
+
+  - category: architecture
+    pattern: "Inspector 截图已有参考实现"
+    description: |
+      InspectorViewOverlay 已实现完整的 A11y 截图流程:
+      隐藏浮窗 → takeScreenshot → HardwareBuffer → Bitmap
+      可直接复用此模式为 OCR 提供截图输入
+    examples:
+      - file: "InspectorViewOverlay.kt"
+        location: "app/.../inspector/overlay/InspectorViewOverlay.kt:210-240"
+        snippet: "a11yAutomatorService.takeScreenshot(Display.DEFAULT_DISPLAY, executor, screenshotCallback)"
+    prevalence: rare
+
+  - category: naming
+    pattern: "PremiumContext.screenShotAction"
+    description: |
+      PremiumContext.java 有 screenShotAction 字段, 暗示截图功能可能曾受付费限制
+      OCR 功能也可能需要考虑 Premium 限制
+    examples:
+      - file: "PremiumContext.java"
+        location: "app/.../premium/PremiumContext.java:27"
+        snippet: "public String screenShotAction;"
+    prevalence: rare
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 8. 相关架构
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+related_architecture:
+  components_relevant_to_domain:
+    - component: "AutomatorService (接口)"
+      responsibility: "定义自动化服务契约: uiAutomatorBridge, eventDispatcher 等"
+      location: "app/.../service/AutomatorService.kt"
+      relationship_to_domain: "OCR 需通过此接口访问截图 API"
+
+    - component: "CoroutineUiAutomatorBridge"
+      responsibility: "协程化 UiAutomation 封装, 事件监听和 UI 操控核心"
+      location: "coroutine-ui-automator/src/main/java/.../CoroutineUiAutomatorBridge.kt"
+      relationship_to_domain: "OCR 可通过 bridge.uiAutomation.takeScreenshot() 获取截图 (Shizuku 模式)"
+
+    - component: "Environment (全局访问点)"
+      responsibility: "提供 currentService, uiAutomatorBridge, uiAutomation, uiDevice 全局快捷访问"
+      location: "app/.../service/Environment.kt"
+      relationship_to_domain: "OCR Applet 可通过 Environment 获取截图能力"
+
+    - component: "AppletOptionRegistry"
+      responsibility: "Applet 注册基类"
+      location: "app/.../registry/AppletOptionRegistry.kt"
+      relationship_to_domain: "OCR 约束/动作需创建新的 Registry 继承此类"
+
+    - component: "BootstrapOptionRegistry"
+      responsibility: "所有 Registry ID 的中央注册"
+      location: "app/.../registry/BootstrapOptionRegistry.kt"
+      relationship_to_domain: "需为 OCR Registry 分配新 ID"
+
+  data_flow_involving_domain: |
+    OCR 管线数据流:
+    1. 截图: AutomatorService → UiAutomation/A11y API → Bitmap
+    2. 识别: Bitmap → ML Kit TextRecognizer → Text 对象 (含文本块/行/元素 + 边界框)
+    3. 匹配: Text.textBlocks → 提取文本 → 匹配用户配置的关键字/正则
+    4. 输出: 匹配结果作为 AppletResult 返回 / 文本存入变量供后续引用
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 9. 技术风险
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+domain_security_considerations:
+  sensitive_areas:
+    - area: "截图内容"
+      location: "OCR 管线全程"
+      concern: "截图可能包含敏感信息 (密码、银行APP等), Bitmap 应在内存中处理后立即回收, 不持久化"
+    - area: "百度 OCR 云端上传"
+      location: "如使用百度 OCR"
+      concern: "截图上传到第三方服务器有隐私泄露风险, 应明确告知用户并提供关闭选项"
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 10. 开放问题和差距
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+open_questions:
+  - question: "ML Kit Text Recognition bundled 版本在无 GMS 设备上是否完全可用?"
+    context: "国内部分设备无 Google Play Services, 需确认 com.google.mlkit:text-recognition-chinese 是否为 bundled (自带模型)"
+    type: decision_blocker
+    affects: ["EX-008", "A-SCR-012"]
+
+  - question: "OCR 轮询频率如何限制以避免高 CPU/电池消耗?"
+    context: "T-APP-004 (Screenshot Content 触发器) 需要定期截图+OCR, 频率需权衡准确性和功耗"
+    type: research
+    affects: ["T-APP-004"]
+
+  - question: "OCR 识别区域是否需要支持用户自定义裁剪?"
+    context: "全屏 OCR 耗时较长, 用户可能只关心屏幕特定区域的文字变化"
+    type: nice_to_know
+    affects: ["A-SCR-009", "T-APP-004"]
+
+gaps:
+  - area: "统一截图服务"
+    description: |
+      需要创建 ScreenshotService/ScreenshotProvider 统一 A11y 和 Shizuku 两种截图路径:
+      - A11y 模式: AccessibilityService.takeScreenshot() (async callback)
+      - Shizuku 模式: UiAutomation.takeScreenshot() (sync, 返回 Bitmap)
+      提供统一 suspend fun takeScreenshot(crop: Rect?): Bitmap? 接口
+    impact: research_blocker
+    affects: ["EX-008", "A-SCR-005", "A-SCR-006", "A-SCR-009", "T-APP-004"]
+
+  - area: "OCR SDK 集成"
+    description: "需要添加 ML Kit Text Recognition 依赖并创建 OCR 服务封装"
+    impact: research_blocker
+    affects: ["EX-008", "A-SCR-012"]
+
+  - area: "OCR Applet 注册"
+    description: |
+      需要创建:
+      - ScreenOcrCriterionRegistry (或 ScreenCriterionRegistry)
+      - OcrTextAction (执行 OCR 并输出文本)
+      - 在 BootstrapOptionRegistry 中分配 ID 和注册
+    impact: nice_to_know
+    affects: ["A-SCR-005", "A-SCR-009", "A-SCR-012"]

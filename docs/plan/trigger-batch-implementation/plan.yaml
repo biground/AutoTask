@@ -303,7 +303,7 @@ tasks:
     priority: high
     status: pending
     dependencies: []
-    conflicts_with: [T03]
+    conflicts_with: []
     triggers_covered: []
     files_touched:
       - "app/src/main/res/values/strings.xml"
@@ -386,7 +386,7 @@ tasks:
     priority: high
     status: pending
     dependencies: []
-    conflicts_with: [T02]
+    conflicts_with: []
     triggers_covered: []
     files_touched:
       - "app/src/main/AndroidManifest.xml"
@@ -888,14 +888,18 @@ tasks:
         - |
           Red: 创建 AlarmEventDispatcherTest.kt，测试：
           - scheduleAlarm 后 AlarmManager 被调用
+          - scheduleRepeating 后首次闹钟被调度，触发后自动计算并调度下一次
           - 收到闹钟广播后分发 EVENT_ON_ALARM_FIRED
           - destroy 后 PendingIntent 被取消
         - |
           Green: 创建 AlarmEventDispatcher.kt：
           - companion object: ACTION_ALARM_FIRED = "top.xjunz.tasker.ALARM_FIRED"
           - companion object: EXTRA_ALARM_TRIGGER_TIME = 0
-          - 内部 BroadcastReceiver 在 onReceive 中 dispatchEvents
-          - scheduleAlarm(timeInMillis): AlarmManager.setExactAndAllowWhileIdle(RTC_WAKEUP, time, pi)
+          - 内部 BroadcastReceiver 在 onReceive 中 dispatchEvents，如果是 repeating 则计算下一次触发时间并重新 setExact
+          - scheduleAlarm(timeInMillis): 一次性精确闹钟
+          - scheduleRepeating(startTimeMillis, repeatRule: RepeatRule): 周期性闹钟
+          - RepeatRule sealed class: Daily, Weekly(daysOfWeek: Set<Int>), Monthly(daysOfMonth: Set<Int>)
+          - 内部 computeNextTriggerTime(repeatRule, lastTrigger): 根据规则计算下一次触发时间
           - onRegistered(): 注册 receiver
           - destroy(): 取消 alarm + 注销 receiver
           创建 AlarmReferent.kt
@@ -1135,7 +1139,7 @@ tasks:
         timestamp: "2026-04-13"
         estimated_effort: medium
         estimated_files: 3
-        estimated_lines: 150
+        estimated_lines: 250
         focus_area: "AutomatorService + EventFilter + EventCriterionRegistry 集成"
         verification:
           - "编译命令: JAVA_HOME=... ./gradlew :app:compileDebugKotlin"

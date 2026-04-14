@@ -1,0 +1,386 @@
+plan_id: variable-mode-system
+objective: |
+  调查 app 中"模式"(Mode) 系统的 UI 入口，确认用户是否能通过界面创建/管理预设模式。
+focus_area: mode-ui-entry
+created_at: "2026-04-13"
+created_by: "gem-researcher"
+status: completed
+
+tldr: |
+  - 模式系统的后端（Mode 数据模型、ModeRepository、SetModeAction、ModeConstraint、ModeChangeEventDispatcher）已全部实现完毕
+  - **不存在独立的模式管理 UI**——没有任何 Activity、Fragment、Dialog、BottomSheet 用于创建/编辑/删除模式
+  - 模式功能仅能通过任务编辑器（FlowEditorDialog）中的 Applet 组件间接使用：SetModeAction（动作）和 ModeConstraint（约束）
+  - 计划文件 (plan.yaml) 明确声明 "MVP 阶段不包含……模式管理 UI"，这是设计决策而非遗漏
+  - AppletOptionFactory 中 modeRepository 使用 InMemoryModeRepository（运行时空仓库），没有任何代码预填充模式数据
+
+research_metadata:
+  methodology: "hybrid retrieval: semantic_search + grep_search + file_search + read_file"
+  scope: "全 app 模块 UI 层、引擎层模式相关代码、计划文档、字符串资源"
+  confidence: high
+  coverage: 95
+  decision_blockers: 1
+  research_blockers: 0
+
+files_analyzed:
+  - file: ModeRepository.kt
+    path: tasker-engine/src/main/java/top/xjunz/tasker/engine/mode/ModeRepository.kt
+    purpose: 模式仓库接口定义
+    key_elements:
+      - element: ModeRepository
+        type: interface
+        location: "ModeRepository.kt:5"
+        description: "定义 getMode, getModeByName, getActiveMode, setActiveMode, deactivateAll, createMode, deleteMode, getAllModes, observeChanges 等方法"
+    language: Kotlin
+    lines: 16
+
+  - file: Mode.kt
+    path: tasker-engine/src/main/java/top/xjunz/tasker/engine/mode/Mode.kt
+    purpose: 模式数据模型
+    key_elements:
+      - element: Mode
+        type: class
+        location: "Mode.kt:3"
+        description: "data class Mode(id, name, icon, color, isActive) — 模式的核心数据结构"
+    language: Kotlin
+    lines: 9
+
+  - file: InMemoryModeRepository.kt
+    path: tasker-engine/src/main/java/top/xjunz/tasker/engine/mode/InMemoryModeRepository.kt
+    purpose: 内存实现的 ModeRepository（用于测试和 AppletOptionFactory 默认实例）
+    key_elements:
+      - element: InMemoryModeRepository
+        type: class
+        location: "InMemoryModeRepository.kt:10"
+        description: "基于 ConcurrentHashMap 的内存模式仓库，支持完整 CRUD 和事件通知"
+    language: Kotlin
+    lines: 75
+
+  - file: DataStoreModeRepository.kt
+    path: app/src/main/java/top/xjunz/tasker/task/mode/DataStoreModeRepository.kt
+    purpose: DataStore 持久化的 ModeRepository 实现
+    key_elements:
+      - element: DataStoreModeRepository
+        type: class
+        location: "DataStoreModeRepository.kt:25"
+        description: "基于 DataStore Preferences 持久化模式数据，内存缓存 + JSON 序列化"
+      - element: ModeDto
+        type: class
+        location: "DataStoreModeRepository.kt:44"
+        description: "内部 @Serializable DTO，用于 JSON 序列化/反序列化"
+      - element: initialize
+        type: function
+        location: "DataStoreModeRepository.kt:53"
+        description: "从 DataStore 加载已持久化的模式到内存缓存"
+    language: Kotlin
+    lines: 100+
+
+  - file: SetModeAction.kt
+    path: app/src/main/java/top/xjunz/tasker/task/applet/action/SetModeAction.kt
+    purpose: 模式切换动作 Applet (A-MODE-001)
+    key_elements:
+      - element: SetModeAction
+        type: class
+        location: "SetModeAction.kt:27"
+        description: "接受 modeName + actionType(activate/deactivate/toggle)，操作 ModeRepository 切换模式状态"
+    language: Kotlin
+    lines: 65
+
+  - file: ModeConstraint.kt
+    path: app/src/main/java/top/xjunz/tasker/task/applet/criterion/ModeConstraint.kt
+    purpose: 模式约束 Applet（检查模式状态）
+    key_elements:
+      - element: ModeConstraint
+        type: class
+        location: "ModeConstraint.kt:25"
+        description: "检查指定模式是否处于活跃/非活跃状态，支持取反"
+    language: Kotlin
+    lines: 50
+
+  - file: ModeActionRegistry.kt
+    path: app/src/main/java/top/xjunz/tasker/task/applet/option/registry/ModeActionRegistry.kt
+    purpose: 模式动作注册表（注册 SetModeAction）
+    key_elements:
+      - element: ModeActionRegistry
+        type: class
+        location: "ModeActionRegistry.kt:15"
+        description: "注册 setMode 动作选项，参数为 mode_name + mode_operation_type"
+    language: Kotlin
+    lines: 27
+
+  - file: ModeCriterionRegistry.kt
+    path: app/src/main/java/top/xjunz/tasker/task/applet/option/registry/ModeCriterionRegistry.kt
+    purpose: 模式条件注册表（注册 ModeConstraint）
+    key_elements:
+      - element: ModeCriterionRegistry
+        type: class
+        location: "ModeCriterionRegistry.kt:15"
+        description: "注册 modeConstraint 条件选项，参数为 mode_name + expected_mode_active"
+    language: Kotlin
+    lines: 27
+
+  - file: ModeChangeEventDispatcher.kt
+    path: app/src/main/java/top/xjunz/tasker/task/mode/ModeChangeEventDispatcher.kt
+    purpose: 模式变化事件分发器
+    key_elements:
+      - element: ModeChangeEventDispatcher
+        type: class
+        location: "ModeChangeEventDispatcher.kt:22"
+        description: "监听 ModeRepository 变化事件，转换为引擎 Event 进行分发"
+    language: Kotlin
+    lines: 40+
+
+  - file: AppletOptionFactory.kt
+    path: app/src/main/java/top/xjunz/tasker/task/applet/option/AppletOptionFactory.kt
+    purpose: Applet 选项工厂——汇总所有 Registry
+    key_elements:
+      - element: modeRepository
+        type: variable
+        location: "AppletOptionFactory.kt:50"
+        description: "lazy { InMemoryModeRepository() } — 运行时使用空的内存仓库，无预填充"
+      - element: modeActionRegistry
+        type: variable
+        location: "AppletOptionFactory.kt:113"
+        description: "ModeActionRegistry 实例，传入 modeRepositoryProvider"
+      - element: modeCriterionRegistry
+        type: variable
+        location: "AppletOptionFactory.kt:119"
+        description: "ModeCriterionRegistry 实例，传入 modeRepositoryProvider"
+    language: Kotlin
+    lines: 170+
+
+  - file: BootstrapOptionRegistry.kt
+    path: app/src/main/java/top/xjunz/tasker/task/applet/option/registry/BootstrapOptionRegistry.kt
+    purpose: 全局 Applet 注册表 ID 定义
+    key_elements:
+      - element: ID_MODE_CRITERION_REGISTRY
+        type: variable
+        location: "BootstrapOptionRegistry.kt:48"
+        description: "const val = 0x19 — 模式条件注册表 ID"
+      - element: ID_MODE_ACTION_REGISTRY
+        type: variable
+        location: "BootstrapOptionRegistry.kt:57"
+        description: "const val = 0x5A — 模式动作注册表 ID"
+    language: Kotlin
+    lines: 100
+
+  - file: MainActivity.kt
+    path: app/src/main/java/top/xjunz/tasker/ui/main/MainActivity.kt
+    purpose: 主界面 Activity
+    key_elements:
+      - element: viewPagerAdapter
+        type: variable
+        location: "MainActivity.kt:88-99"
+        description: "4 个 Tab 页面: EnabledTaskFragment, ResidentTaskFragment, OneshotTaskFragment, AboutFragment — 无模式管理入口"
+      - element: bottomItemIds
+        type: variable
+        location: "MainActivity.kt:80-84"
+        description: "底部导航 3 项: running_tasks, resident_tasks, oneshot_tasks"
+    language: Kotlin
+    lines: 150+
+
+  - file: plan.yaml
+    path: docs/plan/variable-mode-system/plan.yaml
+    purpose: 变量/模式系统实施计划
+    key_elements:
+      - element: "MVP scope exclusion"
+        type: pattern
+        location: "plan.yaml:assumptions"
+        description: "明确声明 'MVP 阶段不包含 Dictionary/Array 类型、变量管理 UI、模式管理 UI'"
+    language: YAML
+    lines: 200+
+
+  - file: strings.xml
+    path: app/src/main/res/values/strings.xml
+    purpose: 字符串资源
+    key_elements:
+      - element: on_mode_changed
+        type: variable
+        location: "strings.xml:683"
+        description: "'当模式发生变化时' — 模式变化触发器的显示文本"
+      - element: changed_mode_name
+        type: variable
+        location: "strings.xml:684"
+        description: "'发生变化的模式名称' — 事件参数"
+      - element: mode_change_type
+        type: variable
+        location: "strings.xml:685"
+        description: "'模式变化类型' — 事件参数"
+    language: XML
+    lines: 700+
+
+patterns_found:
+  - category: architecture
+    pattern: "模式系统 MVP 仅实现后端，不含 UI"
+    description: |
+      计划文件 (plan.yaml) 的 assumptions 部分明确声明：
+      "MVP 阶段不包含 Dictionary/Array 类型、变量管理 UI、模式管理 UI"
+      这意味着用户当前无法通过任何图形界面创建、编辑、删除或管理模式。
+    examples:
+      - file: plan.yaml
+        location: "plan.yaml:assumptions"
+        snippet: "- \"MVP 阶段不包含 Dictionary/Array 类型、变量管理 UI、模式管理 UI\""
+    prevalence: common
+
+  - category: architecture
+    pattern: "AppletOptionFactory 使用空的 InMemoryModeRepository"
+    description: |
+      AppletOptionFactory.modeRepository 通过 lazy { InMemoryModeRepository() } 初始化。
+      这个仓库在应用启动时是空的，没有任何代码调用 createMode() 来预填充模式数据。
+      这意味着即使用户在任务编辑器中添加 SetModeAction 或 ModeConstraint，
+      由于仓库中没有模式实体，这些 Applet 在运行时始终会失败（getModeByName 返回 null）。
+    examples:
+      - file: AppletOptionFactory.kt
+        location: "AppletOptionFactory.kt:50"
+        snippet: "private val modeRepository: ModeRepository by lazy { InMemoryModeRepository() }"
+    prevalence: common
+
+  - category: architecture
+    pattern: "DataStoreModeRepository 已实现但未被使用"
+    description: |
+      DataStoreModeRepository（基于 DataStore Preferences 持久化）已完整实现，
+      包括 initialize() 加载、createMode()、deleteMode() 等全套功能，
+      但 AppletOptionFactory 中使用的是 InMemoryModeRepository，
+      DataStoreModeRepository 仅在单元测试中被引用。
+    examples:
+      - file: DataStoreModeRepository.kt
+        location: "DataStoreModeRepository.kt:25"
+        snippet: "class DataStoreModeRepository(private val context: Context) : ModeRepository"
+      - file: AppletOptionFactory.kt
+        location: "AppletOptionFactory.kt:50"
+        snippet: "private val modeRepository: ModeRepository by lazy { InMemoryModeRepository() }"
+    prevalence: common
+
+  - category: architecture
+    pattern: "模式仅通过 Applet 间接使用"
+    description: |
+      模式系统的用户接触点仅存在于任务编辑器（FlowEditorDialog）中的 Applet 选择器：
+      1. SetModeAction — 在"动作"类别的 ModeActionRegistry 中注册，显示为"设置模式"
+      2. ModeConstraint — 在"条件"类别的 ModeCriterionRegistry 中注册，显示为"检查模式状态"
+      3. ModeChangeTrigger — 通过 EventCriterionRegistry 监听模式变化事件
+      这些 Applet 以文本参数（模式名称字符串）引用模式，而非从 UI 选择器中选取。
+    examples:
+      - file: ModeActionRegistry.kt
+        location: "ModeActionRegistry.kt:22-25"
+        snippet: |
+          val setMode = appletOption(R.string.set_mode) {
+              SetModeAction(modeRepositoryProvider)
+          }.withValueArgument<String>(R.string.mode_name)
+              .withValueArgument<String>(R.string.mode_operation_type)
+    prevalence: common
+
+  - category: naming
+    pattern: "strings.xml 缺少 set_mode/mode_name/mode_operation_type/check_mode_status/expected_mode_active 字符串资源"
+    description: |
+      ModeActionRegistry 引用 R.string.set_mode、R.string.mode_name、R.string.mode_operation_type，
+      ModeCriterionRegistry 引用 R.string.check_mode_status、R.string.expected_mode_active，
+      但在 strings.xml 中通过 grep 搜索 "set_mode"、"check_mode_status" 等 key 时未找到匹配。
+      这些字符串资源可能尚未定义，或定义在其他资源文件中。
+    examples:
+      - file: ModeActionRegistry.kt
+        location: "ModeActionRegistry.kt:22"
+        snippet: "appletOption(R.string.set_mode)"
+    prevalence: occasional
+
+related_architecture:
+  components_relevant_to_domain:
+    - component: "Mode 数据模型（Mode.kt）"
+      responsibility: "定义模式的 id、name、icon、color、isActive 属性"
+      location: "tasker-engine/src/main/java/top/xjunz/tasker/engine/mode/Mode.kt"
+      relationship_to_domain: "核心数据结构"
+    - component: "ModeRepository 接口"
+      responsibility: "模式 CRUD + 状态切换 + 变化观察"
+      location: "tasker-engine/src/main/java/top/xjunz/tasker/engine/mode/ModeRepository.kt"
+      relationship_to_domain: "核心仓库接口"
+    - component: "InMemoryModeRepository"
+      responsibility: "内存实现，AppletOptionFactory 默认使用"
+      location: "tasker-engine/src/main/java/top/xjunz/tasker/engine/mode/InMemoryModeRepository.kt"
+      relationship_to_domain: "运行时仓库实现"
+    - component: "DataStoreModeRepository"
+      responsibility: "持久化实现（已实现但未被 UI/运行时使用）"
+      location: "app/src/main/java/top/xjunz/tasker/task/mode/DataStoreModeRepository.kt"
+      relationship_to_domain: "持久化仓库实现"
+    - component: "SetModeAction"
+      responsibility: "模式切换动作 Applet"
+      location: "app/src/main/java/top/xjunz/tasker/task/applet/action/SetModeAction.kt"
+      relationship_to_domain: "用户间接接触点（通过 FlowEditor）"
+    - component: "ModeConstraint"
+      responsibility: "模式状态约束 Applet"
+      location: "app/src/main/java/top/xjunz/tasker/task/applet/criterion/ModeConstraint.kt"
+      relationship_to_domain: "用户间接接触点（通过 FlowEditor）"
+    - component: "ModeChangeEventDispatcher"
+      responsibility: "模式变化 → 引擎事件分发"
+      location: "app/src/main/java/top/xjunz/tasker/task/mode/ModeChangeEventDispatcher.kt"
+      relationship_to_domain: "事件驱动触发器"
+    - component: "FlowEditorDialog"
+      responsibility: "任务编辑器 UI，用户在此添加 Applet 组件"
+      location: "app/src/main/java/top/xjunz/tasker/ui/task/editor/FlowEditorDialog.kt"
+      relationship_to_domain: "唯一能接触到模式 Applet 的 UI 入口"
+    - component: "MainActivity"
+      responsibility: "主界面，4 Tab 导航（已启用任务/常驻任务/一次性任务/关于）"
+      location: "app/src/main/java/top/xjunz/tasker/ui/main/MainActivity.kt"
+      relationship_to_domain: "无模式管理入口"
+  interfaces_used_by_domain: []
+  data_flow_involving_domain: |
+    用户在 FlowEditorDialog 中添加 SetModeAction → 
+    运行时 SetModeAction.doAction() 调用 ModeRepository.setActiveMode()/deactivateAll() →
+    ModeRepository 发出 ModeChangeEvent →
+    ModeChangeEventDispatcher 将其转为引擎 Event →
+    EventFilter 匹配触发其他任务
+
+    问题：AppletOptionFactory.modeRepository = InMemoryModeRepository()（空），
+    没有 createMode() 调用，运行时 getModeByName() 始终返回 null。
+  key_relationships_to_domain:
+    - from: "AppletOptionFactory"
+      to: "ModeActionRegistry / ModeCriterionRegistry"
+      relationship: "实例化并注册"
+    - from: "ModeActionRegistry"
+      to: "SetModeAction"
+      relationship: "创建 Applet 实例"
+    - from: "ModeCriterionRegistry"
+      to: "ModeConstraint"
+      relationship: "创建 Applet 实例"
+    - from: "SetModeAction / ModeConstraint"
+      to: "ModeRepository"
+      relationship: "运行时调用"
+    - from: "ModeChangeEventDispatcher"
+      to: "ModeRepository"
+      relationship: "订阅变化事件"
+
+open_questions:
+  - question: "是否需要构建独立的模式管理 UI（模式列表、创建/编辑/删除对话框）？"
+    context: "当前 MVP 计划明确排除了模式管理 UI，但用户提出了找不到入口的问题"
+    type: decision_blocker
+    affects: ["variable-mode-system"]
+  - question: "AppletOptionFactory 中的 modeRepository 是否应替换为 DataStoreModeRepository？"
+    context: "当前使用 InMemoryModeRepository 导致运行时仓库为空，模式 Applet 功能实际不可用"
+    type: decision_blocker
+    affects: ["variable-mode-system"]
+  - question: "strings.xml 中是否缺少 set_mode、mode_name、mode_operation_type、check_mode_status、expected_mode_active 等字符串资源？"
+    context: "ModeActionRegistry 和 ModeCriterionRegistry 引用了这些资源 ID，但 grep 未在 strings.xml 中找到"
+    type: research
+    affects: ["variable-mode-system"]
+
+gaps:
+  - area: "模式管理 UI"
+    description: |
+      不存在任何 UI 界面让用户创建、查看、编辑或删除模式。
+      后端 ModeRepository 接口完整（createMode/deleteMode/getAllModes），
+      DataStoreModeRepository 持久化也已实现，
+      但缺少调用这些 API 的 UI 层。
+    impact: decision_blocker
+    affects: ["variable-mode-system"]
+  - area: "运行时 ModeRepository 为空"
+    description: |
+      AppletOptionFactory.modeRepository 使用 InMemoryModeRepository（lazy 初始化后为空），
+      没有任何代码调用 createMode() 预填充模式。
+      加上没有 UI 让用户创建模式，运行时 SetModeAction 和 ModeConstraint 实际上不可用
+      （getModeByName 始终返回 null → AppletResult.EMPTY_FAILURE）。
+    impact: decision_blocker
+    affects: ["variable-mode-system"]
+  - area: "DataStoreModeRepository 未集成到生产代码"
+    description: |
+      DataStoreModeRepository 已完整实现但未被 AppletOptionFactory 使用。
+      需要用 DataStoreModeRepository(context) 替换 InMemoryModeRepository()，
+      并在应用启动时调用 initialize()。
+    impact: research_blocker
+    affects: ["variable-mode-system"]

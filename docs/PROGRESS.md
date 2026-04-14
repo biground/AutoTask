@@ -1,6 +1,6 @@
 # AutoPilot 开发进度与上下文
 
-> 最近更新：2026-04-10
+> 最近更新：2026-04-13
 
 ---
 
@@ -67,20 +67,33 @@ export JAVA_HOME=/opt/homebrew/Cellar/openjdk@17/17.0.18/libexec/openjdk.jdk/Con
 - **依赖**: `com.amap.api:3dmap-location-search` 合并包
 - **测试**: 端到端集成测试通过
 
-### 3. OCR 屏幕识别 🔄（Wave 2 完成，Wave 3 待开始）
+### 3. OCR 屏幕识别 ✅（全部完成）
 
 - **计划文件**: `docs/plan/ocr-screen-recognition/plan.yaml`
-- **已完成 (T01-T07)**:
+- **基础设施 (T01-T07)**:
   - T01: ML Kit `text-recognition-chinese` 依赖 + ProGuard 规则
-  - T02: `OcrResult` / `OcrTextBlock` 数据模型
+  - T02: `OcrResult` / `TextBlock` / `OcrTextMatchMode` 数据模型
   - T03: `OcrProvider` 统一接口 + 单测
   - T04: `ScreenshotProvider` 截图接口 + `DefaultScreenshotProvider`
   - T05: `MlKitOcrProvider` ML Kit 离线 OCR 引擎（7 个单测通过）
   - T06: `OcrManager` 管线编排器
   - T07: `CloudOcrProvider` 云端 OCR 抽象基类
-- **待实施 (T08+)**:
-  - T08-T09: 待查看 plan.yaml 确认具体内容
-  - T10-T18: Applet 约束/动作、注册、UI 等
+- **Applet 实现 (T08-T09)**:
+  - T08: `OcrTextConstraint` — 三种匹配模式（含/精确/正则），ReDoS 防护（嵌套量词预检测+线程超时）
+  - T09: `OcrRecognizeAction` — OCR 识别动作，输出文本到变量引用
+- **注册与 UI (T10-T16)**:
+  - T10: `ScreenOcrCriterionRegistry` — 三种匹配模式注册
+  - T11: `ScreenOcrActionRegistry` — OCR 识别动作注册
+  - T12: `BootstrapOptionRegistry` + `AppletOptionFactory` 全局注册（ID=0x1B/0x5B）
+  - T13: 字符串资源（含 not_ 反转字符串）
+  - T14: `OcrSettingsDialog` — 引擎选择 + 云端配置 + 测试识别 + 结果预览
+  - T15: `RegionSelectorView` + `OcrRegionSelectorDialog` — 区域选择器 UI（prototype）
+  - T16: 设置页 OCR 入口
+- **安全审查 (T17)**:
+  - ReDoS 防护：嵌套量词预检测 + ExecutorService 线程超时
+  - API Key：inputType=textPassword（正式版需改用 EncryptedSharedPreferences）
+  - OcrManager：@Volatile 并发安全
+- **测试**: 305 个单测全部通过，0 回归
 
 ---
 

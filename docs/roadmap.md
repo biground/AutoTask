@@ -28,21 +28,28 @@
 - 自定义场景运行时（Scene 渲染 + 事件绑定 + 数据绑定）
 - 国内化模块（高德地理围栏、天气/OCR/翻译替代）
 
-### 当前执行进度（2026-04-10）
+### 当前执行进度（2026-04-13）
 
 | Wave | 状态 | 说明 |
 |---|---|---|
-| Wave 1 | 已完成 | T01+T02+T03+T04 |
-| Wave 2 | 进行中 | T05+T06+T07（核心代码已落地，待收口验证） |
-| Wave 3 | 未开始 | T08+T09 |
-| Wave 4 | 未开始 | T10-T16 |
-| Wave 5 | 未开始 | T17+T18 集成测试 |
+| Wave 1 | ✅ 已完成 | T01+T02+T03+T04 基础设施 |
+| Wave 2 | ✅ 已完成 | T05+T06+T07 核心引擎 |
+| Wave 3 | ✅ 已完成 | T08+T09 Applet 实现 |
+| Wave 4 | ✅ 已完成 | T10-T16 注册与 UI |
+| Wave 5 | ✅ 已完成 | T17+T18 安全审查 + 集成测试（305 tests, 0 failures） |
 
 已完成里程碑（已提交到 main）：
 - T01：ML Kit 中文 OCR 依赖与 ProGuard 规则
 - T05：MlKitOcrProvider 离线 OCR 引擎
 - T06：OcrManager OCR 管线编排器
 - T07：CloudOcrProvider 抽象层
+- T08：OcrTextConstraint 三种匹配模式约束
+- T09：OcrRecognizeAction 识别动作
+- T10-T13：注册表系统 + 全局注册 + 字符串资源
+- T14-T15：OCR 设置 UI + 区域选择器 UI
+- T16：设置页入口
+- T17：安全审查修复（ReDoS/API Key/线程安全）
+- T18：全量编译 + 305 测试通过
 - 地理围栏基础：GeofenceConstraint / GeofenceReferent / EventFilter 分支接入
 - 配置入口：高德 API Key 设置对话框
 
