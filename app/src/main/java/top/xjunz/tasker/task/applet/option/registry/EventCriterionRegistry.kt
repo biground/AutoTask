@@ -134,8 +134,16 @@ class EventCriterionRegistry(id: Int) : AppletOptionRegistry(id) {
         eventFilterOption(Event.EVENT_ON_LOCATION_ARRIVED, R.string.on_location_arrived)
             .withResult<GeofenceReferent>(R.string.location_event_details)
 
-    /* @AppletOrdinal(0x0005)
-     val primaryClipChanged =
-         eventFilterOption(Event.EVENT_ON_PRIMARY_CLIP_CHANGED, R.string.on_primary_clip_changed)
-             .withResult<String>(R.string.current_primary_clip_text)*/
+    @AppletOrdinal(0x0018)
+    val primaryClipChanged =
+        eventFilterOption(Event.EVENT_ON_PRIMARY_CLIP_CHANGED, R.string.on_primary_clip_changed)
+            .withResult<String>(R.string.current_primary_clip_text)
+
+    @AppletOrdinal(0x0019)
+    val manualTrigger =
+        eventFilterOption(Event.EVENT_ON_MANUAL_TRIGGER, R.string.on_manual_trigger)
+
+    @AppletOrdinal(0x001A)
+    val deviceBooted =
+        eventFilterOption(Event.EVENT_ON_DEVICE_BOOTED, R.string.on_device_booted)
 }

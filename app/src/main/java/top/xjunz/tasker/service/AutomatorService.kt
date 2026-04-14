@@ -10,6 +10,7 @@ import android.os.PowerManager.WakeLock
 import top.xjunz.tasker.bridge.OverlayToastBridge
 import top.xjunz.tasker.bridge.PowerManagerBridge
 import top.xjunz.tasker.engine.applet.base.AppletResult
+import top.xjunz.tasker.engine.runtime.Event
 import top.xjunz.tasker.engine.runtime.TaskRuntime
 import top.xjunz.tasker.engine.task.XTask
 import top.xjunz.tasker.task.applet.flow.ref.ComponentInfoWrapper
@@ -17,16 +18,20 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import top.xjunz.tasker.bridge.ContextBridge
+import top.xjunz.tasker.task.applet.option.AppletOptionFactory
 import top.xjunz.tasker.task.event.A11yEventDispatcher
+import top.xjunz.tasker.task.event.ClipboardEventDispatcher
 import top.xjunz.tasker.task.event.MetaEventDispatcher
 import top.xjunz.tasker.task.event.NetworkEventDispatcher
 import top.xjunz.tasker.task.event.PollEventDispatcher
 import top.xjunz.tasker.task.location.AmapApiKeyManager
 import top.xjunz.tasker.task.location.GeofenceConfigRepository
 import top.xjunz.tasker.task.location.LocationEventDispatcher
+import top.xjunz.tasker.task.mode.ModeChangeEventDispatcher
 import top.xjunz.tasker.task.runtime.ITaskCompletionCallback
 import top.xjunz.tasker.task.runtime.OneshotTaskScheduler
 import top.xjunz.tasker.task.runtime.ResidentTaskScheduler
+import top.xjunz.tasker.task.variable.VariableChangeEventDispatcher
 import top.xjunz.tasker.uiautomator.CoroutineUiAutomatorBridge
 
 /**
@@ -65,6 +70,7 @@ interface AutomatorService {
     fun suppressResidentTaskScheduler(suppress: Boolean)
 
     fun initEventDispatcher() {
+        val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
         eventDispatcher.registerEventDispatcher(a11yEventDispatcher)
         eventDispatcher.registerEventDispatcher(PollEventDispatcher(looper))
         eventDispatcher.registerEventDispatcher(NetworkEventDispatcher())
@@ -72,16 +78,29 @@ interface AutomatorService {
             LocationEventDispatcher(
                 AmapApiKeyManager(ContextBridge.getContext()),
                 GeofenceConfigRepository(ContextBridge.getContext()),
-                CoroutineScope(Dispatchers.IO + SupervisorJob())
+                serviceScope
             )
         )
-        //eventDispatcher.registerEventDispatcher(ClipboardEventDispatcher())
+        eventDispatcher.registerEventDispatcher(ClipboardEventDispatcher())
+        eventDispatcher.registerEventDispatcher(
+            VariableChangeEventDispatcher(
+                AppletOptionFactory.variableRepository,
+                serviceScope
+            )
+        )
+        eventDispatcher.registerEventDispatcher(
+            ModeChangeEventDispatcher(
+                AppletOptionFactory.modeRepository,
+                serviceScope
+            )
+        )
         eventDispatcher.addCallback(residentTaskScheduler)
         eventDispatcher.addCallback(oneshotTaskScheduler)
     }
 
     fun prepareWorkerMode(acquireWakeLock: Boolean) {
         initEventDispatcher()
+        eventDispatcher.dispatchEvents(Event.obtain(Event.EVENT_ON_DEVICE_BOOTED))
         if (acquireWakeLock) {
             acquireWakeLock()
         }

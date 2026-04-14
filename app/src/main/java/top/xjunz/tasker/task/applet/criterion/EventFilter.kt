@@ -47,6 +47,8 @@ class EventFilter(private val eventType: Int) : Applet() {
 
                 Event.EVENT_ON_TICK -> AppletResult.EMPTY_SUCCESS
 
+                Event.EVENT_ON_DEVICE_BOOTED, Event.EVENT_ON_MANUAL_TRIGGER -> AppletResult.EMPTY_SUCCESS
+
                 Event.EVENT_ON_WIFI_CONNECTED, Event.EVENT_ON_WIFI_DISCONNECTED -> {
                     AppletResult.succeeded(hit.getExtra(NetworkEventDispatcher.EXTRA_WIFI_SSID))
                 }

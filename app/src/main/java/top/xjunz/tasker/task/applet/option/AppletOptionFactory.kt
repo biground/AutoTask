@@ -47,9 +47,9 @@ object AppletOptionFactory : AppletFactory {
 
     private var preloaded = false
 
-    private val variableRepository: VariableRepository by lazy { InMemoryVariableRepository() }
+    val variableRepository: VariableRepository by lazy { InMemoryVariableRepository() }
 
-    private val modeRepository: ModeRepository by lazy { InMemoryModeRepository() }
+    val modeRepository: ModeRepository by lazy { InMemoryModeRepository() }
 
     val flowRegistry = BootstrapOptionRegistry()
 
