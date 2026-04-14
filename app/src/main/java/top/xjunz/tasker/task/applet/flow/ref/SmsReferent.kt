@@ -15,6 +15,9 @@ data class SmsReferent(
     val body: String
 ) : Referent {
 
+    override fun toString(): String =
+        "SmsReferent(sender=${sender.take(3)}****, body=${body.take(10)}...)"
+
     override fun getReferredValue(which: Int, runtime: TaskRuntime): Any? = when (which) {
         // 短信引用本身
         0 -> this

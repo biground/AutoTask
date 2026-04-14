@@ -188,4 +188,16 @@ class AlarmEventDispatcherTest {
         val result = Calendar.getInstance().apply { timeInMillis = nextTrigger }
         assertEquals(18, result.get(Calendar.DAY_OF_MONTH)) // 14 日之后最近的是 18 日
     }
+
+    // ─── 空集防护 ─────────────────────────────────────────────────
+
+    @Test(expected = IllegalArgumentException::class)
+    fun `Weekly 空 daysOfWeek 应抛出 IllegalArgumentException`() {
+        AlarmEventDispatcher.RepeatRule.Weekly(emptySet())
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun `Monthly 空 daysOfMonth 应抛出 IllegalArgumentException`() {
+        AlarmEventDispatcher.RepeatRule.Monthly(emptySet())
+    }
 }

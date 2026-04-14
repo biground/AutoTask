@@ -33,9 +33,17 @@ open class AlarmEventDispatcher : EventDispatcher() {
     sealed class RepeatRule {
         object Daily : RepeatRule()
         /** @param daysOfWeek Calendar.MONDAY..Calendar.SATURDAY 等 */
-        data class Weekly(val daysOfWeek: Set<Int>) : RepeatRule()
+        data class Weekly(val daysOfWeek: Set<Int>) : RepeatRule() {
+            init {
+                require(daysOfWeek.isNotEmpty()) { "daysOfWeek 不能为空" }
+            }
+        }
         /** @param daysOfMonth 1-31 */
-        data class Monthly(val daysOfMonth: Set<Int>) : RepeatRule()
+        data class Monthly(val daysOfMonth: Set<Int>) : RepeatRule() {
+            init {
+                require(daysOfMonth.isNotEmpty()) { "daysOfMonth 不能为空" }
+            }
+        }
     }
 
     private val context by lazy { ContextBridge.getContext() }
@@ -77,13 +85,17 @@ open class AlarmEventDispatcher : EventDispatcher() {
                 calendar.add(Calendar.DAY_OF_MONTH, 1)
             }
             is RepeatRule.Weekly -> {
+                var iterations = 0
                 do {
                     calendar.add(Calendar.DAY_OF_MONTH, 1)
+                    if (++iterations > 366) error("Weekly 循环超出安全上限")
                 } while (calendar.get(Calendar.DAY_OF_WEEK) !in rule.daysOfWeek)
             }
             is RepeatRule.Monthly -> {
+                var iterations = 0
                 do {
                     calendar.add(Calendar.DAY_OF_MONTH, 1)
+                    if (++iterations > 366) error("Monthly 循环超出安全上限")
                 } while (calendar.get(Calendar.DAY_OF_MONTH) !in rule.daysOfMonth)
             }
         }

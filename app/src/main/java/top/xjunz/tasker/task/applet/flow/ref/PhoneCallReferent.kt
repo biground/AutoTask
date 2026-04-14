@@ -15,6 +15,9 @@ data class PhoneCallReferent(
     val callState: Int
 ) : Referent {
 
+    override fun toString(): String =
+        "PhoneCallReferent(phoneNumber=${phoneNumber.take(3)}****, callState=$callState)"
+
     override fun getReferredValue(which: Int, runtime: TaskRuntime): Any? = when (which) {
         // 来电引用本身
         0 -> this

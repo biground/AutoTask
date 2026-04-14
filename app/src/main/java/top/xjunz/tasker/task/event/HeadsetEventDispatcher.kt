@@ -48,6 +48,8 @@ class HeadsetEventDispatcher : EventDispatcher() {
     }
 
     override fun destroy() {
-        context.unregisterReceiver(receiver)
+        try {
+            context.unregisterReceiver(receiver)
+        } catch (_: Exception) { }
     }
 }

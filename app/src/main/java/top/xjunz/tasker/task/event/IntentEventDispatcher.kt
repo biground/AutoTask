@@ -12,6 +12,7 @@ import android.util.Log
 import top.xjunz.tasker.bridge.ContextBridge
 import top.xjunz.tasker.engine.runtime.Event
 import top.xjunz.tasker.engine.task.EventDispatcher
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * 通用 Intent 事件分发器，支持动态注册任意 action 的广播监听。
@@ -28,7 +29,7 @@ open class IntentEventDispatcher : EventDispatcher() {
 
     private val context by lazy { ContextBridge.getContext() }
 
-    internal val receivers = HashMap<String, BroadcastReceiver>()
+    internal val receivers = ConcurrentHashMap<String, BroadcastReceiver>()
 
     /**
      * 处理收到 Intent 事件。提取为 internal 方法以便纯 JVM 测试。
@@ -84,13 +85,13 @@ open class IntentEventDispatcher : EventDispatcher() {
     }
 
     override fun destroy() {
-        receivers.forEach { (_, receiver) ->
+        val iterator = receivers.entries.iterator()
+        while (iterator.hasNext()) {
+            val entry = iterator.next()
             try {
-                context.unregisterReceiver(receiver)
-            } catch (_: IllegalArgumentException) {
-                // receiver 已注销
-            }
+                context.unregisterReceiver(entry.value)
+            } catch (_: Exception) { }
+            iterator.remove()
         }
-        receivers.clear()
     }
 }

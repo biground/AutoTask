@@ -15,6 +15,9 @@ data class BluetoothReferent(
     val macAddress: String
 ) : Referent {
 
+    override fun toString(): String =
+        "BluetoothReferent(deviceName=$deviceName, macAddress=${macAddress.take(8)}:XX:XX:XX)"
+
     override fun getReferredValue(which: Int, runtime: TaskRuntime): Any? = when (which) {
         // 蓝牙引用本身
         0 -> this

@@ -118,7 +118,9 @@ open class PhoneCallEventDispatcher : EventDispatcher() {
         if (callbackRegistered) {
             val telephonyManager = context.getSystemService(TelephonyManager::class.java)
             telephonyCallback?.let {
-                telephonyManager.unregisterTelephonyCallback(it)
+                try {
+                    telephonyManager.unregisterTelephonyCallback(it)
+                } catch (_: Exception) { }
             }
             telephonyCallback = null
             callbackRegistered = false
