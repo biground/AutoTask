@@ -1,6 +1,6 @@
 # AutoPilot 开发进度与上下文
 
-> 最近更新：2026-04-13
+> 最近更新：2026-04-14
 
 ---
 
@@ -95,6 +95,41 @@ export JAVA_HOME=/opt/homebrew/Cellar/openjdk@17/17.0.18/libexec/openjdk.jdk/Con
   - OcrManager：@Volatile 并发安全
 - **测试**: 305 个单测全部通过，0 回归
 
+### 4. 触发器批量实现 ✅（全部完成）
+
+- **计划文件**: `docs/plan/trigger-batch-implementation/plan.yaml`
+- **基础设施 (T01-T03)**:
+  - T01: 16 个事件常量 `Event.EVENT_ON_ALARM_FIRED`(20) ~ `EVENT_ON_MANUAL_TRIGGER`(35)
+  - T02: 26 个触发器字符串资源（事件名 + Referent 标签）
+  - T03: 7 个权限声明（SCHEDULE_EXACT_ALARM / BLUETOOTH_CONNECT / READ_PHONE_STATE / READ_CALL_LOG / RECEIVE_SMS / READ_SMS / USE_EXACT_ALARM）
+- **已有分发器启用 (T04)**:
+  - 启用 ClipboardEventDispatcher / VariableChangeEventDispatcher / ModeChangeEventDispatcher
+  - EventCriterionRegistry 新增 3 条目（primaryClipChanged / manualTrigger / deviceBooted）
+  - EventFilter 新增 DEVICE_BOOTED / MANUAL_TRIGGER 分支
+- **简单广播分发器 (T05-T07)**:
+  - T05: `ScreenEventDispatcher` — SCREEN_ON / SCREEN_OFF / USER_PRESENT
+  - T06: `PowerEventDispatcher` — POWER_CONNECTED / POWER_DISCONNECTED
+  - T07: `HeadsetEventDispatcher` — HEADSET_PLUG (state=0/1)
+- **复杂分发器 + Referent (T08-T12)**:
+  - T08: `BluetoothEventDispatcher` + `BluetoothReferent` — BT 状态/连接/断开，权限检查
+  - T09: `AlarmEventDispatcher` + `AlarmReferent` — 闹钟调度 + RepeatRule (Daily/Weekly/Monthly) + computeNextTriggerTime
+  - T10: `PhoneCallEventDispatcher` + `PhoneCallReferent` — TelephonyCallback API 31+，来电状态+号码
+  - T11: `SmsEventDispatcher` + `SmsReferent` — SMS_RECEIVED 广播，PDU 解析多段合并
+  - T12: `IntentEventDispatcher` + `IntentReferent` — 动态 IntentFilter，用户可配置 action
+- **集成注册 (T13)**:
+  - AutomatorService 注册 8 个新分发器
+  - EventFilter 新增 12 个 when 分支（简单→EMPTY_SUCCESS，复杂→Referent）
+  - EventCriterionRegistry 新增 14 个 @AppletOrdinal 条目 (0x001B ~ 0x0028)
+- **验证 (T14-T15)**:
+  - T14: 轮询触发器验证 — PollEventDispatcher + TimeCriterionRegistry + GlobalCriterionRegistry MVP 可行
+  - T15: 全量编译+测试 — 364 tests, 0 failures
+- **安全审查 (T16)**:
+  - AlarmEventDispatcher: require 非空集 + 循环迭代上限（防 ANR）
+  - 3 个简单 Dispatcher + PhoneCallEventDispatcher: destroy() 异常保护
+  - IntentEventDispatcher: ConcurrentHashMap 线程安全
+  - PhoneCallReferent / SmsReferent / BluetoothReferent: toString() PII 脱敏
+- **测试**: 364 个单测全部通过（基线 305 → +59 新测试），0 回归
+
 ---
 
 ## 关键架构模式
@@ -138,13 +173,16 @@ EventFilter (按 event.type 路由)
 |---|---|---|
 | 变量/模式系统 | `docs/plan/variable-mode-system/plan.yaml` | ✅ 全部完成 |
 | 地理围栏系统 | `docs/plan/geofence-system/plan.yaml` | ✅ 全部完成 |
-| OCR 屏幕识别 | `docs/plan/ocr-screen-recognition/plan.yaml` | 🔄 Wave 2 完成 |
+| OCR 屏幕识别 | `docs/plan/ocr-screen-recognition/plan.yaml` | ✅ 全部完成 |
+| 触发器批量实现 | `docs/plan/trigger-batch-implementation/plan.yaml` | ✅ 全部完成 |
 | AutoTask 逆向研究 | `docs/plan/autotask-reverse-research/` | 参考资料 |
 
 ---
 
 ## 下一步
 
-1. 继续 OCR 计划 Wave 3+ (查看 `docs/plan/ocr-screen-recognition/plan.yaml`)
-2. MVP 路线图中待实施功能（参见 `docs/roadmap.md`）
-3. 手机测试反馈后的 bug 修复
+1. MVP 路线图中待实施功能（参见 `docs/roadmap.md`）
+2. 动作 (Actions) 模块实现
+3. 约束 (Constraints) 模块实现
+4. Android 基础设施（前台服务、通知管理等）
+5. 手机测试反馈后的 bug 修复
