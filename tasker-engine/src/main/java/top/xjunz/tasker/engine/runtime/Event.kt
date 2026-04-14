@@ -84,6 +84,23 @@ class Event private constructor(
 
         const val EVENT_ON_LOCATION_ARRIVED = 19
 
+        const val EVENT_ON_ALARM_FIRED = 20
+        const val EVENT_ON_DEVICE_BOOTED = 21
+        const val EVENT_ON_SCREEN_ON = 22
+        const val EVENT_ON_SCREEN_OFF = 23
+        const val EVENT_ON_SCREEN_UNLOCKED = 24
+        const val EVENT_ON_BT_STATE_CHANGED = 25
+        const val EVENT_ON_BT_DEVICE_CONNECTED = 26
+        const val EVENT_ON_BT_DEVICE_DISCONNECTED = 27
+        const val EVENT_ON_CALL_STATE_CHANGED = 28
+        const val EVENT_ON_SMS_RECEIVED = 29
+        const val EVENT_ON_POWER_CONNECTED = 30
+        const val EVENT_ON_POWER_DISCONNECTED = 31
+        const val EVENT_ON_HEADSET_PLUGGED = 32
+        const val EVENT_ON_HEADSET_UNPLUGGED = 33
+        const val EVENT_ON_INTENT_RECEIVED = 34
+        const val EVENT_ON_MANUAL_TRIGGER = 35
+
         fun obtain(
             eventType: Int,
             pkgName: String? = null,

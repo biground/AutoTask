@@ -715,6 +715,34 @@
     <string name="no_geofences_hint">暂无围栏，点击新建</string>
     <string name="radius_format">半径：%dm</string>
 
+    <!-- 触发器事件名称 -->
+    <string name="on_alarm_fired">闹钟触发</string>
+    <string name="on_device_booted">设备开机</string>
+    <string name="on_screen_on">屏幕亮起</string>
+    <string name="on_screen_off">屏幕熄灭</string>
+    <string name="on_screen_unlocked">屏幕解锁</string>
+    <string name="on_bt_state_changed">蓝牙状态变化</string>
+    <string name="on_bt_device_connected">蓝牙设备连接</string>
+    <string name="on_bt_device_disconnected">蓝牙设备断开</string>
+    <string name="on_call_state_changed">来电状态变化</string>
+    <string name="on_sms_received">短信接收</string>
+    <string name="on_power_connected">电源连接</string>
+    <string name="on_power_disconnected">电源断开</string>
+    <string name="on_headset_plugged">耳机插入</string>
+    <string name="on_headset_unplugged">耳机拔出</string>
+    <string name="on_intent_received">接收 Intent</string>
+    <string name="on_manual_trigger">手动触发</string>
+    <!-- Referent 字段标签 -->
+    <string name="bt_device_name">蓝牙设备名</string>
+    <string name="bt_mac_address">蓝牙 MAC 地址</string>
+    <string name="alarm_trigger_time">闹钟触发时间</string>
+    <string name="phone_number">电话号码</string>
+    <string name="call_state">通话状态</string>
+    <string name="sms_sender">短信发送方</string>
+    <string name="sms_body">短信内容</string>
+    <string name="intent_action">Intent Action</string>
+    <string name="intent_data_uri">Intent Data URI</string>
+
     <!-- OCR 屏幕识别 -->
     <string name="screen_ocr_criteria">屏幕 OCR 识别</string>
     <string name="screen_ocr_actions">屏幕 OCR 操作</string>
