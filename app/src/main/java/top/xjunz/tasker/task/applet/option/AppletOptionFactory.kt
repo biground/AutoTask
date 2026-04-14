@@ -30,6 +30,7 @@ import top.xjunz.tasker.task.applet.option.registry.ShellCmdActionRegistry
 import top.xjunz.tasker.task.applet.option.registry.TextActionRegistry
 import top.xjunz.tasker.task.applet.option.registry.TextCriterionRegistry
 import top.xjunz.tasker.task.applet.option.registry.TimeCriterionRegistry
+import top.xjunz.tasker.task.applet.option.registry.UiActionRegistry
 import top.xjunz.tasker.task.applet.option.registry.UiObjectActionRegistry
 import top.xjunz.tasker.task.applet.option.registry.UiObjectCriterionRegistry
 import top.xjunz.tasker.task.applet.option.registry.UiObjectFlowRegistry
@@ -136,6 +137,9 @@ object AppletOptionFactory : AppletFactory {
     private val screenOcrActionRegistry =
         ScreenOcrActionRegistry(BootstrapOptionRegistry.ID_SCREEN_OCR_ACTION_REGISTRY)
 
+    private val uiActionRegistry =
+        UiActionRegistry(BootstrapOptionRegistry.ID_UI_ACTION_REGISTRY)
+
     val uiObjectFlowRegistry =
         UiObjectFlowRegistry(BootstrapOptionRegistry.ID_UI_OBJECT_FLOW_REGISTRY)
 
@@ -167,6 +171,7 @@ object AppletOptionFactory : AppletFactory {
         variableActionRegistry,
         modeActionRegistry,
         screenOcrActionRegistry,
+        uiActionRegistry,
         /* control */
         uiObjectFlowRegistry,
     )
