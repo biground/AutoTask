@@ -54,6 +54,17 @@ class HttpRequestAction : ArgumentAction() {
             return AppletResult.EMPTY_FAILURE
         }
 
+        // SSRF 防护：禁止访问私有网络地址
+        val host = parsedUrl.host ?: return AppletResult.EMPTY_FAILURE
+        val addr = try {
+            java.net.InetAddress.getByName(host)
+        } catch (_: Exception) {
+            return AppletResult.EMPTY_FAILURE
+        }
+        if (addr.isLoopbackAddress || addr.isLinkLocalAddress || addr.isSiteLocalAddress) {
+            return AppletResult.EMPTY_FAILURE
+        }
+
         return try {
             val connection = parsedUrl.openConnection() as HttpURLConnection
             try {

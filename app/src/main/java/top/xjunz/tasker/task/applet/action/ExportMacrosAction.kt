@@ -13,7 +13,9 @@ import top.xjunz.tasker.engine.dto.XTaskDTO
 import top.xjunz.tasker.engine.dto.XTaskJson
 import top.xjunz.tasker.engine.dto.toDTO
 import top.xjunz.tasker.engine.runtime.TaskRuntime
+import top.xjunz.tasker.bridge.ContextBridge
 import top.xjunz.tasker.task.storage.TaskStorage
+import android.os.Environment
 import java.io.File
 import java.io.IOException
 
@@ -28,8 +30,18 @@ class ExportMacrosAction : Action() {
         val filePath = getArgument(0, runtime) as? String
             ?: return AppletResult.EMPTY_FAILURE
 
-        // 安全: 验证文件路径不含 path traversal
-        if (filePath.contains("..")) {
+        // 安全: path traversal 防护 — 基于 canonicalPath 白名单验证
+        val file = File(filePath)
+        val canonicalPath = try {
+            file.canonicalPath
+        } catch (_: IOException) {
+            return AppletResult.EMPTY_FAILURE
+        }
+        val allowedDirs = listOf(
+            ContextBridge.getContext().getExternalFilesDir(null)?.canonicalPath,
+            Environment.getExternalStorageDirectory().canonicalPath
+        ).filterNotNull()
+        if (allowedDirs.none { canonicalPath.startsWith(it) }) {
             return AppletResult.EMPTY_FAILURE
         }
 
@@ -39,11 +51,11 @@ class ExportMacrosAction : Action() {
                 val dtoList: List<XTaskDTO> = tasks.map { it.toDTO() }
                 val json = XTaskJson.encodeToString(dtoList)
 
-                val file = File(filePath)
-                file.parentFile?.let { parent ->
+                val outFile = File(filePath)
+                outFile.parentFile?.let { parent ->
                     if (!parent.exists()) parent.mkdirs()
                 }
-                file.writeText(json, Charsets.UTF_8)
+                outFile.writeText(json, Charsets.UTF_8)
             }
             AppletResult.EMPTY_SUCCESS
         } catch (_: IOException) {

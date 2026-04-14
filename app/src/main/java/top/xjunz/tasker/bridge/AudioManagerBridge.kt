@@ -21,7 +21,15 @@ object AudioManagerBridge {
         get() = audioManager.isWiredHeadsetOn || audioManager.isBluetoothA2dpOn
 
     fun setStreamVolume(streamType: Int, volume: Int) {
-        audioManager.setStreamVolume(streamType, volume, 0)
+        // 安全: 校验 streamType 有效范围
+        val validStreams = intArrayOf(
+            AudioManager.STREAM_VOICE_CALL, AudioManager.STREAM_SYSTEM,
+            AudioManager.STREAM_RING, AudioManager.STREAM_MUSIC,
+            AudioManager.STREAM_ALARM, AudioManager.STREAM_NOTIFICATION
+        )
+        if (streamType !in validStreams) return
+        val maxVol = audioManager.getStreamMaxVolume(streamType)
+        audioManager.setStreamVolume(streamType, volume.coerceIn(0, maxVol), 0)
     }
 
     fun setRingerMode(mode: Int) {

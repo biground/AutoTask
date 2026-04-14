@@ -8,6 +8,7 @@ import android.media.MediaPlayer
 import top.xjunz.tasker.engine.applet.action.SingleArgAction
 import top.xjunz.tasker.engine.applet.base.AppletResult
 import top.xjunz.tasker.engine.runtime.TaskRuntime
+import java.io.File
 import java.io.IOException
 
 /**
@@ -18,6 +19,12 @@ class PlaySoundAction : SingleArgAction<String>() {
 
     override suspend fun doAction(arg: String?, runtime: TaskRuntime): AppletResult {
         val filePath = arg ?: return AppletResult.EMPTY_FAILURE
+
+        // 安全: 路径校验 — 禁止 path traversal，文件必须存在
+        if (filePath.contains("..") || !File(filePath).exists()) {
+            return AppletResult.EMPTY_FAILURE
+        }
+
         return try {
             val player = MediaPlayer()
             player.setOnCompletionListener { it.release() }
