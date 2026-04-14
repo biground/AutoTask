@@ -371,7 +371,7 @@ tasks:
     conflicts_with: []
     context_files:
       - path: "app/src/main/java/top/xjunz/tasker/service/A11yAutomatorService.kt"
-        description: "AccessibilityService 实现，需在 onCreate 中启动前台服务"
+        description: "AccessibilityService 实现，需在 onServiceConnected() 的 worker mode 分支启动前台服务"
       - path: "app/src/main/java/top/xjunz/tasker/service/AutomatorService.kt"
         description: "AutomatorService 接口定义"
       - path: "app/src/main/AndroidManifest.xml"

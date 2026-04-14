@@ -91,4 +91,16 @@ class FileActionRegistry(id: Int) : AppletOptionRegistry(id) {
     }.withHelperText(R.string.tip_move_file)
         .hasCompositeTitle()
         .shizukuOnly()
+
+    @AppletOrdinal(0x0004)
+    val writeFile = appletOption(R.string.format_write_file) {
+        FileAction(FileAction.ACTION_WRITE)
+    }.withUnaryArgument<String>(
+        R.string.file_path, R.string.file, variantValueType = VariantArgType.TEXT_FILE_PATH
+    ).withUnaryArgument<String>(
+        R.string.file_content
+    ).withUnaryArgument<Int>(
+        R.string.write_mode
+    ).hasCompositeTitle()
+        .shizukuOnly()
 }

@@ -132,6 +132,15 @@ class MainActivity : AppCompatActivity(), DialogStackManager.Callback {
             }
         app.setAppTheme(theme)
         setContentView(binding.root)
+        if (!Preferences.isOnboardingCompleted) {
+            showOnboarding()
+            return
+        }
+        initMainContent()
+    }
+
+    /** 引导完成或已完成时，初始化主界面内容 */
+    private fun initMainContent() {
         initViews()
         observeData()
         initServiceController()
@@ -144,6 +153,25 @@ class MainActivity : AppCompatActivity(), DialogStackManager.Callback {
             mainViewModel.requestImportTask.value = intent
         }
         GlobalCrashHandler.init()
+    }
+
+    /** 显示首次启动引导流程 */
+    private fun showOnboarding() {
+        binding.coordinatorMain.visibility = View.GONE
+        binding.fragmentOnboarding.visibility = View.VISIBLE
+        val fragment = OnboardingFragment()
+        fragment.onCompleted = {
+            // 引导完成，切换回主内容
+            binding.fragmentOnboarding.visibility = View.GONE
+            binding.coordinatorMain.visibility = View.VISIBLE
+            supportFragmentManager.beginTransaction()
+                .remove(fragment)
+                .commitNow()
+            initMainContent()
+        }
+        supportFragmentManager.beginTransaction()
+            .replace(R.id.fragment_onboarding, fragment)
+            .commitNow()
     }
 
     private var isExited = false

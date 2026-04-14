@@ -33,6 +33,8 @@ object Preferences {
 
     var privacyPolicyAcknowledged by global.primitive("privacy_policy_acknowledged", false)
 
+    var isOnboardingCompleted by global.primitive("onboarding_completed", false)
+
     var enableWakeLock by global.primitive("enable_wake_lock", false)
 
     var recordedVersionCode by global.primitive("recorded_version_code", -1)

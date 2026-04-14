@@ -6,7 +6,12 @@
     xmlns:app="http://schemas.android.com/apk/res-auto"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <FrameLayout
+        android:layout_width="match_parent"
+        android:layout_height="match_parent">
+
     <androidx.coordinatorlayout.widget.CoordinatorLayout
+        android:id="@+id/coordinator_main"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:background="?colorSurface"
@@ -99,4 +104,13 @@
             app:menu="@menu/task_bottom_bar" />
 
     </androidx.coordinatorlayout.widget.CoordinatorLayout>
+
+    <!-- 引导页容器，首次启动时覆盖主内容 -->
+    <androidx.fragment.app.FragmentContainerView
+        android:id="@+id/fragment_onboarding"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:visibility="gone" />
+
+    </FrameLayout>
 </layout>

@@ -157,6 +157,11 @@ class A11yAutomatorService : AccessibilityService(), AutomatorService, IUiAutoma
             uiAutomationHidden.connect()
 
             if (!isInspectorMode) {
+                ForegroundNotificationManager.createNotificationChannel()
+                val notification = ForegroundNotificationManager.buildForegroundNotification(
+                    activeMacroCount = 0, isPaused = false
+                )
+                startForeground(ForegroundNotificationManager.NOTIFICATION_ID, notification)
                 prepareWorkerMode(Preferences.enableWakeLock)
             }
             a11yEventDispatcher.activate(isInspectorMode)

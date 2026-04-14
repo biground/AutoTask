@@ -1,0 +1,102 @@
+<?xml version="1.0" encoding="utf-8"?>
+<layout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <androidx.constraintlayout.widget.ConstraintLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginHorizontal="8dp"
+        android:layout_marginVertical="4dp"
+        android:background="@drawable/bg_surface"
+        android:paddingHorizontal="16dp"
+        android:paddingVertical="12dp">
+
+        <!-- 变量名 -->
+        <TextView
+            android:id="@+id/tv_variable_name"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:textAppearance="@style/TextAppearance.Material3.TitleMedium"
+            android:textColor="?colorPrimary"
+            app:layout_constraintEnd_toStartOf="@+id/tv_variable_type"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintTop_toTopOf="parent"
+            tools:text="myVariable" />
+
+        <!-- 变量类型标签 -->
+        <com.google.android.material.chip.Chip
+            android:id="@+id/tv_variable_type"
+            style="@style/Widget.Material3.Chip.Assist"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:checkable="false"
+            android:clickable="false"
+            app:layout_constraintBaseline_toBaselineOf="@id/tv_variable_name"
+            app:layout_constraintEnd_toEndOf="parent"
+            tools:text="STRING" />
+
+        <!-- 变量作用域 -->
+        <TextView
+            android:id="@+id/tv_variable_scope"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:textAppearance="@style/TextAppearance.Material3.LabelSmall"
+            android:textColor="?android:textColorSecondary"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintTop_toBottomOf="@id/tv_variable_name"
+            tools:text="GLOBAL" />
+
+        <!-- 变量当前值 -->
+        <TextView
+            android:id="@+id/tv_variable_value"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:background="@drawable/bg_surface"
+            android:backgroundTint="?colorSurfaceVariant"
+            android:ellipsize="end"
+            android:maxLines="2"
+            android:paddingHorizontal="8dp"
+            android:paddingVertical="4dp"
+            android:textAppearance="@style/TextAppearance.Material3.BodyMedium"
+            app:layout_constraintEnd_toEndOf="parent"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintTop_toBottomOf="@id/tv_variable_scope"
+            tools:text="hello world" />
+
+        <!-- 编辑按钮 -->
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btn_edit"
+            style="@style/Widget.Material3.Button.OutlinedButton.Icon"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:layout_marginEnd="8dp"
+            android:text="@string/edit"
+            app:icon="@drawable/ic_edit_24dp"
+            app:iconGravity="textStart"
+            app:iconPadding="4dp"
+            app:iconTint="?colorPrimary"
+            app:layout_constraintEnd_toStartOf="@+id/btn_delete"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintTop_toBottomOf="@id/tv_variable_value" />
+
+        <!-- 删除按钮 -->
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btn_delete"
+            style="@style/Widget.Material3.Button.OutlinedButton.Icon"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/delete"
+            app:icon="@drawable/ic_delete_forever_24px"
+            app:iconGravity="textStart"
+            app:iconPadding="4dp"
+            app:iconTint="?colorError"
+            app:layout_constraintEnd_toEndOf="parent"
+            app:layout_constraintTop_toBottomOf="@id/tv_variable_value" />
+
+    </androidx.constraintlayout.widget.ConstraintLayout>
+</layout>

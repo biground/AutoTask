@@ -10,6 +10,7 @@ import top.xjunz.tasker.engine.runtime.Event
 import top.xjunz.tasker.task.applet.anno.AppletOrdinal
 import top.xjunz.tasker.task.applet.criterion.EventFilter
 import top.xjunz.tasker.task.applet.criterion.FileEventCriterion
+import top.xjunz.tasker.task.applet.flow.ref.BatteryReferent
 import top.xjunz.tasker.task.applet.flow.ref.BluetoothReferent
 import top.xjunz.tasker.task.applet.flow.ref.ComponentInfoWrapper
 import top.xjunz.tasker.task.applet.flow.ref.GeofenceReferent
@@ -224,4 +225,10 @@ class EventCriterionRegistry(id: Int) : AppletOptionRegistry(id) {
             .withResult<IntentReferent>(R.string.on_intent_received)
             .withResult<String>(R.string.intent_action)
             .withResult<String>(R.string.intent_data_uri)
+
+    @AppletOrdinal(0x0029)
+    val batteryLevelChanged =
+        eventFilterOption(Event.EVENT_ON_BATTERY_LEVEL_CHANGED, R.string.on_battery_level_changed)
+            .withResult<BatteryReferent>(R.string.on_battery_level_changed)
+            .withResult<Int>(R.string.battery_level)
 }

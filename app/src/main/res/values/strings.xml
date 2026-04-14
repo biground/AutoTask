@@ -744,6 +744,8 @@
     <string name="sms_body">短信内容</string>
     <string name="intent_action">Intent Action</string>
     <string name="intent_data_uri">Intent Data URI</string>
+    <string name="on_battery_level_changed">电量变化</string>
+    <string name="battery_level">电池电量</string>
 
     <!-- OCR 屏幕识别 -->
     <string name="screen_ocr_criteria">屏幕 OCR 识别</string>
@@ -833,4 +835,85 @@
     <string name="http_response_body">响应内容</string>
     <string name="media_action">媒体操作</string>
     <string name="macro_name">宏名称</string>
+    <string name="format_write_file">写入内容到%s</string>
+    <string name="file_content">文件内容</string>
+    <string name="write_mode">写入模式</string>
+    <string name="write_mode_overwrite">覆盖</string>
+    <string name="write_mode_append">追加</string>
+    <!-- 前台服务通知 -->
+    <string name="notification_channel_service">AutoPilot 服务</string>
+    <string name="autopilot_running">AutoPilot 运行中</string>
+    <string name="autopilot_paused">AutoPilot 已暂停</string>
+    <string name="n_macros_active">%d 个宏正在运行</string>
+    <string name="action_pause">暂停</string>
+    <string name="action_resume">恢复</string>
+    <!-- 电池优化白名单引导 -->
+    <string name="battery_optimization_guide_title">忽略电池优化</string>
+    <string name="battery_optimization_guide_desc">为确保后台任务稳定运行，请将本应用加入电池优化白名单。否则系统可能会在后台杀死服务，导致自动任务无法正常执行。</string>
+    <string name="go_to_settings">前往设置</string>
+    <string name="remind_later">稍后</string>
+    <string name="battery_optimization_enabled">✓ 已加入白名单</string>    <!-- 特殊权限引导对话框 -->
+    <string name="perm_guide_title">特殊权限授权</string>
+    <string name="perm_guide_desc">以下权限是应用正常运行的必要条件，请逐一授予。</string>
+    <string name="perm_grant">前往授予</string>
+    <string name="perm_granted">已授予</string>
+    <string name="perm_not_granted">未授予</string>
+    <!-- 无障碍服务 -->
+    <string name="perm_a11y_title">无障碍服务</string>
+    <string name="perm_a11y_desc">用于执行 UI 自动化操作，如点击、滑动、读取界面元素等。</string>
+    <!-- 电池优化白名单 -->
+    <string name="perm_battery_title">忽略电池优化</string>
+    <string name="perm_battery_desc">防止系统在后台杀死服务，确保自动任务持续稳定运行。</string>
+    <!-- 勿扰模式权限 -->
+    <string name="perm_dnd_title">勿扰模式访问</string>
+    <string name="perm_dnd_desc">允许应用读取并修改系统勿扰（免打扰）策略，用于静音相关自动化任务。</string>
+    <!-- 悬浮窗权限 -->
+    <string name="perm_overlay_title">悬浮窗显示</string>
+    <string name="perm_overlay_desc">允许应用在其他应用上方显示悬浮窗，用于浮动检查器等功能。</string>
+    <!-- 修改系统设置权限 -->
+    <string name="perm_write_settings_title">修改系统设置</string>
+    <string name="perm_write_settings_desc">允许应用修改亮度、音量等系统设置，支持相关自动化任务。</string>
+
+    <!-- 引导页 -->
+    <string name="onboarding_welcome_title">欢迎使用自动任务</string>
+    <string name="onboarding_welcome_desc">一款强大的 Android 自动化引擎，让日常操作一键完成。</string>
+    <string name="onboarding_feature_title">三大核心概念</string>
+    <string name="onboarding_feature_desc">触发器 — 满足条件时自动启动\n动作 — 执行具体操作\n约束 — 限制执行范围\n三者灵活组合，打造您的专属自动化任务。</string>
+    <string name="onboarding_permission_title">权限设置</string>
+    <string name="onboarding_permission_desc">为确保自动任务稳定运行，需要授予几项系统权限。点击下方按钮配置。</string>
+    <string name="onboarding_done_title">准备就绪</string>
+    <string name="onboarding_done_desc">一切就绪！现在可以开始创建您的第一个自动任务了。</string>
+    <string name="onboarding_next">下一步</string>
+    <string name="onboarding_get_started">开始使用</string>
+    <string name="onboarding_setup_permissions">配置权限</string>
+    <string name="perm_guide_done">完成</string>
+
+    <!-- 变量管理器 -->
+    <string name="manage_variables">变量管理</string>
+    <string name="search_variable">搜索变量</string>
+    <string name="add_variable">添加变量</string>
+    <string name="edit_variable">编辑变量</string>
+    <string name="no_variables">暂无变量</string>
+    <string name="variable_type_all">全部</string>
+    <string name="variable_type_boolean">布尔</string>
+    <string name="variable_type_integer">整数</string>
+    <string name="variable_type_decimal">小数</string>
+    <string name="variable_type_string">字符串</string>
+    <string name="variable_scope_global">全局</string>
+    <string name="variable_scope_local">局部</string>
+    <string name="prompt_delete_variable">确定要删除变量 <b>%s</b> 吗？<b>此操作不可撤销</b>。</string>
+    <string name="variable_name_label">变量名</string>
+    <string name="variable_value_label">变量值</string>
+    <string name="variable_type_readonly_hint">该类型暂不支持编辑（MVP 仅支持 String/Int/Boolean）</string>
+
+    <!-- 日志查看器 -->
+    <string name="log_filter_all">全部</string>
+    <string name="log_filter_info">信息</string>
+    <string name="log_filter_warn">警告</string>
+    <string name="log_filter_error">错误</string>
+    <string name="log_search_hint">搜索日志内容…</string>
+    <string name="log_sort_newest_first">最新在前</string>
+    <string name="log_sort_oldest_first">最旧在前</string>
+    <string name="format_log_match_count">找到 %d 处匹配</string>
+    <string name="log_no_matches">无匹配结果</string>
 </resources>

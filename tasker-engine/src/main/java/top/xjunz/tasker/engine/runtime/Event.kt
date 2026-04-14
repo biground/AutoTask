@@ -100,6 +100,7 @@ class Event private constructor(
         const val EVENT_ON_HEADSET_UNPLUGGED = 33
         const val EVENT_ON_INTENT_RECEIVED = 34
         const val EVENT_ON_MANUAL_TRIGGER = 35
+        const val EVENT_ON_BATTERY_LEVEL_CHANGED = 36
 
         fun obtain(
             eventType: Int,

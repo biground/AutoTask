@@ -21,6 +21,7 @@ import top.xjunz.tasker.bridge.ContextBridge
 import top.xjunz.tasker.task.applet.option.AppletOptionFactory
 import top.xjunz.tasker.task.event.A11yEventDispatcher
 import top.xjunz.tasker.task.event.AlarmEventDispatcher
+import top.xjunz.tasker.task.event.BatteryEventDispatcher
 import top.xjunz.tasker.task.event.BluetoothEventDispatcher
 import top.xjunz.tasker.task.event.ClipboardEventDispatcher
 import top.xjunz.tasker.task.event.HeadsetEventDispatcher
@@ -104,6 +105,7 @@ interface AutomatorService {
         )
         eventDispatcher.registerEventDispatcher(ScreenEventDispatcher())
         eventDispatcher.registerEventDispatcher(PowerEventDispatcher())
+        eventDispatcher.registerEventDispatcher(BatteryEventDispatcher())
         eventDispatcher.registerEventDispatcher(HeadsetEventDispatcher())
         eventDispatcher.registerEventDispatcher(BluetoothEventDispatcher())
         eventDispatcher.registerEventDispatcher(AlarmEventDispatcher())
