@@ -1,6 +1,6 @@
 # AutoPilot 开发进度与上下文
 
-> 最近更新：2026-04-14
+> 最近更新：2026-04-14（动作+约束批量实现完成）
 
 ---
 
@@ -130,6 +130,47 @@ export JAVA_HOME=/opt/homebrew/Cellar/openjdk@17/17.0.18/libexec/openjdk.jdk/Con
   - PhoneCallReferent / SmsReferent / BluetoothReferent: toString() PII 脱敏
 - **测试**: 364 个单测全部通过（基线 305 → +59 新测试），0 回归
 
+### 5. 动作+约束批量实现 ✅（全部完成）
+
+- **计划文件**: `docs/plan/action-constraint-batch/plan.yaml`
+- **3 个新 Registry**:
+  - `SoundActionRegistry` (0x5C) — 5 个动作: volumeChange, silentVibrateMode, doNotDisturb, speakText, playSound
+  - `UiActionRegistry` (0x5D) — 2 个动作: displayNotification, displayDialog
+  - `NetworkActionRegistry` (0x5E) — 1 个动作: httpRequest
+- **4 个新 Bridge**:
+  - `AudioManagerBridge` — 音频管理 + 媒体控制
+  - `TtsBridge` — TTS 语音合成
+  - `NotificationManagerBridge` — 系统通知
+  - `OverlayDialogBridge` — Overlay 对话框
+- **18 个新动作**:
+  - 设备设置 (6): setAutoRotate, toggleBluetooth, setBrightness, toggleDarkTheme, toggleWifi, toggleTorch
+  - 声音 (5): volumeChange, silentVibrateMode, doNotDisturb, speakText, playSound
+  - UI (3): displayNotification, displayDialog, (Toast 验证已有)
+  - 网络 (1): httpRequest
+  - 内部控制 (3): controlMedia, toggleMacro, exportMacros
+- **6 个新约束**:
+  - 全局 (5): isDeviceLocked, isHeadphoneConnected, isDarkMode, callState, isMacroRunning
+  - 网络 (1): isAirplaneMode
+- **修复**:
+  - ControlActionRegistry ordinal 冲突 (pauseFor 0x0020→0x0021)
+  - toggleTorch 与 waitForIdle 的 appletId hash 碰撞
+  - 4 个安全修复: SSRF 私有地址过滤, 路径遍历防护增强, 音量范围校验
+- **测试**: 379 个单测全部通过（基线 364 → +15 新测试），0 回归
+
+---
+
+## MVP 完成度评估
+
+| 分类 | MVP 目标 | 已实现 | 完成度 | 说明 |
+|---|---|---|---|---|
+| 引擎核心 | 31 | ~31 | ~100% | 基线 + 变量/模式系统覆盖 |
+| 触发器 | 19 | ~17 | ~90% | 批量实现完成，BatteryLevel/WiFiState 待接入 |
+| 动作 | 28 | ~24 | ~85% | 批量实现 +18，剩余 Screen On/Off 等基线补齐 |
+| 约束条件 | 17 | ~13 | ~75% | 批量实现 +6，剩余 BatteryLevel/PowerConnected/TimeOfDay/DayOfWeek |
+| Android 基础设施 | 7 | ~3 | ~43% | 前台服务/权限引导待完善 |
+| 设计系统与 UI | 16 | ~4 | ~25% | 基础 UI 已有，设计系统待建设 |
+| **MVP 合计** | **118** | **~92** | **~78%** | |
+
 ---
 
 ## 关键架构模式
@@ -175,14 +216,16 @@ EventFilter (按 event.type 路由)
 | 地理围栏系统 | `docs/plan/geofence-system/plan.yaml` | ✅ 全部完成 |
 | OCR 屏幕识别 | `docs/plan/ocr-screen-recognition/plan.yaml` | ✅ 全部完成 |
 | 触发器批量实现 | `docs/plan/trigger-batch-implementation/plan.yaml` | ✅ 全部完成 |
+| 动作+约束批量实现 | `docs/plan/action-constraint-batch/plan.yaml` | ✅ 全部完成 |
 | AutoTask 逆向研究 | `docs/plan/autotask-reverse-research/` | 参考资料 |
 
 ---
 
 ## 下一步
 
-1. MVP 路线图中待实施功能（参见 `docs/roadmap.md`）
-2. 动作 (Actions) 模块实现
-3. 约束 (Constraints) 模块实现
-4. Android 基础设施（前台服务、通知管理等）
-5. 手机测试反馈后的 bug 修复
+1. 剩余触发器接入: BatteryLevel / WiFi State Change 事件分发器
+2. 剩余约束补齐: BatteryLevel / PowerConnected / TimeOfDay / DayOfWeek
+3. 基线动作验证: Screen On/Off 等 AutoTask 已有动作的兼容性确认
+4. Android 基础设施: 前台服务常驻通知 / Notification Listener / 权限引导
+5. 设计系统与 UI: iOS 风格视觉体系 / 宏编辑器 / 设置界面
+6. 手机端集成测试与 bug 修复
