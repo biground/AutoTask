@@ -1,0 +1,927 @@
+plan_id: mvp-infra-completion
+objective: |
+  完成 MVP 收尾批次 A 的 8 个高优先级任务，将 MVP 完成度从 83% 提升到 ~95%。
+  涵盖：Battery Level 触发器、Write to File 动作、前台服务保活通知、电池优化白名单引导、
+  特殊权限引导、首次启动引导流程、变量管理界面、日志查看器完善。
+created_at: "2026-04-14"
+created_by: gem-planner
+status: pending_approval
+research_confidence: high
+
+plan_metrics:
+  total_tasks: 12
+  total_waves: 5
+  wave_1_task_count: 5
+  total_dependencies: 12
+  risk_score: medium
+
+tldr: |
+  12 个任务分 5 波执行，覆盖 8 个 MVP 缺口功能。
+  Wave 1 (5 任务): 引擎层 + 权限引导 — Battery Level 触发器 + Write to File 动作 + 前台服务保活通知 + 电池优化白名单引导 + 特殊权限引导对话框，可全并行。
+  Wave 2 (3 任务): UI 功能 + 引导流程 — 首次启动引导流程 (T06 依赖 T05) + 变量管理界面 + 日志查看器完善，T07∥T08 并行。
+  Wave 3 (1 任务): 集成注册 — BatteryEventDispatcher 注册到 AutomatorService + strings.xml 汇总。
+  Wave 4 (1 任务): 全量验证 — 全量编译 + 全量测试。
+  Wave 5 (2 任务): 收尾 — 提交推送 + 进度文档更新。
+  关键路径: T05→T06→T09→T10→T11→T12。最大并行度 5 (Wave 1)。
+
+open_questions:
+  - "Android 16 前台服务的 foregroundServiceType 是否需要额外声明（当前已有 specialUse|location）"
+  - "首次启动引导是否需要单独的 OnboardingActivity 还是可以用 Dialog/Fragment 实现"
+  - "EventCriterionRegistry 中 0x0012 networkUnavailable 引用了错误的事件常量（应为独立 bugfix，不在本计划范围内）"
+
+pre_mortem:
+  overall_risk_level: medium
+  critical_failure_modes:
+    - scenario: "BatteryEventDispatcher 注册 ACTION_BATTERY_CHANGED 后频繁触发（电量每变化 1% 都会触发），导致宏密集执行"
+      likelihood: medium
+      impact: medium
+      mitigation: "添加 debounce 机制：记录上次触发的电量值，仅当电量变化超过阈值时才分发事件"
+    - scenario: "Write to File 未做路径校验导致 path traversal 安全漏洞"
+      likelihood: medium
+      impact: high
+      mitigation: "FileAction.writeFile 必须使用 canonicalPath 规范化路径 + 允许目录白名单验证，限制在 app 私有目录或用户指定的安全目录内"
+    - scenario: "前台服务通知在 Android 16 上因 POST_NOTIFICATIONS 权限未授予而无法显示"
+      likelihood: medium
+      impact: high
+      mitigation: "在启动前台服务前检查 POST_NOTIFICATIONS 权限状态，引导用户授权"
+    - scenario: "首次启动引导流程与 A11yAutomatorService 的生命周期冲突"
+      likelihood: low
+      impact: medium
+      mitigation: "引导流程完全在 MainActivity 中执行，不依赖 Service 状态"
+    - scenario: "多个 UI 任务并行修改 Fragment/Activity 导致 navigation 冲突"
+      likelihood: low
+      impact: low
+      mitigation: "Wave 2/3 中 UI 任务各自独立文件，不共享 Fragment/Activity 代码"
+  assumptions:
+    - "Android 16 (API 36) 是唯一目标平台"
+    - "POST_NOTIFICATIONS 权限已在 AndroidManifest.xml 中声明"
+    - "A11yAutomatorService 的 foregroundServiceType='specialUse|location' 已满足前台服务要求"
+    - "ViewPager2 + MaterialDesign Tab 已在项目依赖中"
+    - "VariableRepository 接口已稳定可用（变量系统 100% 完成）"
+
+implementation_specification:
+  code_structure: |
+    8 个功能分三类：
+    1) 引擎扩展（Wave 1）：
+       - BatteryEventDispatcher + BatteryReferent — 电量事件
+       - FileActionRegistry 扩展 writeFile — 文件写入
+       - ForegroundNotificationManager — 前台通知管理
+    2) 权限引导（Wave 2）：
+       - BatteryOptimizationGuideDialog — 电池优化白名单
+       - PermissionGuideDialog — 特殊权限引导
+       - OnboardingFragment — 首次启动引导
+    3) UI 功能（Wave 3）：
+       - VariableManagerDialog — 变量管理
+       - 扩展 SnapshotLogDialog — 日志查看器
+
+  affected_areas:
+    - "tasker-engine/src/main/java/top/xjunz/tasker/engine/runtime/Event.kt — 新增 EVENT_ON_BATTERY_LEVEL_CHANGED 常量"
+    - "app/src/main/java/top/xjunz/tasker/task/event/ — 新增 BatteryEventDispatcher"
+    - "app/src/main/java/top/xjunz/tasker/task/applet/flow/ref/ — 新增 BatteryReferent"
+    - "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/EventCriterionRegistry.kt — 新增 batteryLevelChanged(0x0029)"
+    - "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/FileActionRegistry.kt — 新增 writeFile(0x0004)"
+    - "app/src/main/java/top/xjunz/tasker/task/applet/action/FileAction.kt — 新增 ACTION_WRITE"
+    - "app/src/main/java/top/xjunz/tasker/service/AutomatorService.kt — 注册 BatteryEventDispatcher + 前台通知"
+    - "app/src/main/java/top/xjunz/tasker/service/ForegroundNotificationManager.kt — 新建"
+    - "app/src/main/java/top/xjunz/tasker/ui/common/ — 新增 BatteryOptimizationGuideDialog, PermissionGuideDialog"
+    - "app/src/main/java/top/xjunz/tasker/ui/main/ — 新增 OnboardingFragment"
+    - "app/src/main/java/top/xjunz/tasker/ui/task/ — 新增 VariableManagerDialog"
+    - "app/src/main/java/top/xjunz/tasker/ui/task/editor/SnapshotLogDialog.kt — 扩展过滤/分组功能"
+    - "app/src/main/res/values/strings.xml — 新增约 40 条字符串"
+
+  component_details:
+    - component: "BatteryEventDispatcher"
+      responsibility: "监听 ACTION_BATTERY_CHANGED 广播，分发 EVENT_ON_BATTERY_LEVEL_CHANGED 事件并附带电量百分比到 BatteryReferent"
+      interfaces:
+        - "handleAction(intent: Intent?) — 解析电量并分发事件"
+        - "onRegistered() — 注册 BroadcastReceiver"
+        - "destroy() — 注销 BroadcastReceiver"
+
+    - component: "BatteryReferent"
+      responsibility: "持有电量值的引用，供 EventFilter 的 withResult 消费"
+      interfaces:
+        - "batteryLevel: Int — 当前电量百分比"
+
+    - component: "FileAction.ACTION_WRITE"
+      responsibility: "将内容写入文件（覆盖或追加模式），带 path traversal 防护"
+      interfaces:
+        - "doAction(filePath: String, content: String, mode: Int) — mode: 0=OVERWRITE, 1=APPEND"
+
+    - component: "ForegroundNotificationManager"
+      responsibility: "管理前台服务通知：创建通知频道、构建通知（运行状态/宏计数/暂停恢复按钮）、更新通知"
+      interfaces:
+        - "createNotificationChannel()"
+        - "buildForegroundNotification(activeMacroCount: Int, isPaused: Boolean): Notification"
+        - "updateNotification(activeMacroCount: Int, isPaused: Boolean)"
+
+    - component: "BatteryOptimizationGuideDialog"
+      responsibility: "引导用户将 App 加入电池优化白名单"
+      interfaces:
+        - "show(fragmentManager) — 显示引导对话框"
+        - "isBatteryOptimizationIgnored(): Boolean — 检查当前白名单状态"
+
+    - component: "PermissionGuideDialog"
+      responsibility: "分步引导用户授予特殊权限（A11y / 电池优化 / DND / Overlay / Settings.Write）"
+      interfaces:
+        - "show(fragmentManager) — 显示引导对话框"
+        - "checkPermission(type: PermissionType): Boolean"
+
+    - component: "OnboardingFragment"
+      responsibility: "首次启动引导：欢迎 → 功能介绍 → 权限申请 → 完成"
+      interfaces:
+        - "ViewPager2 + 3-4 个引导页"
+        - "完成后标记 isOnboardingCompleted = true"
+
+    - component: "VariableManagerDialog"
+      responsibility: "变量管理 UI：变量列表、搜索过滤、编辑/删除变量"
+      interfaces:
+        - "show(fragmentManager) — 显示变量管理对话框"
+        - "RecyclerView + SearchView + VariableRepository 交互"
+
+  dependencies:
+    - component: "BatteryEventDispatcher"
+      relationship: "注册到 AutomatorService.initEventDispatcher()"
+    - component: "BatteryReferent"
+      relationship: "被 EventCriterionRegistry.batteryLevelChanged 的 withResult 引用"
+    - component: "ForegroundNotificationManager"
+      relationship: "被 A11yAutomatorService.onServiceConnected 的 worker mode 分支调用 startForeground"
+    - component: "PermissionGuideDialog"
+      relationship: "复用 BatteryOptimizationGuideDialog 的电池优化检查"
+    - component: "OnboardingFragment"
+      relationship: "调用 PermissionGuideDialog 进行权限申请步骤"
+    - component: "VariableManagerDialog"
+      relationship: "依赖 AppletOptionFactory.variableRepository"
+
+  integration_points:
+    - "Event.kt companion object — EVENT_ON_BATTERY_LEVEL_CHANGED = 36"
+    - "EventCriterionRegistry — @AppletOrdinal(0x0029) batteryLevelChanged"
+    - "FileActionRegistry — @AppletOrdinal(0x0004) writeFile"
+    - "AutomatorService.initEventDispatcher() — registerEventDispatcher(BatteryEventDispatcher())"
+    - "A11yAutomatorService.onServiceConnected — startForeground 调用"
+    - "MainActivity — OnboardingFragment 首次启动检查"
+    - "strings.xml — ~40 条新字符串"
+
+contracts:
+  - from_task: T01
+    to_task: T10
+    interface: "BatteryEventDispatcher 编译通过，Event.EVENT_ON_BATTERY_LEVEL_CHANGED 常量可用"
+    format: "Kotlin 类文件 + Event 常量"
+
+  - from_task: T03
+    to_task: T10
+    interface: "ForegroundNotificationManager 编译通过，可被 AutomatorService 调用"
+    format: "Kotlin 类文件"
+
+  - from_task: T04
+    to_task: T06
+    interface: "BatteryOptimizationGuideDialog 提供 isBatteryOptimizationIgnored() 方法"
+    format: "public 方法"
+
+  - from_task: T05
+    to_task: T06
+    interface: "PermissionGuideDialog 可被 OnboardingFragment 调用"
+    format: "Kotlin Dialog 类"
+
+  - from_task: "T01-T09"
+    to_task: T10
+    interface: "所有新文件编译通过"
+    format: "编译 exit 0"
+
+  - from_task: T10
+    to_task: T11
+    interface: "全量编译+测试通过"
+    format: "测试 exit 0"
+
+# ============================================================
+# 任务列表
+# ============================================================
+
+tasks:
+  # ================================================
+  # Wave 1: 引擎层扩展（可并行）
+  # ================================================
+
+  - id: T01
+    title: "实现 Battery Level 触发器 (T-PWR-002)"
+    description: |
+      新建 BatteryEventDispatcher 监听 ACTION_BATTERY_CHANGED 广播，当电量变化时分发事件。
+      具体步骤：
+      1. 在 Event.kt companion object 中新增 EVENT_ON_BATTERY_LEVEL_CHANGED = 36
+      2. 新建 BatteryReferent 数据类，持有 batteryLevel: Int（电量百分比 0-100）
+      3. 新建 BatteryEventDispatcher：
+         - 注册 BroadcastReceiver 监听 Intent.ACTION_BATTERY_CHANGED
+         - 从 Intent extras 解析 BatteryManager.EXTRA_LEVEL 和 EXTRA_SCALE 计算百分比
+         - 添加 debounce：记录 lastLevel，仅当电量变化 ≥1% 时才分发事件
+         - 分发 Event.obtain(EVENT_ON_BATTERY_LEVEL_CHANGED) 并附带 BatteryReferent
+      4. 在 EventCriterionRegistry 末尾新增 @AppletOrdinal(0x0029) batteryLevelChanged
+         - eventFilterOption(Event.EVENT_ON_BATTERY_LEVEL_CHANGED, R.string.on_battery_level_changed)
+         - .withResult<BatteryReferent>(R.string.on_battery_level_changed)
+         - .withResult<Int>(R.string.battery_level)
+      5. 在 strings.xml 添加 on_battery_level_changed 和 battery_level 字符串
+      6. 编写 BatteryEventDispatcherTest 单测（纯 JVM，提取 handleAction 为 internal 方法）
+      参考 PowerEventDispatcher 的实现模式。
+    wave: 1
+    agent: gem-implementer
+    prototype: false
+    covers: ["T-PWR-002"]
+    priority: high
+    status: pending
+    dependencies: []
+    conflicts_with: []
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/task/event/PowerEventDispatcher.kt"
+        description: "参考 BroadcastReceiver 注册模式和 internal handleAction 测试模式"
+      - path: "tasker-engine/src/main/java/top/xjunz/tasker/engine/runtime/Event.kt"
+        description: "Event 常量定义，当前最后 EVENT_ON_MANUAL_TRIGGER = 35"
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/EventCriterionRegistry.kt"
+        description: "事件注册表，当前最后 @AppletOrdinal(0x0028) intentReceived"
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/flow/ref/PhoneCallReferent.kt"
+        description: "参考 Referent 数据类模式"
+      - path: "app/src/test/kotlin/top/xjunz/tasker/task/event/PowerEventDispatcherTest.kt"
+        description: "参考 EventDispatcher 单测模式"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "Battery Level 是 MVP 缺失触发器中优先级最高的，且实现模式与 PowerEventDispatcher 高度一致"
+        timestamp: "2026-04-14"
+        estimated_effort: small
+        estimated_files: 5
+        estimated_lines: 150
+        focus_area: "BatteryEventDispatcher + BatteryReferent + EventCriterionRegistry + Event.kt"
+        verification:
+          - "JAVA_HOME=/opt/homebrew/Cellar/openjdk@17/17.0.18/libexec/openjdk.jdk/Contents/Home ./gradlew :app:compileDebugKotlin"
+          - "JAVA_HOME=/opt/homebrew/Cellar/openjdk@17/17.0.18/libexec/openjdk.jdk/Contents/Home ./gradlew :app:testDebugUnitTest --tests '*.BatteryEventDispatcherTest'"
+        acceptance_criteria:
+          - "Event.kt 包含 EVENT_ON_BATTERY_LEVEL_CHANGED = 36"
+          - "BatteryReferent.kt 存在于 app/src/main/java/top/xjunz/tasker/task/applet/flow/ref/"
+          - "BatteryEventDispatcher.kt 存在，监听 ACTION_BATTERY_CHANGED，有 debounce 逻辑"
+          - "EventCriterionRegistry 包含 @AppletOrdinal(0x0029) batteryLevelChanged"
+          - "strings.xml 包含 on_battery_level_changed 和 battery_level"
+          - "BatteryEventDispatcherTest 存在且通过"
+          - ":app:compileDebugKotlin 编译通过"
+        failure_modes:
+          - scenario: "ACTION_BATTERY_CHANGED 是 sticky broadcast，注册后立即触发一次"
+            likelihood: high
+            impact: low
+            mitigation: "onRegistered 中首次回调设置 lastLevel 但不分发事件，后续变化才分发"
+        tech_stack:
+          - "Kotlin"
+          - "Android BroadcastReceiver"
+          - "BatteryManager"
+        test_coverage: "BatteryEventDispatcherTest 覆盖电量变化分发、debounce 逻辑、边界值"
+
+  - id: T02
+    title: "实现 Write to File 动作 (A-DATA-002)"
+    description: |
+      在 FileActionRegistry 中添加 writeFile 动作，支持覆盖和追加两种写入模式。
+      具体步骤：
+      1. 补全 FileAction.kt 中已有的 ACTION_WRITE = 3 的空 apply() 分支实现（常量已存在，当前为空实现）
+      2. 在 FileAction.doAction 的 when 分支中实现 ACTION_WRITE 处理：
+         - 参数 0: filePath(String) — 目标文件路径
+         - 参数 1: content(String) — 写入内容
+         - 参数 2: mode(Int) — 0=OVERWRITE, 1=APPEND
+         - 安全检查: filePath 不含 ".." 且不以 "/" 开头时自动加上 app 数据目录前缀
+         - Shizuku shell: echo/cat 重定向写入
+      3. 在 FileActionRegistry 末尾新增 @AppletOrdinal(0x0004) writeFile：
+         - appletOption(R.string.format_write_file) { FileAction(FileAction.ACTION_WRITE) }
+         - .withUnaryArgument<String>(R.string.file_path, R.string.file, VariantArgType.TEXT_FILE_PATH)
+         - .withUnaryArgument<String>(R.string.file_content, R.string.content)
+         - .withUnaryArgument<Int>(R.string.write_mode, R.string.write_mode) — 选项: 覆盖/追加
+         - .shizukuOnly()
+      4. 在 strings.xml 添加 format_write_file、file_content、write_mode、write_mode_overwrite、write_mode_append 字符串
+      5. 编写 FileActionWriteTest 单测（验证路径安全检查逻辑）
+    wave: 1
+    agent: gem-implementer
+    prototype: false
+    covers: ["A-DATA-002"]
+    priority: high
+    status: pending
+    dependencies: []
+    conflicts_with: []
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/FileActionRegistry.kt"
+        description: "当前文件，最后 @AppletOrdinal(0x0003) moveFile"
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/action/FileAction.kt"
+        description: "FileAction 类，包含 ACTION_DELETE=0, ACTION_COPY=1, ACTION_RENAME=2"
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/ShellCmdActionRegistry.kt"
+        description: "参考 Shizuku shell 命令执行模式"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "Write to File 是 MVP 缺失动作中最核心的数据操作，effort=small，独立性强"
+        timestamp: "2026-04-14"
+        estimated_effort: small
+        estimated_files: 3
+        estimated_lines: 80
+        focus_area: "FileAction.kt + FileActionRegistry.kt"
+        verification:
+          - "JAVA_HOME=/opt/homebrew/Cellar/openjdk@17/17.0.18/libexec/openjdk.jdk/Contents/Home ./gradlew :app:compileDebugKotlin"
+          - "JAVA_HOME=/opt/homebrew/Cellar/openjdk@17/17.0.18/libexec/openjdk.jdk/Contents/Home ./gradlew :app:testDebugUnitTest --tests '*.FileActionWriteTest'"
+        acceptance_criteria:
+          - "FileAction.kt 的 ACTION_WRITE = 3 分支包含完整写入实现（非空 apply）"
+          - "FileAction.doAction 的 when 中包含 ACTION_WRITE 逻辑"
+          - "路径安全检查: 使用 File(filePath).canonicalPath 规范化路径 + 允许目录白名单验证（不仅限于 '..' 检查）"
+          - "FileActionRegistry 包含 @AppletOrdinal(0x0004) writeFile"
+          - "writeFile 标记 .shizukuOnly()"
+          - "strings.xml 包含 format_write_file / file_content / write_mode"
+          - "单测验证路径 traversal 防护"
+          - ":app:compileDebugKotlin 编译通过"
+        failure_modes:
+          - scenario: "shell echo 写入含特殊字符的内容时转义错误"
+            likelihood: medium
+            impact: medium
+            mitigation: "使用 base64 编码内容后通过 shell 写入，或使用 java.io.File API（在 Shizuku 进程中）"
+        tech_stack:
+          - "Kotlin"
+          - "Shizuku Shell / Java IO"
+        test_coverage: "FileActionWriteTest 覆盖正常写入、追加模式、路径安全检查"
+
+  - id: T03
+    title: "实现前台服务保活通知 (AND-001)"
+    description: |
+      创建 ForegroundNotificationManager 管理前台服务通知。
+      具体步骤：
+      1. 新建 ForegroundNotificationManager (object 单例)：
+         - createNotificationChannel(): 创建 "autopilot_service" 通知频道 (IMPORTANCE_LOW)
+         - buildForegroundNotification(activeMacroCount: Int, isPaused: Boolean): Notification
+           - 标题: "AutoPilot 运行中" / "AutoPilot 已暂停"
+           - 内容: "N 个宏正在运行"
+           - SmallIcon: 使用现有 app icon
+           - 添加暂停/恢复 PendingIntent action button
+           - 添加点击通知跳转 MainActivity 的 contentIntent
+         - updateNotification(activeMacroCount: Int, isPaused: Boolean): 更新已有通知
+      2. 在 AndroidManifest.xml 中补充前台服务权限声明：
+         - <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+         - <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+      3. 在 A11yAutomatorService 的 onServiceConnected() 的 worker mode 分支中调用：
+         - ForegroundNotificationManager.createNotificationChannel()
+         - startForeground(NOTIFICATION_ID, notification)
+         （注意: A11yAutomatorService 的初始化逻辑在 onServiceConnected() 而非 onCreate()）
+      4. 在 strings.xml 添加相关字符串:
+         notification_channel_service, autopilot_running, autopilot_paused,
+         n_macros_active, action_pause, action_resume
+      5. 不需要单测（涉及 Android Notification API，编译验证即可）
+    wave: 1
+    agent: gem-implementer
+    prototype: false
+    covers: ["AND-001"]
+    priority: high
+    status: pending
+    dependencies: []
+    conflicts_with: []
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/service/A11yAutomatorService.kt"
+        description: "AccessibilityService 实现，需在 onCreate 中启动前台服务"
+      - path: "app/src/main/java/top/xjunz/tasker/service/AutomatorService.kt"
+        description: "AutomatorService 接口定义"
+      - path: "app/src/main/AndroidManifest.xml"
+        description: "服务声明，已有 foregroundServiceType='specialUse|location'"
+      - path: "app/src/main/java/top/xjunz/tasker/bridge/OverlayToastBridge.kt"
+        description: "参考 Bridge 单例模式"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "前台通知是 Android 后台保活的核心基础，impact=high，是 MVP 最关键的缺口之一"
+        timestamp: "2026-04-14"
+        estimated_effort: medium
+        estimated_files: 3
+        estimated_lines: 120
+        focus_area: "ForegroundNotificationManager + A11yAutomatorService"
+        verification:
+          - "JAVA_HOME=/opt/homebrew/Cellar/openjdk@17/17.0.18/libexec/openjdk.jdk/Contents/Home ./gradlew :app:compileDebugKotlin"
+          - "grep -c 'startForeground\\|ForegroundNotificationManager' app/src/main/java/top/xjunz/tasker/service/A11yAutomatorService.kt"
+        acceptance_criteria:
+          - "ForegroundNotificationManager.kt 存在于 app/src/main/java/top/xjunz/tasker/service/"
+          - "包含 createNotificationChannel() 方法"
+          - "包含 buildForegroundNotification(activeMacroCount, isPaused) 方法"
+          - "通知包含暂停/恢复 action button"
+          - "AndroidManifest.xml 包含 FOREGROUND_SERVICE 和 FOREGROUND_SERVICE_SPECIAL_USE 权限声明"
+          - "A11yAutomatorService 在 onServiceConnected() 的 worker mode 分支中调用 startForeground"
+          - "strings.xml 包含 notification_channel_service / autopilot_running / autopilot_paused"
+          - ":app:compileDebugKotlin 编译通过"
+        failure_modes:
+          - scenario: "POST_NOTIFICATIONS 运行时权限未授予导致通知不显示"
+            likelihood: medium
+            impact: medium
+            mitigation: "前台服务通知不需要 POST_NOTIFICATIONS（系统级别不同），但添加权限检查更安全"
+        tech_stack:
+          - "Kotlin"
+          - "Android Notification API"
+          - "NotificationChannel"
+          - "PendingIntent"
+        test_coverage: null
+
+  # ================================================
+  # Wave 1 续: 权限引导（与 T01-T03 并行）
+  # ================================================
+
+  - id: T04
+    title: "实现电池优化白名单引导 (PERM-005)"
+    description: |
+      创建 BatteryOptimizationGuideDialog 引导用户将 AutoPilot 加入电池优化白名单。
+      具体步骤：
+      1. 新建 BatteryOptimizationGuideDialog 继承 BaseDialogFragment：
+         - 布局: 图标 + 标题 + 说明文本 + "前往设置" 按钮 + "稍后" 按钮
+         - isBatteryOptimizationIgnored(): PowerManager.isIgnoringBatteryOptimizations(packageName)
+         - "前往设置" 按钮: Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName"))
+         - 如果已加入白名单，显示 "已启用" 状态
+      2. 创建 dialog_battery_optimization_guide.xml 布局
+      3. 在 strings.xml 添加:
+         battery_optimization_guide_title, battery_optimization_guide_desc,
+         go_to_settings, remind_later, battery_optimization_enabled
+      4. 提供 companion object 的 show(FragmentManager) 方法
+    wave: 1
+    agent: gem-implementer
+    prototype: false
+    covers: ["PERM-005"]
+    priority: medium
+    status: pending
+    dependencies: []
+    conflicts_with: []
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/ui/base/BaseDialogFragment.kt"
+        description: "Dialog 基类，所有对话框继承此类"
+      - path: "app/src/main/java/top/xjunz/tasker/ui/main/PrivacyPolicyDialog.kt"
+        description: "参考简单引导 Dialog 的模式"
+      - path: "app/src/main/res/layout/"
+        description: "现有布局目录"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "电池优化白名单是后台保活的补充，与前台通知配合使用"
+        timestamp: "2026-04-14"
+        estimated_effort: small
+        estimated_files: 3
+        estimated_lines: 80
+        focus_area: "BatteryOptimizationGuideDialog + 布局文件"
+        verification:
+          - "JAVA_HOME=/opt/homebrew/Cellar/openjdk@17/17.0.18/libexec/openjdk.jdk/Contents/Home ./gradlew :app:compileDebugKotlin"
+        acceptance_criteria:
+          - "BatteryOptimizationGuideDialog.kt 存在于 ui/common/ 或 ui/main/"
+          - "dialog_battery_optimization_guide.xml 布局存在"
+          - "包含 isBatteryOptimizationIgnored() 检查方法"
+          - "包含 ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS Intent 跳转"
+          - "strings.xml 包含 battery_optimization_guide_title / battery_optimization_guide_desc"
+          - ":app:compileDebugKotlin 编译通过"
+        failure_modes:
+          - scenario: "部分厂商定制 ROM 不支持标准 battery optimization Intent"
+            likelihood: medium
+            impact: low
+            mitigation: "Intent 跳转用 try-catch 包裹，失败时显示手动设置路径提示"
+        tech_stack:
+          - "Kotlin"
+          - "Android PowerManager"
+          - "ViewBinding"
+        test_coverage: null
+
+  - id: T05
+    title: "实现特殊权限引导对话框 (PERM-004)"
+    description: |
+      创建 PermissionGuideDialog 引导用户逐步授予特殊权限。
+      具体步骤：
+      1. 新建 PermissionGuideDialog 继承 BaseDialogFragment：
+         - 使用 ViewPager2 或 RecyclerView 展示权限列表
+         - 每项权限包含: 图标 + 权限名 + 描述 + 状态（已授予/未授予）+ "前往授予" 按钮
+         - 覆盖 5 种权限:
+           a) Accessibility Service — Settings.ACTION_ACCESSIBILITY_SETTINGS
+           b) 电池优化白名单 — 复用 BatteryOptimizationGuideDialog 的检查逻辑
+           c) DND 权限 — NotificationManager.isNotificationPolicyAccessGranted()
+              → ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS
+           d) Overlay 权限 — Settings.canDrawOverlays()
+              → ACTION_MANAGE_OVERLAY_PERMISSION
+           e) Settings.Write — Settings.System.canWrite()
+              → ACTION_MANAGE_WRITE_SETTINGS
+         - 每项有 "前往设置" 按钮，跳转到对应系统设置
+         - onResume 刷新所有权限状态
+      2. 创建 dialog_permission_guide.xml + item_permission_guide.xml 布局
+      3. 在 strings.xml 添加每项权限的标题和描述
+    wave: 1
+    agent: gem-implementer
+    prototype: false
+    covers: ["PERM-004"]
+    priority: medium
+    status: pending
+    dependencies: []
+    conflicts_with: []
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/ui/base/BaseDialogFragment.kt"
+        description: "Dialog 基类"
+      - path: "app/src/main/java/top/xjunz/tasker/service/A11yAutomatorService.kt"
+        description: "AccessibilityService 实现，理解 A11y 权限需求"
+      - path: "app/src/main/AndroidManifest.xml"
+        description: "已声明的权限列表"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "特殊权限引导是用户体验的关键，没有引导则用户不知道需要开启哪些权限"
+        timestamp: "2026-04-14"
+        estimated_effort: medium
+        estimated_files: 4
+        estimated_lines: 200
+        focus_area: "PermissionGuideDialog + 布局 + 权限检查逻辑"
+        verification:
+          - "JAVA_HOME=/opt/homebrew/Cellar/openjdk@17/17.0.18/libexec/openjdk.jdk/Contents/Home ./gradlew :app:compileDebugKotlin"
+        acceptance_criteria:
+          - "PermissionGuideDialog.kt 存在于 ui/common/ 或 ui/main/"
+          - "覆盖 5 种特殊权限检查"
+          - "每项权限有跳转对应系统设置的 Intent"
+          - "onResume 中刷新所有权限状态"
+          - "布局文件: dialog_permission_guide.xml + item_permission_guide.xml"
+          - "strings.xml 包含 5 种权限的标题和描述字符串"
+          - ":app:compileDebugKotlin 编译通过"
+        failure_modes:
+          - scenario: "不同厂商 ROM 的设置 Intent action 不一致"
+            likelihood: medium
+            impact: medium
+            mitigation: "每个 Intent 跳转用 resolveActivity 检查，不支持时用 fallback Intent 或手动引导文案"
+        tech_stack:
+          - "Kotlin"
+          - "RecyclerView + ViewBinding"
+          - "Android Settings API"
+        test_coverage: null
+
+  - id: T06
+    title: "实现首次启动引导流程 (NUI-008)"
+    description: |
+      创建 OnboardingFragment 实现首次启动引导。
+      具体步骤：
+      1. 新建 OnboardingFragment 继承 Fragment：
+         - 使用 ViewPager2 + TabLayoutMediator 展示 3-4 个引导页
+         - 页面 1: 欢迎页 — App 名称 + Logo + 简介
+         - 页面 2: 功能介绍 — 触发器/动作/约束三大概念
+         - 页面 3: 权限申请 — 调用 PermissionGuideDialog 显示权限列表
+         - 页面 4: 完成页 — "开始使用" 按钮
+         - "完成" 后在 Preferences 中设置 isOnboardingCompleted = true
+      2. 创建 fragment_onboarding.xml + item_onboarding_page.xml 布局
+      3. 在 MainActivity 的 onCreate 中检查 isOnboardingCompleted：
+         - false → 显示 OnboardingFragment
+         - true → 正常进入主页
+      4. 在 strings.xml 添加引导页文案
+      5. 在 Preferences 中添加 isOnboardingCompleted 字段
+    wave: 2
+    agent: gem-implementer
+    prototype: false
+    covers: ["NUI-008"]
+    priority: medium
+    status: pending
+    dependencies: [T05]
+    conflicts_with: []
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/ui/main/MainActivity.kt"
+        description: "主 Activity，引导流程入口"
+      - path: "app/src/main/java/top/xjunz/tasker/Preferences.kt"
+        description: "偏好设置管理（DataStore 或 SharedPreferences）"
+      - path: "app/src/main/java/top/xjunz/tasker/ui/main/PrivacyPolicyDialog.kt"
+        description: "参考首次启动显示的 Dialog 模式"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "引导流程依赖 PermissionGuideDialog，须在其之后；但同为 Wave 2 因 T05 可能先完成"
+        timestamp: "2026-04-14"
+        estimated_effort: medium
+        estimated_files: 5
+        estimated_lines: 250
+        focus_area: "OnboardingFragment + ViewPager2 + MainActivity 集成"
+        verification:
+          - "JAVA_HOME=/opt/homebrew/Cellar/openjdk@17/17.0.18/libexec/openjdk.jdk/Contents/Home ./gradlew :app:compileDebugKotlin"
+        acceptance_criteria:
+          - "OnboardingFragment.kt 存在于 ui/main/"
+          - "使用 ViewPager2 展示 3-4 个引导页"
+          - "完成后设置 Preferences.isOnboardingCompleted = true"
+          - "MainActivity 在 onCreate 中检查 isOnboardingCompleted"
+          - "布局文件: fragment_onboarding.xml + item_onboarding_page.xml"
+          - "strings.xml 包含引导页文案"
+          - ":app:compileDebugKotlin 编译通过"
+        failure_modes:
+          - scenario: "ViewPager2 与 Fragment lifecycle 冲突导致崩溃"
+            likelihood: low
+            impact: medium
+            mitigation: "使用 FragmentStateAdapter + viewLifecycleOwner"
+        tech_stack:
+          - "Kotlin"
+          - "ViewPager2 + TabLayout"
+          - "ViewBinding"
+          - "DataStore Preferences"
+        test_coverage: null
+
+  # ================================================
+  # Wave 2: UI 功能 + 引导流程
+  # ================================================
+
+  - id: T07
+    title: "实现变量管理界面 (NUI-005)"
+    description: |
+      创建 VariableManagerDialog 用于管理全局和局部变量。
+      具体步骤：
+      1. 新建 VariableManagerDialog 继承 BaseDialogFragment：
+         - 顶部搜索框 (SearchView 或 EditText) 用于过滤变量
+         - RecyclerView 列表显示所有变量：变量名 + 类型 + 当前值
+         - 类型过滤 Chip (Boolean/Integer/Decimal/String/Dictionary/Array)
+         - 每项有编辑按钮 → 弹出编辑值 Dialog
+         - 每项有删除按钮 → 确认后从 VariableRepository 移除
+         - 底部 FAB "添加变量" 按钮
+      2. 创建 dialog_variable_manager.xml + item_variable.xml 布局
+      3. 新建 VariableManagerAdapter (RecyclerView.Adapter) 用于列表渲染
+      4. 接入 AppletOptionFactory.variableRepository 获取数据
+      5. 在 strings.xml 添加相关字符串
+    wave: 2
+    agent: gem-implementer
+    prototype: false
+    covers: ["NUI-005"]
+    priority: medium
+    status: pending
+    dependencies: []
+    conflicts_with: []
+    context_files:
+      - path: "tasker-engine/src/main/java/top/xjunz/tasker/engine/variable/VariableRepository.kt"
+        description: "变量仓库接口"
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/option/AppletOptionFactory.kt"
+        description: "variableRepository 实例获取"
+      - path: "app/src/main/java/top/xjunz/tasker/ui/task/showcase/TaskListDialog.kt"
+        description: "参考 RecyclerView + Dialog 的列表模式"
+      - path: "app/src/main/java/top/xjunz/tasker/ui/base/BaseDialogFragment.kt"
+        description: "Dialog 基类"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "变量管理是 MVP 中等优先级的 UI 功能，后端已完成只缺前端"
+        timestamp: "2026-04-14"
+        estimated_effort: medium
+        estimated_files: 4
+        estimated_lines: 250
+        focus_area: "VariableManagerDialog + Adapter + 布局"
+        verification:
+          - "JAVA_HOME=/opt/homebrew/Cellar/openjdk@17/17.0.18/libexec/openjdk.jdk/Contents/Home ./gradlew :app:compileDebugKotlin"
+        acceptance_criteria:
+          - "VariableManagerDialog.kt 存在于 ui/task/ 或 ui/common/"
+          - "包含 RecyclerView 变量列表"
+          - "支持搜索/过滤功能"
+          - "支持编辑变量值"
+          - "支持删除变量"
+          - "接入 VariableRepository"
+          - "布局文件: dialog_variable_manager.xml + item_variable.xml"
+          - ":app:compileDebugKotlin 编译通过"
+        failure_modes:
+          - scenario: "VariableRepository 的变量类型丰富，编辑 UI 可能无法覆盖所有类型"
+            likelihood: medium
+            impact: low
+            mitigation: "MVP 先支持 String/Int/Boolean 编辑，其他类型只读展示"
+        tech_stack:
+          - "Kotlin"
+          - "RecyclerView + ViewBinding"
+          - "SearchView"
+        test_coverage: null
+
+  - id: T08
+    title: "完善日志查看器 (NUI-006)"
+    description: |
+      扩展现有 SnapshotLogDialog，添加过滤和分组功能。
+      具体步骤：
+      1. 在 SnapshotLogDialog 中添加功能：
+         - 顶部工具栏添加过滤下拉菜单（按日志级别: ALL/INFO/WARN/ERROR）
+         - 如果存在多个宏的日志，添加按宏名分组 Tab
+         - 添加时间排序（默认最新在前）
+         - 若日志文本过长添加搜索功能（Ctrl+F 或 SearchView）
+      2. 更新 dialog_task_log.xml 布局添加过滤控件
+      3. 在 strings.xml 添加:
+         log_filter_all, log_filter_info, log_filter_warn, log_filter_error,
+         log_search_hint, log_sort_newest_first
+      4. MVP 最小化: 不做日志持久化到文件，仅扩展运行时快照的展示
+    wave: 2
+    agent: gem-implementer
+    prototype: false
+    covers: ["NUI-006"]
+    priority: medium
+    status: pending
+    dependencies: []
+    conflicts_with: []
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/ui/task/editor/SnapshotLogDialog.kt"
+        description: "现有日志对话框，需在此基础上扩展"
+      - path: "app/src/main/res/layout/dialog_task_log.xml"
+        description: "现有日志对话框布局"
+      - path: "tasker-engine/src/main/java/top/xjunz/tasker/engine/task/TaskSnapshot.kt"
+        description: "TaskSnapshot 数据结构"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "日志查看器基础已有，只需追加过滤和体验优化"
+        timestamp: "2026-04-14"
+        estimated_effort: medium
+        estimated_files: 3
+        estimated_lines: 150
+        focus_area: "SnapshotLogDialog 扩展 + 布局更新"
+        verification:
+          - "JAVA_HOME=/opt/homebrew/Cellar/openjdk@17/17.0.18/libexec/openjdk.jdk/Contents/Home ./gradlew :app:compileDebugKotlin"
+        acceptance_criteria:
+          - "SnapshotLogDialog 包含日志级别过滤功能"
+          - "支持时间排序（最新在前）"
+          - "布局包含过滤控件"
+          - "strings.xml 包含过滤相关字符串"
+          - ":app:compileDebugKotlin 编译通过"
+        failure_modes:
+          - scenario: "TaskSnapshot.log 是纯文本，解析日志级别可能不可靠"
+            likelihood: medium
+            impact: low
+            mitigation: "如果日志无级别标记，过滤功能降级为文本搜索"
+        tech_stack:
+          - "Kotlin"
+          - "ViewBinding"
+          - "Spinner / PopupMenu"
+        test_coverage: null
+
+  # ================================================
+  # Wave 3-4: 集成注册 + 全量验证
+  # ================================================
+
+  - id: T09
+    title: "集成注册: BatteryEventDispatcher 到 AutomatorService + strings.xml 汇总"
+    description: |
+      执行所有 Wave 1-2 任务产出的集成工作：
+      1. 在 AutomatorService.initEventDispatcher() 中注册 BatteryEventDispatcher：
+         - eventDispatcher.registerEventDispatcher(BatteryEventDispatcher())
+         - 位置：在 PowerEventDispatcher() 之后
+      2. 汇总检查 strings.xml 中所有新字符串无遗漏
+      3. 检查 AndroidManifest.xml：前台服务权限已在 T03 中添加，Battery Level 不需要额外权限，FileAction 已有 Shizuku
+      4. 确保 EventCriterionRegistry 中 batteryLevelChanged 的 Referent 正确关联
+    wave: 3
+    agent: gem-implementer
+    prototype: false
+    covers: []
+    priority: high
+    status: pending
+    dependencies: [T01, T02, T03, T04, T05, T06, T07, T08]
+    conflicts_with: []
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/service/AutomatorService.kt"
+        description: "initEventDispatcher() 方法，需注册新 dispatcher"
+      - path: "app/src/main/res/values/strings.xml"
+        description: "汇总检查所有新字符串"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "集成注册必须在所有功能实现之后，确保编译期所有符号可解析"
+        timestamp: "2026-04-14"
+        estimated_effort: small
+        estimated_files: 2
+        estimated_lines: 20
+        focus_area: "AutomatorService.kt initEventDispatcher()"
+        verification:
+          - "JAVA_HOME=/opt/homebrew/Cellar/openjdk@17/17.0.18/libexec/openjdk.jdk/Contents/Home ./gradlew :app:compileDebugKotlin"
+        acceptance_criteria:
+          - "AutomatorService.initEventDispatcher() 包含 BatteryEventDispatcher() 注册"
+          - "全量编译通过"
+        failure_modes:
+          - scenario: "BatteryEventDispatcher 构造函数签名与注册调用不匹配"
+            likelihood: low
+            impact: low
+            mitigation: "BatteryEventDispatcher 保持无参构造，与其他 dispatcher 一致"
+        tech_stack:
+          - "Kotlin"
+        test_coverage: null
+
+  - id: T10
+    title: "全量编译 + 全量测试验证"
+    description: |
+      执行全量编译和测试，确保所有新增代码不破坏已有功能：
+      1. 运行 :app:compileDebugKotlin 确保编译通过
+      2. 运行 :app:testDebugUnitTest 确保全部 379+ 个测试通过
+      3. 检查新增测试文件（BatteryEventDispatcherTest, FileActionWriteTest）都运行
+      4. 记录最终测试数量和通过率
+    wave: 4
+    agent: gem-implementer
+    prototype: false
+    covers: []
+    priority: high
+    status: pending
+    dependencies: [T09]
+    conflicts_with: []
+    context_files:
+      - path: "build.gradle"
+        description: "项目根构建文件"
+      - path: "app/build.gradle"
+        description: "app 模块构建文件"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "全量验证是质量门控，必须在集成后立即执行"
+        timestamp: "2026-04-14"
+        estimated_effort: small
+        estimated_files: 0
+        estimated_lines: 0
+        focus_area: "编译和测试命令执行"
+        verification:
+          - "JAVA_HOME=/opt/homebrew/Cellar/openjdk@17/17.0.18/libexec/openjdk.jdk/Contents/Home ./gradlew :app:compileDebugKotlin"
+          - "JAVA_HOME=/opt/homebrew/Cellar/openjdk@17/17.0.18/libexec/openjdk.jdk/Contents/Home ./gradlew :app:testDebugUnitTest"
+        acceptance_criteria:
+          - ":app:compileDebugKotlin 退出码 0"
+          - ":app:testDebugUnitTest 退出码 0，0 failures"
+          - "新增测试 BatteryEventDispatcherTest 和 FileActionWriteTest 均通过"
+          - "总测试数 ≥ 381（379 + 2 新测试文件）"
+        failure_modes:
+          - scenario: "新代码引入编译错误或运行时依赖缺失"
+            likelihood: medium
+            impact: high
+            mitigation: "定位失败原因，回到对应任务修复后重新验证"
+        tech_stack:
+          - "Gradle"
+        test_coverage: "全量测试"
+
+  # ================================================
+  # Wave 5: 收尾
+  # ================================================
+
+  - id: T11
+    title: "Git 提交推送"
+    description: |
+      将所有改动提交到 Git 并推送到远程仓库：
+      1. git add -A
+      2. git commit -m "feat: MVP 收尾批次 A — Battery Level 触发器/Write to File/前台通知/权限引导/变量管理/日志查看器"
+      3. git push
+    wave: 5
+    agent: gem-implementer
+    prototype: false
+    covers: []
+    priority: high
+    status: pending
+    dependencies: [T10]
+    conflicts_with: []
+    context_files: []
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "所有改动验证通过后统一提交"
+        timestamp: "2026-04-14"
+        estimated_effort: small
+        estimated_files: 0
+        estimated_lines: 0
+        focus_area: "Git 操作"
+        verification:
+          - "git log --oneline -1"
+          - "git status --short"
+        acceptance_criteria:
+          - "git push 成功"
+          - "git status 干净"
+        failure_modes: []
+        tech_stack:
+          - "Git"
+        test_coverage: null
+
+  - id: T12
+    title: "更新 PROGRESS.md 进度文档"
+    description: |
+      更新 docs/PROGRESS.md 记录 MVP 收尾批次 A 的完成情况：
+      1. 更新总体完成度从 83% 到 ~92%
+      2. 记录新完成的 8 个功能
+      3. 更新各模块完成度:
+         - 触发器: 95% → ~100% (Battery Level 已实现)
+         - 动作: 89% → ~93% (Write to File 已实现)
+         - Android 基础设施: 43% → ~71% (前台通知 + 电池优化 + 权限引导)
+         - UI: 31% → ~50% (引导流程 + 变量管理 + 日志查看器)
+      4. 列出剩余 MVP 缺口（DES-001~006 设计系统等低优先级项）
+    wave: 5
+    agent: gem-implementer
+    prototype: false
+    covers: []
+    priority: medium
+    status: pending
+    dependencies: [T11]
+    conflicts_with: []
+    context_files:
+      - path: "docs/PROGRESS.md"
+        description: "当前进度文档"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "进度文档是团队沟通的关键，每次批量实现后必须更新"
+        timestamp: "2026-04-14"
+        estimated_effort: small
+        estimated_files: 1
+        estimated_lines: 40
+        focus_area: "docs/PROGRESS.md"
+        verification:
+          - "cat docs/PROGRESS.md | grep -c 'Battery Level\\|Write to File\\|前台通知\\|权限引导'"
+        acceptance_criteria:
+          - "PROGRESS.md 包含 MVP 收尾批次 A 的完成记录"
+          - "总体完成度已更新"
+          - "各模块完成度已更新"
+        failure_modes: []
+        tech_stack: []
+        test_coverage: null
+
+planning_pass: 2
+planning_history:
+  - pass: 1
+    reason: "初始计划创建"
+    timestamp: "2026-04-14"
+  - pass: 2
+    reason: |
+      审查后修复 7 个问题:
+      1) T03/T09 补充 AndroidManifest 前台服务权限 (FOREGROUND_SERVICE + FOREGROUND_SERVICE_SPECIAL_USE)
+      2) T02 ACTION_WRITE 常量已存在，改为补全空 apply() 分支
+      3) T03 生命周期由 onCreate 修正为 onServiceConnected worker mode 分支
+      4) TLDR Wave 2 并行声明修正（T06 依赖 T05）
+      5) 移除 T04/T05/T07/T08 对 T03 的虚假依赖，重新分配 wave (Wave 1: 5 并行)
+      6) T02 路径安全加强: canonicalPath + 目录白名单
+      7) open_questions 记录 EventCriterionRegistry 0x0012 bug
+    timestamp: "2026-04-14"
