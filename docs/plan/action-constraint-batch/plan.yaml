@@ -1,0 +1,1329 @@
+plan_id: action-constraint-batch
+objective: |
+  批量实现 AutoPilot 的 18 个新动作 + 6 个新约束：
+  Group 1 (6): 设备设置开关 — Auto Rotate, Bluetooth, Brightness, Dark Theme, WiFi, Torch
+  Group 2 (5): 音量与声音 — Volume Change, Play/Stop Sound, Silent/Vibrate, Speak Text, DND
+  Group 3 (3): 通知与 UI — Display Notification, Display Dialog, Toast Message (验证已有)
+  Group 4 (4): 网络与内部 — HTTP Request, Control Media, Enable/Disable Macro, Export Macros
+  约束 (6): Device Locked, Airplane Mode, Headphone, Call State, Dark Mode, Macro Running
+created_at: "2026-04-14"
+created_by: gem-planner
+status: pending_approval
+research_confidence: high
+
+plan_metrics:
+  total_tasks: 20
+  total_waves: 6
+  wave_1_task_count: 3
+  total_dependencies: 42
+  risk_score: medium
+
+tldr: |
+  20 个任务分 6 波执行，覆盖 18 个新动作 + 6 个新约束（共 24 项功能）。
+  Wave 1 (3 任务): 基础设施 — 字符串资源 60 条、权限声明、3 个新 Registry 骨架 + 2 个 Bridge 骨架。
+  Wave 2 (3 任务): 简单动作+约束 — 设备设置开关 6 个 + 简单约束 5 个 + 简单声音动作 3 个，可全并行。
+  Wave 3 (3 任务): 中等动作 — TTS + Play Sound + 媒体控制/Enable Macro/Macro Running 约束。
+  Wave 4 (3 任务): 复杂动作 — HTTP Request + Display Notification + Display Dialog。
+  Wave 5 (3 任务): 集成注册 — BootstrapOptionRegistry + AppletOptionFactory + Toast 验证 + 单测。
+  Wave 6 (5 任务): Export Macros + 全量编译测试 + 提交推送 + 进度文档 + 安全审查。
+  关键路径: T01→T04→T14→T17→T18。最大并行度 3 (Wave 2/3/4)。
+
+open_questions:
+  - "A-SND-014 DND 需要 NotificationPolicy access，Shizuku 模式可绕过，A11y 模式需要用户手动授权"
+  - "A-UI-002 Display Dialog 的 overlay window 在 Android 16 上的行为需要运行时验证"
+
+pre_mortem:
+  overall_risk_level: medium
+  critical_failure_modes:
+    - scenario: "Settings.System/Global 写入需要 WRITE_SETTINGS 权限，普通 App 无法直接获取"
+      likelihood: medium
+      impact: high
+      mitigation: "所有设置类动作标记 .shizukuOnly()，通过 Shizuku shell 执行 settings put 命令"
+    - scenario: "新建 3 个 Registry 的 ID 常量与 @AppletOrdinal 冲突导致运行时路由错误"
+      likelihood: low
+      impact: critical
+      mitigation: "T01 基础设施任务统一分配 ID，研究文件已确认 next_available: 0x5C/0x1C"
+    - scenario: "TTS 引擎异步初始化超时导致 SpeakTextAction 首次调用失败"
+      likelihood: medium
+      impact: medium
+      mitigation: "TtsBridge 使用 lazy 初始化 + CountDownLatch 等待 onInit 回调，设置 5s 超时"
+    - scenario: "HttpRequestAction 未正确处理超时/SSL 证书导致宏执行阻塞"
+      likelihood: medium
+      impact: high
+      mitigation: "使用 OkHttp 设置 connectTimeout/readTimeout 为 30s，TrustManager 可选"
+    - scenario: "多个任务并行修改 strings.xml 导致合并冲突"
+      likelihood: medium
+      impact: medium
+      mitigation: "T01 一次性预填所有字符串；后续任务只读引用，不再修改 strings.xml"
+  assumptions:
+    - "Android 16 (API 36) 是唯一目标平台"
+    - "所有设置类操作通过 Shizuku shell 执行，不依赖 WRITE_SETTINGS 权限"
+    - "OkHttp 已在项目依赖中（或可直接使用 HttpURLConnection）"
+    - "TextToSpeech 引擎在大多数 Android 16 设备上可用"
+    - "OverlayToastBridge 的 overlay window 模式可复用于 Dialog 实现"
+
+implementation_specification:
+  code_structure: |
+    新增动作和约束分三类：
+    1) 已有 Registry inline 扩展：GlobalActionRegistry (设置开关)、GlobalCriterionRegistry (约束)、
+       NetworkCriterionRegistry (飞行模式)、ControlActionRegistry (Enable/Disable Macro)
+    2) 新建 Registry + Bridge：
+       - SoundActionRegistry (0x5C) + AudioManagerBridge — 音量/静音/DND
+       - SpeakTextAction + TtsBridge — TTS
+       - PlaySoundAction — 媒体播放
+    3) 新建复杂 Action 类：
+       - HttpRequestAction + NetworkActionRegistry (0x5E)
+       - DisplayNotificationAction + NotificationManagerBridge + UiActionRegistry (0x5D)
+       - DisplayDialogAction + OverlayDialogBridge
+       - ExportMacrosAction
+
+  affected_areas:
+    - "app/src/main/res/values/strings.xml — 新增约 60 条字符串资源"
+    - "app/src/main/AndroidManifest.xml — 新增 POST_NOTIFICATIONS + CAMERA (torch) 等权限"
+    - "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/GlobalActionRegistry.kt — 新增 6 个设置动作"
+    - "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/GlobalCriterionRegistry.kt — 新增 4 个约束"
+    - "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/NetworkCriterionRegistry.kt — 新增 1 个约束"
+    - "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/ControlActionRegistry.kt — 新增 Enable/Disable Macro"
+    - "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/BootstrapOptionRegistry.kt — 新增 3 个 Registry ID + PhantomFlow 入口"
+    - "app/src/main/java/top/xjunz/tasker/task/applet/option/AppletOptionFactory.kt — 实例化 3 个新 Registry"
+    - "app/src/main/java/top/xjunz/tasker/bridge/ — 新增 AudioManagerBridge, TtsBridge, NotificationManagerBridge, OverlayDialogBridge"
+    - "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/ — 新增 SoundActionRegistry, UiActionRegistry, NetworkActionRegistry"
+    - "app/src/main/java/top/xjunz/tasker/task/applet/action/ — 新增 SpeakTextAction, PlaySoundAction, HttpRequestAction, DisplayNotificationAction, DisplayDialogAction, ExportMacrosAction"
+    - "app/src/test/kotlin/ — 新增对应单测文件"
+
+  component_details:
+    - component: "AudioManagerBridge"
+      responsibility: "封装 AudioManager 系统服务：音量控制、铃声模式、耳机检测"
+      interfaces:
+        - "setStreamVolume(streamType: Int, volume: Int)"
+        - "getStreamMaxVolume(streamType: Int): Int"
+        - "setRingerMode(mode: Int)"
+        - "getRingerMode(): Int"
+        - "isHeadphoneConnected(): Boolean"
+
+    - component: "TtsBridge"
+      responsibility: "封装 TextToSpeech 引擎：初始化、朗读文本、停止"
+      interfaces:
+        - "speak(text: String): Boolean"
+        - "stop()"
+        - "isReady: Boolean"
+
+    - component: "NotificationManagerBridge"
+      responsibility: "封装 NotificationManager：发送通知、DND 模式控制"
+      interfaces:
+        - "showNotification(title: String, content: String, channelId: String)"
+        - "setInterruptionFilter(filter: Int)"
+
+    - component: "SoundActionRegistry (0x5C)"
+      responsibility: "声音操作注册表：音量、静音、DND、TTS、播放声音"
+      interfaces:
+        - "@AppletOrdinal(0x0000) volumeChange"
+        - "@AppletOrdinal(0x0001) silentVibrateMode"
+        - "@AppletOrdinal(0x0002) doNotDisturb"
+        - "@AppletOrdinal(0x0003) speakText"
+        - "@AppletOrdinal(0x0004) playStopSound"
+
+    - component: "UiActionRegistry (0x5D)"
+      responsibility: "UI 操作注册表：通知、对话框"
+      interfaces:
+        - "@AppletOrdinal(0x0000) displayNotification"
+        - "@AppletOrdinal(0x0001) displayDialog"
+
+    - component: "NetworkActionRegistry (0x5E)"
+      responsibility: "网络操作注册表：HTTP 请求"
+      interfaces:
+        - "@AppletOrdinal(0x0000) httpRequest"
+
+    - component: "HttpRequestAction"
+      responsibility: "执行 HTTP GET/POST 请求，返回响应码和体到变量"
+      interfaces:
+        - "doAction(args: Array<Any?>, runtime: TaskRuntime): Boolean"
+        - "参数: URL(String), Method(Int), Headers(String?), Body(String?)"
+        - "结果: statusCode(Int), responseBody(String)"
+
+    - component: "DisplayNotificationAction"
+      responsibility: "创建系统通知，支持标题、内容、频道配置"
+      interfaces:
+        - "doAction(args, runtime): Boolean"
+        - "参数: title(String), content(String), priority(Int)"
+
+    - component: "DisplayDialogAction"
+      responsibility: "通过 overlay window 显示对话框，支持标题、内容、按钮"
+      interfaces:
+        - "doAction(args, runtime): Boolean"
+        - "参数: title(String), content(String), timeout(Int)"
+
+  dependencies:
+    - component: "SoundActionRegistry"
+      relationship: "依赖 AudioManagerBridge 访问 AudioManager"
+    - component: "SpeakTextAction"
+      relationship: "依赖 TtsBridge 访问 TextToSpeech"
+    - component: "DisplayNotificationAction"
+      relationship: "依赖 NotificationManagerBridge 访问 NotificationManager"
+    - component: "DisplayDialogAction"
+      relationship: "依赖 OverlayDialogBridge 复用 OverlayToastBridge 的 WindowManager 模式"
+    - component: "所有新 Registry"
+      relationship: "注册到 BootstrapOptionRegistry + AppletOptionFactory"
+
+  integration_points:
+    - "BootstrapOptionRegistry companion — 3 个新 ID 常量 (0x5C, 0x5D, 0x5E)"
+    - "BootstrapOptionRegistry.actionFlowOptions — 添加 soundActions, uiActions, networkActions"
+    - "AppletOptionFactory.allRegistries — 添加 3 个新 Registry 实例"
+    - "strings.xml — 所有新动作/约束的标题和描述"
+
+contracts:
+  - from_task: T01
+    to_task: "T04-T09"
+    interface: "strings.xml 包含所有新动作/约束的标题字符串"
+    format: "R.string.* 资源 ID"
+
+  - from_task: T02
+    to_task: "T04-T09"
+    interface: "AndroidManifest.xml 包含所有新权限声明"
+    format: "<uses-permission> 条目"
+
+  - from_task: T03
+    to_task: "T06-T10"
+    interface: "AudioManagerBridge + SoundActionRegistry 骨架 + 新 Registry 骨架存在且编译通过"
+    format: "Kotlin 文件"
+
+  - from_task: T04
+    to_task: T14
+    interface: "GlobalActionRegistry 包含 6 个新设置动作，编译通过"
+    format: "@AppletOrdinal 字段"
+
+  - from_task: T05
+    to_task: T14
+    interface: "GlobalCriterionRegistry + NetworkCriterionRegistry 包含新约束，编译通过"
+    format: "@AppletOrdinal 字段"
+
+  - from_task: T06
+    to_task: T14
+    interface: "SoundActionRegistry 包含 volumeChange + silentVibrateMode + doNotDisturb"
+    format: "@AppletOrdinal 字段"
+
+  - from_task: T07
+    to_task: T14
+    interface: "SpeakTextAction + TtsBridge 编译通过"
+    format: "Kotlin 类文件"
+
+  - from_task: "T08-T13"
+    to_task: T14
+    interface: "所有新 Registry/Action/Bridge 文件编译通过"
+    format: "Kotlin 类文件"
+
+  - from_task: T14
+    to_task: T17
+    interface: "BootstrapOptionRegistry + AppletOptionFactory 注册完成，全量编译通过"
+    format: "编译 exit 0"
+
+  - from_task: T17
+    to_task: T20
+    interface: "全量编译+测试通过，安全审查基线就绪"
+    format: "测试 exit 0"
+
+# ============================================================
+# 任务列表
+# ============================================================
+
+tasks:
+  # ================================================
+  # Wave 1: 基础设施
+  # ================================================
+
+  - id: T01
+    title: "添加所有新动作/约束的字符串资源到 strings.xml"
+    description: |
+      一次性在 strings.xml 中添加全部约 60 条字符串资源，涵盖：
+      - 6 个设备设置动作标题 + 描述
+      - 5 个声音动作标题 + 参数描述
+      - 3 个 UI 动作标题 + 参数描述
+      - 4 个网络/内部动作标题 + 参数描述
+      - 6 个约束标题
+      - 3 个新 Registry 分类标题 (sound_actions, ui_actions, network_actions)
+      集中添加避免后续多任务并行修改 strings.xml 产生冲突。
+    wave: 1
+    agent: gem-implementer
+    prototype: false
+    covers: []
+    priority: high
+    status: pending
+    dependencies: []
+    conflicts_with: []
+    context_files:
+      - path: "app/src/main/res/values/strings.xml"
+        description: "现有字符串资源文件"
+      - path: "docs/plan/action-constraint-batch/research_findings_action_constraint_infra.yaml"
+        description: "研究文件中 feature_feasibility 列出所有需要的字符串"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "字符串资源是所有 Registry 注册的前提，集中添加避免合并冲突"
+        timestamp: "2026-04-14"
+        estimated_effort: medium
+        estimated_files: 1
+        estimated_lines: 120
+        focus_area: "strings.xml"
+        verification:
+          - "JAVA_HOME=/opt/homebrew/Cellar/openjdk@17/17.0.18/libexec/openjdk.jdk/Contents/Home ./gradlew :app:processDebugResources"
+          - "grep -c 'set_auto_rotate\\|set_brightness\\|toggle_bluetooth\\|toggle_dark_theme\\|toggle_wifi\\|toggle_torch' app/src/main/res/values/strings.xml"
+        acceptance_criteria:
+          - "包含设备设置动作标题: set_auto_rotate, toggle_bluetooth, set_brightness, toggle_dark_theme, toggle_wifi, toggle_torch"
+          - "包含声音动作标题: set_volume, play_sound, set_ringer_mode, speak_text, set_do_not_disturb"
+          - "包含 UI 动作标题: display_notification, display_dialog"
+          - "包含网络/内部动作标题: http_request, control_media, toggle_macro, export_macros"
+          - "包含约束标题: is_device_locked, is_airplane_mode, is_headphone_connected, current_call_state, is_dark_mode, is_macro_running"
+          - "包含 Registry 分类标题: sound_actions, ui_actions, network_actions"
+          - "包含参数描述: brightness_value, volume_level, stream_type, ringer_mode, tts_text, sound_file_path, notification_title, notification_content, dialog_title, dialog_content, http_url, http_method, http_headers, http_body, http_response_code, http_response_body, media_action, macro_name"
+          - ":app:processDebugResources 编译通过"
+        failure_modes:
+          - scenario: "字符串 name 与现有条目冲突"
+            likelihood: low
+            impact: low
+            mitigation: "添加前先 grep 确认无同名字符串"
+        tech_stack:
+          - "Android XML Resources"
+        test_coverage: null
+
+  - id: T02
+    title: "添加新权限声明到 AndroidManifest.xml"
+    description: |
+      在 AndroidManifest.xml 中添加新动作所需的权限声明：
+      - CAMERA (Torch 手电筒)
+      - POST_NOTIFICATIONS (API 33+ 通知权限)
+      - ACCESS_NOTIFICATION_POLICY (DND 模式)
+      - INTERNET (HTTP 请求，检查是否已有)
+      注意：BLUETOOTH_CONNECT、READ_PHONE_STATE 等触发器权限可能已在触发器批量计划中添加，需检查避免重复。
+    wave: 1
+    agent: gem-implementer
+    prototype: false
+    covers: []
+    priority: high
+    status: pending
+    dependencies: []
+    conflicts_with: []
+    context_files:
+      - path: "app/src/main/AndroidManifest.xml"
+        description: "当前 Manifest 文件，检查已有权限"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "权限声明是运行时必需的，必须先于动作实现"
+        timestamp: "2026-04-14"
+        estimated_effort: small
+        estimated_files: 1
+        estimated_lines: 10
+        focus_area: "AndroidManifest.xml <uses-permission> 区域"
+        verification:
+          - "grep 'CAMERA\\|POST_NOTIFICATIONS\\|ACCESS_NOTIFICATION_POLICY\\|INTERNET' app/src/main/AndroidManifest.xml"
+          - "JAVA_HOME=/opt/homebrew/Cellar/openjdk@17/17.0.18/libexec/openjdk.jdk/Contents/Home ./gradlew :app:processDebugManifest"
+        acceptance_criteria:
+          - "CAMERA 权限已声明（Torch 需要）"
+          - "POST_NOTIFICATIONS 权限已声明"
+          - "ACCESS_NOTIFICATION_POLICY 权限已声明"
+          - "INTERNET 权限已声明（如不存在则添加）"
+          - "Manifest merge 成功"
+        failure_modes:
+          - scenario: "重复权限声明导致 merge 告警"
+            likelihood: low
+            impact: low
+            mitigation: "先 grep 检查是否已存在"
+        tech_stack:
+          - "Android Manifest XML"
+        test_coverage: null
+
+  - id: T03
+    title: "创建新 Registry 骨架 + Bridge 骨架"
+    description: |
+      创建 3 个新 Registry 和 2 个新 Bridge 的空骨架文件，确保编译通过：
+      1. SoundActionRegistry (ID=0x5C) — 声音操作注册表
+      2. UiActionRegistry (ID=0x5D) — UI 操作注册表
+      3. NetworkActionRegistry (ID=0x5E) — 网络操作注册表
+      4. AudioManagerBridge — AudioManager 系统服务封装
+      5. NotificationManagerBridge — NotificationManager + NotificationPolicy 封装
+      每个 Registry 只包含类声明和继承，每个 Bridge 只包含 lazy service 获取。
+      同时在 BootstrapOptionRegistry companion 中添加 3 个 ID 常量。
+      注意：此任务只建骨架，不添加 PhantomFlow 入口和 allRegistries 注册（留给 Wave 5 的 T14）。
+    wave: 1
+    agent: gem-implementer
+    prototype: false
+    covers: []
+    priority: high
+    status: pending
+    dependencies: []
+    conflicts_with: []
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/VibrationActionRegistry.kt"
+        description: "参考现有 ActionRegistry 的最简骨架"
+      - path: "app/src/main/java/top/xjunz/tasker/bridge/BatteryManagerBridge.kt"
+        description: "参考 Bridge 模式"
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/BootstrapOptionRegistry.kt"
+        description: "companion object 中 ID 常量区域"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "骨架先行，后续 Wave 2/3 任务可直接在 Registry 中添加选项"
+        timestamp: "2026-04-14"
+        estimated_effort: medium
+        estimated_files: 6
+        estimated_lines: 80
+        focus_area: "新文件创建 + BootstrapOptionRegistry companion"
+        verification:
+          - "JAVA_HOME=/opt/homebrew/Cellar/openjdk@17/17.0.18/libexec/openjdk.jdk/Contents/Home ./gradlew :app:compileDebugKotlin"
+        acceptance_criteria:
+          - "SoundActionRegistry.kt 存在，继承 AppletOptionRegistry(id)"
+          - "UiActionRegistry.kt 存在，继承 AppletOptionRegistry(id)"
+          - "NetworkActionRegistry.kt 存在，继承 AppletOptionRegistry(id)"
+          - "AudioManagerBridge.kt 存在，object 结构，lazy 获取 AudioManager"
+          - "NotificationManagerBridge.kt 存在，object 结构，lazy 获取 NotificationManager"
+          - "BootstrapOptionRegistry companion 包含 ID_SOUND_ACTION_REGISTRY=0x5C, ID_UI_ACTION_REGISTRY=0x5D, ID_NETWORK_ACTION_REGISTRY=0x5E"
+          - ":app:compileDebugKotlin 编译通过"
+        failure_modes:
+          - scenario: "import 路径错误导致编译失败"
+            likelihood: low
+            impact: low
+            mitigation: "参考已有文件的 import 模式"
+        tech_stack:
+          - "Kotlin"
+          - "Android AudioManager"
+          - "Android NotificationManager"
+        test_coverage: null
+
+  # ================================================
+  # Wave 2: 简单动作（设备设置开关）+ 简单约束
+  # ================================================
+
+  - id: T04
+    title: "实现 6 个设备设置开关动作 (GlobalActionRegistry)"
+    description: |
+      在 GlobalActionRegistry 中添加 6 个简单设备设置动作，全部使用 inline lambda 模式：
+      1. A-SET-002 Auto Rotate — Settings.System.ACCELEROMETER_ROTATION (0/1)
+      2. A-SET-003 Bluetooth — shell: settings put global bluetooth_on 0/1
+      3. A-SET-004 Brightness — Settings.System.SCREEN_BRIGHTNESS (0-255) + 关闭自动亮度
+      4. A-SET-005 Dark Theme — shell: cmd uimode night yes/no
+      5. A-SET-016 WiFi — shell: svc wifi enable/disable
+      6. A-SET-033 Torch — CameraManager.setTorchMode(cameraId, enabled)
+      所有设置类动作标记 .shizukuOnly()（除 Torch 外），通过 Shizuku shell 执行。
+      Brightness 使用 simpleSingleNonNullArgAction<Int>，其余用 emptyArgAction 或参数化动作。
+      @AppletOrdinal 从 0x0009 开始（当前 GlobalActionRegistry 最后是 0x0008）。
+    wave: 2
+    agent: gem-implementer
+    prototype: false
+    covers:
+      - "A-SET-002"
+      - "A-SET-003"
+      - "A-SET-004"
+      - "A-SET-005"
+      - "A-SET-016"
+      - "A-SET-033"
+    priority: high
+    status: pending
+    dependencies: [T01, T03]
+    conflicts_with: []
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/GlobalActionRegistry.kt"
+        description: "当前文件，最后 ordinal=0x0008 (wakeUpScreen)"
+      - path: "app/src/main/java/top/xjunz/tasker/bridge/PowerManagerBridge.kt"
+        description: "参考 Bridge 调用模式"
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/ShellCmdActionRegistry.kt"
+        description: "参考 Shizuku shell 命令执行模式"
+      - path: "docs/plan/action-constraint-batch/research_findings_action_constraint_infra.yaml"
+        description: "feature_feasibility 中各动作的实现细节"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "6 个设置动作共享同一文件和模式，合并为一个任务提高效率"
+        timestamp: "2026-04-14"
+        estimated_effort: medium
+        estimated_files: 1
+        estimated_lines: 120
+        focus_area: "GlobalActionRegistry.kt"
+        verification:
+          - "JAVA_HOME=/opt/homebrew/Cellar/openjdk@17/17.0.18/libexec/openjdk.jdk/Contents/Home ./gradlew :app:compileDebugKotlin"
+          - "grep -c 'AppletOrdinal' app/src/main/java/top/xjunz/tasker/task/applet/option/registry/GlobalActionRegistry.kt"
+        acceptance_criteria:
+          - "GlobalActionRegistry 包含 @AppletOrdinal(0x0009) setAutoRotate — toggle auto rotation"
+          - "GlobalActionRegistry 包含 @AppletOrdinal(0x000A) toggleBluetooth — enable/disable bluetooth via shell"
+          - "GlobalActionRegistry 包含 @AppletOrdinal(0x000B) setBrightness — simpleSingleNonNullArgAction<Int> + VariantArgType.INT_PERCENT"
+          - "GlobalActionRegistry 包含 @AppletOrdinal(0x000C) toggleDarkTheme — cmd uimode night yes/no"
+          - "GlobalActionRegistry 包含 @AppletOrdinal(0x000D) toggleWifi — svc wifi enable/disable"
+          - "GlobalActionRegistry 包含 @AppletOrdinal(0x000E) toggleTorch — CameraManager.setTorchMode"
+          - "Brightness 参数为 INT_PERCENT (0-100)，内部映射 percentage * 255 / 100"
+          - "Bluetooth/DarkTheme/WiFi 标记 .shizukuOnly()"
+          - ":app:compileDebugKotlin 编译通过"
+        failure_modes:
+          - scenario: "CameraManager.setTorchMode 需要 cameraId，不同设备可能有多个摄像头"
+            likelihood: medium
+            impact: low
+            mitigation: "使用 cameraManager.cameraIdList[0] 默认后置摄像头"
+          - scenario: "shell 命令执行方式在当前 Shizuku 封装中不一致"
+            likelihood: medium
+            impact: medium
+            mitigation: "参考 ShellCmdActionRegistry 的 shell 执行模式"
+        tech_stack:
+          - "Kotlin"
+          - "Android Settings API"
+          - "Shizuku Shell"
+          - "CameraManager"
+        test_coverage: "单测验证 shell 命令构建和参数序列化"
+
+  - id: T05
+    title: "实现 5 个简单约束 (GlobalCriterionRegistry + NetworkCriterionRegistry)"
+    description: |
+      在已有 Registry 中添加 5 个约束（全部使用 booleanCriterion 或 unaryEqualCriterion）：
+      1. C-DEV-002 Device Locked — KeyguardManager.isKeyguardLocked()，在 GlobalCriterionRegistry
+      2. C-APP-003 Headphone — AudioManagerBridge.isHeadphoneConnected()，在 GlobalCriterionRegistry
+      3. C-SYS-004 Dark Mode — Configuration.uiMode & UI_MODE_NIGHT_MASK，在 GlobalCriterionRegistry
+      4. C-PHONE-001 Call State — TelephonyManager.getCallState()，在 GlobalCriterionRegistry (unaryEqualCriterion)
+         注意: getCallState() 在 API 31+ 已 deprecated，实现时需添加 @Suppress("DEPRECATION")
+      5. C-NET-006 Airplane Mode — Settings.Global.AIRPLANE_MODE_ON，在 NetworkCriterionRegistry
+      GlobalCriterionRegistry 当前最后 ordinal=0x0011，新增从 0x0012 开始。
+      NetworkCriterionRegistry 当前最后 ordinal=0x0004，新增从 0x0005 开始。
+    wave: 2
+    agent: gem-implementer
+    prototype: false
+    covers:
+      - "C-DEV-002"
+      - "C-APP-003"
+      - "C-SYS-004"
+      - "C-PHONE-001"
+      - "C-NET-006"
+    priority: medium
+    status: pending
+    dependencies: [T01, T03]
+    conflicts_with: []
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/GlobalCriterionRegistry.kt"
+        description: "当前文件，最后 ordinal=0x0011"
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/NetworkCriterionRegistry.kt"
+        description: "当前文件，最后 ordinal=0x0004"
+      - path: "app/src/main/java/top/xjunz/tasker/bridge/ConnectivityManagerBridge.kt"
+        description: "参考 Bridge 查询模式"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "5 个简单约束共享 booleanCriterion 模式，修改 2 个已有文件"
+        timestamp: "2026-04-14"
+        estimated_effort: small
+        estimated_files: 2
+        estimated_lines: 60
+        focus_area: "GlobalCriterionRegistry.kt + NetworkCriterionRegistry.kt"
+        verification:
+          - "JAVA_HOME=/opt/homebrew/Cellar/openjdk@17/17.0.18/libexec/openjdk.jdk/Contents/Home ./gradlew :app:compileDebugKotlin"
+          - "grep 'isDeviceLocked\\|isHeadphoneConnected\\|isDarkMode\\|callState\\|isAirplaneMode' app/src/main/java/top/xjunz/tasker/task/applet/option/registry/Global*.kt app/src/main/java/top/xjunz/tasker/task/applet/option/registry/Network*.kt"
+        acceptance_criteria:
+          - "GlobalCriterionRegistry @AppletOrdinal(0x0012) isDeviceLocked — booleanCriterion + KeyguardManager"
+          - "GlobalCriterionRegistry @AppletOrdinal(0x0013) isHeadphoneConnected — booleanCriterion + AudioManagerBridge"
+          - "GlobalCriterionRegistry @AppletOrdinal(0x0014) isDarkMode — booleanCriterion + Configuration"
+          - "GlobalCriterionRegistry @AppletOrdinal(0x0015) callState — unaryEqualCriterion + TelephonyManager"
+          - "NetworkCriterionRegistry @AppletOrdinal(0x0005) isAirplaneMode — booleanCriterion + Settings.Global"
+          - "所有 booleanCriterion 使用 invertibleAppletOption"
+          - ":app:compileDebugKotlin 编译通过"
+        failure_modes:
+          - scenario: "TelephonyManager.getCallState() deprecated in API 31+，需要使用 callback 模式"
+            likelihood: medium
+            impact: low
+            mitigation: "使用 TelephonyManager.getCallStateForSubscription() 或兼容方式"
+        tech_stack:
+          - "Kotlin"
+          - "Android KeyguardManager"
+          - "Android AudioManager"
+          - "Android TelephonyManager"
+        test_coverage: "基于 booleanCriterion 框架验证"
+
+  - id: T06
+    title: "实现 3 个简单声音动作 (SoundActionRegistry: Volume + Silent + DND)"
+    description: |
+      在 SoundActionRegistry 中添加 3 个声音动作：
+      1. A-SND-001 Volume Change — AudioManagerBridge.setStreamVolume(streamType, volume)
+         参数: streamType (MUSIC/RING/NOTIFICATION/ALARM) + volume (0-maxVolume)
+      2. A-SND-006 Silent/Vibrate Mode — AudioManagerBridge.setRingerMode(mode)
+         参数: mode (NORMAL=2/VIBRATE=1/SILENT=0)
+      3. A-SND-014 Do Not Disturb — NotificationManagerBridge.setInterruptionFilter(filter)
+         参数: filter (ALL=1/PRIORITY=2/NONE=3/ALARMS=4)
+      Volume 使用 doubleArgsAction（streamType + volume），其余使用 simpleSingleNonNullArgAction<Int>。
+    wave: 2
+    agent: gem-implementer
+    prototype: false
+    covers:
+      - "A-SND-001"
+      - "A-SND-006"
+      - "A-SND-014"
+    priority: medium
+    status: pending
+    dependencies: [T01, T03]
+    conflicts_with: [T07]
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/VibrationActionRegistry.kt"
+        description: "参考 ActionRegistry + Bridge 调用模式"
+      - path: "app/src/main/java/top/xjunz/tasker/bridge/VibratorBridge.kt"
+        description: "参考 Bridge 封装模式"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "3 个声音动作共享 AudioManagerBridge，放入同一 Registry"
+        timestamp: "2026-04-14"
+        estimated_effort: medium
+        estimated_files: 1
+        estimated_lines: 80
+        focus_area: "SoundActionRegistry.kt"
+        verification:
+          - "JAVA_HOME=/opt/homebrew/Cellar/openjdk@17/17.0.18/libexec/openjdk.jdk/Contents/Home ./gradlew :app:compileDebugKotlin"
+        acceptance_criteria:
+          - "SoundActionRegistry @AppletOrdinal(0x0000) volumeChange — doubleArgsAction + AudioManagerBridge.setStreamVolume"
+          - "SoundActionRegistry @AppletOrdinal(0x0001) silentVibrateMode — simpleSingleNonNullArgAction<Int> + AudioManagerBridge.setRingerMode"
+          - "SoundActionRegistry @AppletOrdinal(0x0002) doNotDisturb — simpleSingleNonNullArgAction<Int> + NotificationManagerBridge.setInterruptionFilter"
+          - "volumeChange 有 withValueArgument<Int>(stream_type) + withValueArgument<Int>(volume_level)"
+          - "DND 标记需 ACCESS_NOTIFICATION_POLICY 权限说明"
+          - ":app:compileDebugKotlin 编译通过"
+        failure_modes:
+          - scenario: "DND 需要 NotificationPolicy access grant，首次使用可能抛异常"
+            likelihood: medium
+            impact: medium
+            mitigation: "在 doAction 中 catch SecurityException 返回 false"
+        tech_stack:
+          - "Kotlin"
+          - "AudioManagerBridge"
+          - "NotificationManagerBridge"
+        test_coverage: "单测验证 Bridge 调用参数"
+
+  - id: T07
+    title: "实现 Speak Text (TTS) 动作 (TtsBridge + SpeakTextAction)"
+    description: |
+      实现 TTS 语音朗读功能：
+      1. 创建 TtsBridge — 封装 TextToSpeech 引擎的初始化和生命周期
+      2. 创建 SpeakTextAction — 继承 SingleArgAction<String>，调用 TtsBridge.speak()
+      3. 在 SoundActionRegistry 中注册 @AppletOrdinal(0x0003) speakText
+      TTS 的异步初始化通过 suspendCancellableCoroutine 包装为挂起函数。
+      使用 VarRefAction 模式支持变量模板文本。
+    wave: 3
+    agent: gem-implementer
+    prototype: false
+    covers:
+      - "A-SND-007"
+    priority: medium
+    status: pending
+    dependencies: [T01, T03, T06]
+    conflicts_with: [T08]
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/bridge/VibratorBridge.kt"
+        description: "参考 Bridge 封装模式"
+      - path: "app/src/main/java/top/xjunz/tasker/engine/applet/action/VarRefAction.kt"
+        description: "参考变量模板文本的 VarRef 模式"
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/TextActionRegistry.kt"
+        description: "参考 makeToast 的 VarRef 用法"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "TTS 需要独立 Bridge 处理异步初始化，复杂度中等"
+        timestamp: "2026-04-14"
+        estimated_effort: medium
+        estimated_files: 3
+        estimated_lines: 100
+        focus_area: "TtsBridge.kt + SpeakTextAction.kt + SoundActionRegistry.kt 新增条目"
+        verification:
+          - "JAVA_HOME=/opt/homebrew/Cellar/openjdk@17/17.0.18/libexec/openjdk.jdk/Contents/Home ./gradlew :app:compileDebugKotlin"
+          - "JAVA_HOME=/opt/homebrew/Cellar/openjdk@17/17.0.18/libexec/openjdk.jdk/Contents/Home ./gradlew :app:testDebugUnitTest --tests '*.SpeakTextActionTest'"
+        acceptance_criteria:
+          - "TtsBridge object 存在，lazy 初始化 TextToSpeech"
+          - "TtsBridge.speak(text) 调用 tts.speak() 返回 Boolean"
+          - "SpeakTextAction 使用 optimisticVarRefAction 模式"
+          - "SoundActionRegistry @AppletOrdinal(0x0003) speakText 已注册"
+          - "单测验证 TtsBridge mock 调用"
+          - ":app:compileDebugKotlin 编译通过"
+        failure_modes:
+          - scenario: "TextToSpeech 初始化回调 OnInitListener 返回 ERROR"
+            likelihood: medium
+            impact: medium
+            mitigation: "TtsBridge 记录 isReady 状态，speak() 在 !isReady 时返回 false"
+        tech_stack:
+          - "Kotlin"
+          - "Android TextToSpeech"
+          - "Coroutines"
+        test_coverage: "SpeakTextActionTest 验证 TtsBridge 交互"
+
+  - id: T08
+    title: "实现 Play/Stop Sound 动作 (PlaySoundAction)"
+    description: |
+      实现播放/停止音频文件功能：
+      1. 创建 PlaySoundAction — 使用 MediaPlayer 播放指定文件路径或 URI
+      2. 在 SoundActionRegistry 中注册 @AppletOrdinal(0x0004) playStopSound
+      参数: filePath (String) + loop (Boolean, 可选)
+      需要管理 MediaPlayer 生命周期（prepare → start → release）。
+    wave: 3
+    agent: gem-implementer
+    prototype: false
+    covers:
+      - "A-SND-005"
+    priority: medium
+    status: pending
+    dependencies: [T01, T03, T06]
+    conflicts_with: [T07]
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/action/Vibrate.kt"
+        description: "参考自定义 SingleArgAction 模式"
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/value/VariantArgType.kt"
+        description: "参考 TEXT_FILE_PATH 参数类型"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "MediaPlayer 需要生命周期管理，复杂度中等"
+        timestamp: "2026-04-14"
+        estimated_effort: medium
+        estimated_files: 2
+        estimated_lines: 80
+        focus_area: "PlaySoundAction.kt + SoundActionRegistry.kt 新增条目"
+        verification:
+          - "JAVA_HOME=/opt/homebrew/Cellar/openjdk@17/17.0.18/libexec/openjdk.jdk/Contents/Home ./gradlew :app:compileDebugKotlin"
+          - "JAVA_HOME=/opt/homebrew/Cellar/openjdk@17/17.0.18/libexec/openjdk.jdk/Contents/Home ./gradlew :app:testDebugUnitTest --tests '*.PlaySoundActionTest'"
+        acceptance_criteria:
+          - "PlaySoundAction 继承 SingleArgAction<String> 或 ArgumentAction"
+          - "doAction 中创建 MediaPlayer，setDataSource → prepare → start"
+          - "参数使用 VariantArgType.TEXT_FILE_PATH"
+          - "SoundActionRegistry @AppletOrdinal(0x0004) playStopSound 已注册"
+          - ":app:compileDebugKotlin 编译通过"
+        failure_modes:
+          - scenario: "文件路径不存在导致 MediaPlayer prepare 抛 IOException"
+            likelihood: medium
+            impact: low
+            mitigation: "doAction 中 try-catch IOException，返回 false"
+        tech_stack:
+          - "Kotlin"
+          - "Android MediaPlayer"
+        test_coverage: "单测验证参数序列化和异常处理"
+
+  - id: T09
+    title: "实现 Control Media 动作 + Enable/Disable Macro + Macro Running 约束"
+    description: |
+      3 个中等复杂度功能合并实现：
+      1. A-MEDIA-001 Control Media — 发送媒体按键 (KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE/NEXT/PREVIOUS/STOP)
+         使用 AudioManager.dispatchMediaKeyEvent() 或 instrumentation.sendKeyDownUpSync()
+         在 GlobalActionRegistry 中注册 @AppletOrdinal(0x000F)
+      2. A-INT-001 Enable/Disable Macro — 参考现有 ControlActionRegistry.disableTask 模式
+         通过 LocalTaskManager 查找指定宏并启用/禁用
+         前置修复: 已有 pauseUntilTomorrow 和 pauseFor 均用 @AppletOrdinal(0x0020) 冲突，需先将 pauseFor 改为 0x0021
+         在 ControlActionRegistry 中注册 @AppletOrdinal(0x0022) toggleMacro
+      3. C-INT-002 Macro Running — 查询 LocalTaskManager 中指定宏是否正在执行
+         在 GlobalCriterionRegistry 中注册 @AppletOrdinal(0x0016)
+    wave: 3
+    agent: gem-implementer
+    prototype: false
+    covers:
+      - "A-MEDIA-001"
+      - "A-INT-001"
+      - "C-INT-002"
+    priority: medium
+    status: pending
+    dependencies: [T01, T03]
+    conflicts_with: [T04, T05]
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/ControlActionRegistry.kt"
+        description: "参考 disableTask 模式；已有 0x0020 ordinal 冲突需先修复 (pauseFor→0x0021)，新增从 0x0022 开始"
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/GlobalActionRegistry.kt"
+        description: "添加 Control Media 动作"
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/GlobalCriterionRegistry.kt"
+        description: "添加 Macro Running 约束"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "3 个功能触及不同文件但复杂度都是中等，合并减少上下文切换"
+        timestamp: "2026-04-14"
+        estimated_effort: medium
+        estimated_files: 3
+        estimated_lines: 80
+        focus_area: "GlobalActionRegistry + ControlActionRegistry + GlobalCriterionRegistry"
+        verification:
+          - "JAVA_HOME=/opt/homebrew/Cellar/openjdk@17/17.0.18/libexec/openjdk.jdk/Contents/Home ./gradlew :app:compileDebugKotlin"
+          - "JAVA_HOME=/opt/homebrew/Cellar/openjdk@17/17.0.18/libexec/openjdk.jdk/Contents/Home ./gradlew :app:testDebugUnitTest --tests '*.ControlMediaActionTest'"
+        acceptance_criteria:
+          - "前置修复: ControlActionRegistry 中 pauseFor 从 @AppletOrdinal(0x0020) 改为 0x0021"
+          - "GlobalActionRegistry @AppletOrdinal(0x000F) controlMedia — 媒体按键参数化"
+          - "前置修复: ControlActionRegistry 中 pauseFor 从 @AppletOrdinal(0x0020) 改为 0x0021"
+          - "ControlActionRegistry @AppletOrdinal(0x0022) toggleMacro — 根据宏名切换启用/禁用"
+          - "GlobalCriterionRegistry @AppletOrdinal(0x0016) isMacroRunning — 查询指定宏运行状态"
+          - "Control Media 参数为 Int (PLAY_PAUSE=0/NEXT=1/PREV=2/STOP=3)"
+          - "Enable/Disable Macro 参数为 String (宏名)"
+          - ":app:compileDebugKotlin 编译通过"
+        failure_modes:
+          - scenario: "LocalTaskManager API 不支持按名称查找宏"
+            likelihood: medium
+            impact: medium
+            mitigation: "使用 TaskStorage 遍历任务列表按名称匹配"
+        tech_stack:
+          - "Kotlin"
+          - "Android AudioManager / KeyEvent"
+          - "LocalTaskManager"
+        test_coverage: "单测验证媒体按键映射和宏查找逻辑"
+
+  # ================================================
+  # Wave 4: 复杂动作
+  # ================================================
+
+  - id: T10
+    title: "实现 HTTP Request 动作 (HttpRequestAction + NetworkActionRegistry)"
+    description: |
+      实现 HTTP 请求功能：
+      1. 创建 HttpRequestAction — 继承 ArgumentAction
+         参数: URL(String), Method(Int: GET=0/POST=1), Headers(String?, JSON 格式), Body(String?)
+         结果: statusCode(Int) + responseBody(String) 通过 withResult 声明
+      2. 在 NetworkActionRegistry 中注册 @AppletOrdinal(0x0000) httpRequest
+      使用 HttpURLConnection 或项目已有 HTTP 库。
+      设置超时: connectTimeout=30s, readTimeout=30s。
+      在子线程/协程中执行网络请求（Action 已由协程调度器执行）。
+    wave: 4
+    agent: gem-implementer
+    prototype: false
+    covers:
+      - "A-NET-001"
+    priority: high
+    status: pending
+    dependencies: [T01, T02, T03]
+    conflicts_with: []
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/engine/applet/action/ArgumentAction.kt"
+        description: "多参数 Action 基类"
+      - path: "app/src/main/java/top/xjunz/tasker/engine/applet/action/Processor.kt"
+        description: "带结果输出的 Action 模式"
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/TextActionRegistry.kt"
+        description: "参考 extractText 的多参数+结果声明模式"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "HTTP 请求是高复杂度动作，需要独立实现和充分测试"
+        timestamp: "2026-04-14"
+        estimated_effort: large
+        estimated_files: 2
+        estimated_lines: 150
+        focus_area: "HttpRequestAction.kt + NetworkActionRegistry.kt"
+        verification:
+          - "JAVA_HOME=/opt/homebrew/Cellar/openjdk@17/17.0.18/libexec/openjdk.jdk/Contents/Home ./gradlew :app:compileDebugKotlin"
+          - "JAVA_HOME=/opt/homebrew/Cellar/openjdk@17/17.0.18/libexec/openjdk.jdk/Contents/Home ./gradlew :app:testDebugUnitTest --tests '*.HttpRequestActionTest'"
+        acceptance_criteria:
+          - "HttpRequestAction 继承 ArgumentAction 或使用 createProcessor"
+          - "支持 GET 和 POST 方法"
+          - "参数: URL, Method, Headers(可选), Body(可选)"
+          - "结果: statusCode(Int) + responseBody(String) 通过 withResult 声明"
+          - "设置 connectTimeout=30000, readTimeout=30000"
+          - "异常处理: IOException → 返回 false"
+          - "安全: URL 只允许 http/https scheme"
+          - "NetworkActionRegistry @AppletOrdinal(0x0000) httpRequest 已注册"
+          - ":app:compileDebugKotlin 编译通过"
+          - "单测覆盖正常请求和异常路径"
+        failure_modes:
+          - scenario: "SSRF 风险 — 用户输入内部 IP 地址"
+            likelihood: medium
+            impact: high
+            mitigation: "验证 URL scheme 必须为 http/https，禁止 file:// 等 scheme"
+          - scenario: "大响应体导致 OOM"
+            likelihood: low
+            impact: high
+            mitigation: "限制响应体读取大小为 1MB"
+        tech_stack:
+          - "Kotlin"
+          - "HttpURLConnection"
+          - "Coroutines"
+        test_coverage: "HttpRequestActionTest 覆盖 GET/POST/异常/超时"
+        requires_review: true
+        review_depth: standard
+        review_security_sensitive: true
+
+  - id: T11
+    title: "实现 Display Notification 动作 (DisplayNotificationAction)"
+    description: |
+      实现系统通知创建功能：
+      1. 扩展 NotificationManagerBridge — 添加 showNotification() 方法
+         管理 NotificationChannel (AutoPilot 专用频道)
+         构建 Notification.Builder 并发送
+      2. 创建 DisplayNotificationAction — 使用 ArgumentAction 或 createProcessor
+         参数: title(String), content(String), priority(Int, 可选)
+      3. 在 UiActionRegistry 中注册 @AppletOrdinal(0x0000) displayNotification
+    wave: 4
+    agent: gem-implementer
+    prototype: false
+    covers:
+      - "A-UI-001"
+    priority: medium
+    status: pending
+    dependencies: [T01, T03]
+    conflicts_with: [T12]
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/bridge/OverlayToastBridge.kt"
+        description: "参考通知/overlay 相关模式"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "通知功能需要 Channel 管理和 Builder 构建，复杂度高"
+        timestamp: "2026-04-14"
+        estimated_effort: medium
+        estimated_files: 3
+        estimated_lines: 120
+        focus_area: "NotificationManagerBridge.kt + DisplayNotificationAction.kt + UiActionRegistry.kt"
+        verification:
+          - "JAVA_HOME=/opt/homebrew/Cellar/openjdk@17/17.0.18/libexec/openjdk.jdk/Contents/Home ./gradlew :app:compileDebugKotlin"
+          - "JAVA_HOME=/opt/homebrew/Cellar/openjdk@17/17.0.18/libexec/openjdk.jdk/Contents/Home ./gradlew :app:testDebugUnitTest --tests '*.DisplayNotificationActionTest'"
+        acceptance_criteria:
+          - "NotificationManagerBridge 包含 showNotification(title, content, channelId) 方法"
+          - "自动创建 NotificationChannel (如不存在)"
+          - "DisplayNotificationAction 参数: title(String) + content(String)"
+          - "UiActionRegistry @AppletOrdinal(0x0000) displayNotification 已注册"
+          - "使用 withValueArgument 声明参数"
+          - ":app:compileDebugKotlin 编译通过"
+        failure_modes:
+          - scenario: "POST_NOTIFICATIONS 运行时权限未授权导致通知不显示"
+            likelihood: medium
+            impact: medium
+            mitigation: "doAction 返回 true（乐观模式），系统静默丢弃通知"
+        tech_stack:
+          - "Kotlin"
+          - "Android NotificationManager"
+          - "Android NotificationChannel"
+        test_coverage: "验证 Notification.Builder 参数设置"
+
+  - id: T12
+    title: "实现 Display Dialog 动作 (DisplayDialogAction + OverlayDialogBridge)"
+    description: |
+      实现 overlay 对话框显示功能：
+      1. 创建 OverlayDialogBridge — 复用 OverlayToastBridge 的 WindowManager overlay 模式
+         显示标题+内容+确认按钮的简单对话框
+         使用 TYPE_ACCESSIBILITY_OVERLAY (A11y 模式) 或 TYPE_SYSTEM_ALERT (Shizuku 模式)
+      2. 创建 DisplayDialogAction — 参数: title(String), content(String), timeout(Int, 可选)
+      3. 在 UiActionRegistry 中注册 @AppletOrdinal(0x0001) displayDialog
+    wave: 4
+    agent: gem-implementer
+    prototype: false
+    covers:
+      - "A-UI-002"
+    priority: medium
+    status: pending
+    dependencies: [T01, T03]
+    conflicts_with: [T11]
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/bridge/OverlayToastBridge.kt"
+        description: "核心参考：overlay window 创建、WindowManager 操作、生命周期管理"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "Dialog 需要 overlay window 和布局 XML，但可复用 OverlayToastBridge 模式"
+        timestamp: "2026-04-14"
+        estimated_effort: large
+        estimated_files: 3
+        estimated_lines: 200
+        focus_area: "OverlayDialogBridge.kt + DisplayDialogAction.kt + UiActionRegistry.kt"
+        verification:
+          - "JAVA_HOME=/opt/homebrew/Cellar/openjdk@17/17.0.18/libexec/openjdk.jdk/Contents/Home ./gradlew :app:compileDebugKotlin"
+          - "JAVA_HOME=/opt/homebrew/Cellar/openjdk@17/17.0.18/libexec/openjdk.jdk/Contents/Home ./gradlew :app:testDebugUnitTest --tests '*.DisplayDialogActionTest'"
+        acceptance_criteria:
+          - "OverlayDialogBridge 使用 WindowManager.addView() 显示 overlay 对话框"
+          - "支持标题、内容、确认按钮"
+          - "DisplayDialogAction 参数: title(String) + content(String) + timeout(Int,可选)"
+          - "UiActionRegistry @AppletOrdinal(0x0001) displayDialog 已注册"
+          - ":app:compileDebugKotlin 编译通过"
+        failure_modes:
+          - scenario: "overlay window 在 Android 16 上需要特殊权限"
+            likelihood: medium
+            impact: medium
+            mitigation: "复用 OverlayToastBridge 已验证的权限逻辑"
+        tech_stack:
+          - "Kotlin"
+          - "Android WindowManager"
+          - "TYPE_ACCESSIBILITY_OVERLAY"
+        test_coverage: "编译验证为主，运行时行为需设备测试"
+
+  - id: T13
+    title: "实现 Export Macros 动作 (ExportMacrosAction)"
+    description: |
+      实现宏导出功能：
+      1. 创建 ExportMacrosAction — 序列化指定宏为 JSON，写入文件
+         参数: filePath(String, VariantArgType.TEXT_FILE_PATH)
+         使用 TaskStorage 获取任务数据，序列化为 JSON 格式
+      2. 在 ControlActionRegistry 中注册 @AppletOrdinal(0x0023) exportMacros
+    wave: 6
+    agent: gem-implementer
+    prototype: true
+    covers:
+      - "A-INT-005"
+    priority: low
+    status: pending
+    dependencies: [T01, T09]
+    conflicts_with: []
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/ControlActionRegistry.kt"
+        description: "参考已有 disableTask 模式"
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/FileActionRegistry.kt"
+        description: "参考文件操作模式"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "导出功能涉及序列化和文件 I/O，但优先级低，放在最后波次"
+        timestamp: "2026-04-14"
+        estimated_effort: medium
+        estimated_files: 2
+        estimated_lines: 80
+        focus_area: "ExportMacrosAction.kt + ControlActionRegistry.kt"
+        verification:
+          - "JAVA_HOME=/opt/homebrew/Cellar/openjdk@17/17.0.18/libexec/openjdk.jdk/Contents/Home ./gradlew :app:compileDebugKotlin"
+          - "JAVA_HOME=/opt/homebrew/Cellar/openjdk@17/17.0.18/libexec/openjdk.jdk/Contents/Home ./gradlew :app:testDebugUnitTest --tests '*.ExportMacrosActionTest'"
+        acceptance_criteria:
+          - "ExportMacrosAction 使用 TaskStorage 获取任务数据"
+          - "序列化为 JSON 格式并写入指定路径"
+          - "参数: filePath(String) + VariantArgType.TEXT_FILE_PATH"
+          - "ControlActionRegistry @AppletOrdinal(0x0023) exportMacros 已注册"
+          - ":app:compileDebugKotlin 编译通过"
+        failure_modes:
+          - scenario: "文件写入权限不足"
+            likelihood: medium
+            impact: low
+            mitigation: "使用 app-specific storage 或引导 SAF 授权"
+        tech_stack:
+          - "Kotlin"
+          - "JSON serialization"
+          - "File I/O"
+        test_coverage: "单测验证序列化输出"
+
+  # ================================================
+  # Wave 5: 集成注册
+  # ================================================
+
+  - id: T14
+    title: "集成注册到 BootstrapOptionRegistry + AppletOptionFactory"
+    description: |
+      将所有新 Registry 统一注册到系统中：
+      1. BootstrapOptionRegistry 类体中新增 3 个 PhantomFlow 入口：
+         - @AppletOrdinal(0x0046) soundActions = flowOptionWithId<PhantomFlow>(ID_SOUND_ACTION_REGISTRY, R.string.sound_actions)
+         - @AppletOrdinal(0x0047) uiActions = flowOptionWithId<PhantomFlow>(ID_UI_ACTION_REGISTRY, R.string.ui_actions)
+         - @AppletOrdinal(0x0048) networkActions = flowOptionWithId<PhantomFlow>(ID_NETWORK_ACTION_REGISTRY, R.string.network_actions)
+      2. BootstrapOptionRegistry.actionFlowOptions 数组追加: soundActions, uiActions, networkActions
+      3. AppletOptionFactory 中：
+         - 实例化 SoundActionRegistry(BootstrapOptionRegistry.ID_SOUND_ACTION_REGISTRY)
+         - 实例化 UiActionRegistry(BootstrapOptionRegistry.ID_UI_ACTION_REGISTRY)
+         - 实例化 NetworkActionRegistry(BootstrapOptionRegistry.ID_NETWORK_ACTION_REGISTRY)
+         - 将 3 个实例添加到 allRegistries 数组的 /* action */ 区域
+    wave: 5
+    agent: gem-implementer
+    prototype: false
+    covers: []
+    priority: high
+    status: pending
+    dependencies: [T04, T05, T06, T07, T08, T09, T10, T11, T12]
+    conflicts_with: []
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/BootstrapOptionRegistry.kt"
+        description: "当前文件，最后 PhantomFlow ordinal=0x0045 (screenOcrActions)"
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/option/AppletOptionFactory.kt"
+        description: "当前 allRegistries 数组"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "集成注册必须在所有 Registry 内容就绪后进行，避免注册空 Registry"
+        timestamp: "2026-04-14"
+        estimated_effort: small
+        estimated_files: 2
+        estimated_lines: 40
+        focus_area: "BootstrapOptionRegistry.kt + AppletOptionFactory.kt"
+        verification:
+          - "JAVA_HOME=/opt/homebrew/Cellar/openjdk@17/17.0.18/libexec/openjdk.jdk/Contents/Home ./gradlew :app:compileDebugKotlin"
+          - "grep 'soundActions\\|uiActions\\|networkActions' app/src/main/java/top/xjunz/tasker/task/applet/option/registry/BootstrapOptionRegistry.kt"
+          - "grep 'SoundActionRegistry\\|UiActionRegistry\\|NetworkActionRegistry' app/src/main/java/top/xjunz/tasker/task/applet/option/AppletOptionFactory.kt"
+        acceptance_criteria:
+          - "BootstrapOptionRegistry 包含 @AppletOrdinal(0x0046) soundActions — PhantomFlow"
+          - "BootstrapOptionRegistry 包含 @AppletOrdinal(0x0047) uiActions — PhantomFlow"
+          - "BootstrapOptionRegistry 包含 @AppletOrdinal(0x0048) networkActions — PhantomFlow"
+          - "actionFlowOptions 数组包含 soundActions, uiActions, networkActions"
+          - "AppletOptionFactory 实例化 SoundActionRegistry, UiActionRegistry, NetworkActionRegistry"
+          - "allRegistries 数组包含 3 个新 Registry 实例"
+          - ":app:compileDebugKotlin 编译通过"
+        failure_modes:
+          - scenario: "AppletOrdinal 值 0x0046-0x0048 与未来分支冲突"
+            likelihood: low
+            impact: medium
+            mitigation: "当前最后是 0x0045，连续分配 0x0046-0x0048 无冲突"
+        tech_stack:
+          - "Kotlin"
+        test_coverage: null
+
+  - id: T15
+    title: "验证 Toast Message (A-UI-007) 已有实现"
+    description: |
+      验证 A-UI-007 Toast Message 已由 TextActionRegistry.makeToast 实现：
+      1. 读取 TextActionRegistry.kt 确认 makeToast 使用 OverlayToastBridge
+      2. 在已有单测中查找 makeToast 相关测试
+      3. 如果测试不存在，编写一个简单验证测试
+      4. 确认 makeToast 在 UI 菜单中可见
+      此为验证任务，不需要新代码（除非缺少测试）。
+    wave: 5
+    agent: gem-implementer
+    prototype: false
+    covers:
+      - "A-UI-007"
+    priority: low
+    status: pending
+    dependencies: [T14]
+    conflicts_with: []
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/TextActionRegistry.kt"
+        description: "包含 makeToast 定义"
+      - path: "app/src/main/java/top/xjunz/tasker/bridge/OverlayToastBridge.kt"
+        description: "Toast 实际实现"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "研究确认已有实现，只需验证无需新建代码"
+        timestamp: "2026-04-14"
+        estimated_effort: small
+        estimated_files: 0
+        estimated_lines: 10
+        focus_area: "TextActionRegistry.kt — makeToast 定义"
+        verification:
+          - "grep -A5 'makeToast' app/src/main/java/top/xjunz/tasker/task/applet/option/registry/TextActionRegistry.kt"
+          - "JAVA_HOME=/opt/homebrew/Cellar/openjdk@17/17.0.18/libexec/openjdk.jdk/Contents/Home ./gradlew :app:compileDebugKotlin"
+        acceptance_criteria:
+          - "TextActionRegistry.makeToast 存在且功能完整"
+          - "makeToast 调用 OverlayToastBridge 或等效 Toast 显示"
+          - "在 TextActionRegistry 的 UI 菜单中可访问"
+        failure_modes: []
+        tech_stack: []
+        test_coverage: "验证已有实现即可"
+
+  - id: T16
+    title: "编写设备设置动作单测"
+    description: |
+      为 Wave 2 的 6 个设备设置动作和 5 个约束编写单元测试：
+      1. GlobalActionRegistrySettingsTest — 验证 setAutoRotate, toggleBluetooth, setBrightness, toggleDarkTheme, toggleWifi, toggleTorch 的创建和参数
+      2. GlobalCriterionRegistryExtTest — 验证 isDeviceLocked, isHeadphoneConnected, isDarkMode, callState, isMacroRunning 的创建和翻转
+      3. NetworkCriterionRegistryExtTest — 验证 isAirplaneMode
+      使用 MockK mock Bridge 和系统服务。
+    wave: 5
+    agent: gem-implementer
+    prototype: false
+    covers: []
+    priority: medium
+    status: pending
+    dependencies: [T04, T05, T09]
+    conflicts_with: []
+    context_files:
+      - path: "app/src/test/kotlin/top/xjunz/tasker/task/event/BluetoothEventDispatcherTest.kt"
+        description: "参考已有单测模式"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "集中为简单动作/约束编写单测，确保回归安全"
+        timestamp: "2026-04-14"
+        estimated_effort: medium
+        estimated_files: 3
+        estimated_lines: 200
+        focus_area: "test/kotlin/ 新增单测文件"
+        verification:
+          - "JAVA_HOME=/opt/homebrew/Cellar/openjdk@17/17.0.18/libexec/openjdk.jdk/Contents/Home ./gradlew :app:testDebugUnitTest --tests '*.GlobalActionRegistrySettingsTest'"
+          - "JAVA_HOME=/opt/homebrew/Cellar/openjdk@17/17.0.18/libexec/openjdk.jdk/Contents/Home ./gradlew :app:testDebugUnitTest --tests '*.GlobalCriterionRegistryExtTest'"
+        acceptance_criteria:
+          - "所有设置动作有对应的单测方法"
+          - "所有约束有对应的单测方法"
+          - "单测全部通过"
+        failure_modes:
+          - scenario: "Mock 不完整导致 NullPointerException"
+            likelihood: medium
+            impact: low
+            mitigation: "参考已有测试模式确保 mock 覆盖"
+        tech_stack:
+          - "Kotlin"
+          - "JUnit 4"
+          - "MockK"
+        test_coverage: "覆盖所有新增动作/约束的创建和基本行为"
+
+  # ================================================
+  # Wave 6: 全量测试 + 安全审查
+  # ================================================
+
+  - id: T17
+    title: "全量编译和测试验证"
+    description: |
+      运行完整编译和全量测试套件，确保所有新增动作/约束无回归：
+      1. :app:compileDebugKotlin — 全量编译
+      2. :app:testDebugUnitTest — 全量单测
+      3. 验证所有新 Registry 的 AppletOrdinal 无冲突
+      4. 验证 AppletOptionFactory.preloadIfNeeded() 能正常扫描所有 Registry
+    wave: 6
+    agent: gem-implementer
+    prototype: false
+    covers: []
+    priority: high
+    status: pending
+    dependencies: [T14, T15, T16]
+    conflicts_with: []
+    context_files: []
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "集成验证是发布前的必要步骤"
+        timestamp: "2026-04-14"
+        estimated_effort: small
+        estimated_files: 0
+        estimated_lines: 0
+        focus_area: "全量编译和测试"
+        verification:
+          - "JAVA_HOME=/opt/homebrew/Cellar/openjdk@17/17.0.18/libexec/openjdk.jdk/Contents/Home ./gradlew :app:compileDebugKotlin"
+          - "JAVA_HOME=/opt/homebrew/Cellar/openjdk@17/17.0.18/libexec/openjdk.jdk/Contents/Home ./gradlew :app:testDebugUnitTest"
+        acceptance_criteria:
+          - ":app:compileDebugKotlin 编译成功 (exit 0)"
+          - ":app:testDebugUnitTest 全量通过 (0 failures)"
+          - "无 AppletOrdinal 冲突（运行时 parseDeclaredOptions() 不抛异常）"
+        failure_modes:
+          - scenario: "已有测试因新增代码产生副作用而失败"
+            likelihood: low
+            impact: medium
+            mitigation: "逐个修复失败测试，隔离目标代码"
+        tech_stack: []
+        test_coverage: "全量测试套件"
+
+  - id: T18
+    title: "全量编译+测试后提交代码"
+    description: |
+      在 T17 全量验证通过后，将所有变更提交到 Git 仓库并推送：
+      1. git add -A
+      2. git commit -m "feat: 批量实现 18 个新动作 + 6 个新约束"
+      3. git push
+    wave: 6
+    agent: gem-implementer
+    prototype: false
+    covers: []
+    priority: high
+    status: pending
+    dependencies: [T17]
+    conflicts_with: []
+    context_files: []
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "验证通过后提交代码，符合 AGENTS.md 要求"
+        timestamp: "2026-04-14"
+        estimated_effort: small
+        estimated_files: 0
+        estimated_lines: 0
+        focus_area: "Git 操作"
+        verification:
+          - "git log --oneline -1"
+          - "git status --short"
+        acceptance_criteria:
+          - "所有文件已 commit"
+          - "已推送到远程仓库"
+          - "git status 无未跟踪文件"
+        failure_modes: []
+        tech_stack:
+          - "Git"
+        test_coverage: null
+
+  - id: T19
+    title: "更新开发进度文档"
+    description: |
+      更新 docs/PROGRESS.md，记录 18 个新动作 + 6 个新约束的实现完成状态。
+      包括：
+      - 新增的 3 个 Registry (SoundActionRegistry, UiActionRegistry, NetworkActionRegistry)
+      - 新增的 Bridge (AudioManagerBridge, TtsBridge, NotificationManagerBridge, OverlayDialogBridge)
+      - 功能覆盖清单
+    wave: 6
+    agent: gem-documentation-writer
+    prototype: false
+    covers: []
+    priority: low
+    status: pending
+    dependencies: [T17]
+    conflicts_with: []
+    context_files:
+      - path: "docs/PROGRESS.md"
+        description: "当前开发进度文档"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "记录进度便于后续追踪"
+        timestamp: "2026-04-14"
+        estimated_effort: small
+        estimated_files: 1
+        estimated_lines: 50
+        focus_area: "docs/PROGRESS.md"
+        verification:
+          - "grep 'SoundActionRegistry\\|UiActionRegistry\\|NetworkActionRegistry' docs/PROGRESS.md"
+        acceptance_criteria:
+          - "PROGRESS.md 记录所有新增功能模块"
+          - "包含功能覆盖清单（18 动作 + 6 约束）"
+        failure_modes: []
+        tech_stack: []
+        test_coverage: null
+        task_type: update
+        audience: developers
+
+  - id: T20
+    title: "安全审查：HTTP Request + 权限检查 + 输入验证"
+    description: |
+      对高风险功能进行安全审查：
+      1. HttpRequestAction:
+         - SSRF 防护: 验证 URL scheme 限制 (http/https only)
+         - 响应体大小限制 (≤1MB)
+         - 请求超时配置合理性
+         - Headers 注入风险 (CRLF injection)
+      2. 权限声明完整性:
+         - 所有需要运行时权限的动作有正确的 .shizukuOnly() 标记
+         - AndroidManifest.xml 权限声明与代码使用匹配
+      3. 输入验证:
+         - Brightness 值范围 (0-255)
+         - Volume 值范围 (0-maxVolume)
+         - 文件路径不含 .. (path traversal)
+      4. 数据处理:
+         - ExportMacrosAction 写入路径安全
+         - HTTP 响应不含恶意内容注入风险
+    wave: 6
+    agent: gem-reviewer
+    prototype: false
+    covers: []
+    priority: high
+    status: pending
+    dependencies: [T17]
+    conflicts_with: []
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/action/HttpRequestAction.kt"
+        description: "HTTP 请求动作实现"
+      - path: "app/src/main/AndroidManifest.xml"
+        description: "权限声明"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "HTTP 请求和文件操作是 OWASP Top 10 高风险区域，必须审查"
+        timestamp: "2026-04-14"
+        estimated_effort: medium
+        estimated_files: 3
+        estimated_lines: 0
+        focus_area: "安全敏感动作审查"
+        verification:
+          - "grep -n 'URL\\|HttpURLConnection\\|openConnection' app/src/main/java/top/xjunz/tasker/task/applet/action/HttpRequestAction.kt"
+          - "grep -n 'shizukuOnly' app/src/main/java/top/xjunz/tasker/task/applet/option/registry/GlobalActionRegistry.kt"
+        acceptance_criteria:
+          - "HttpRequestAction URL scheme 限制为 http/https"
+          - "HttpRequestAction 响应体读取有大小限制"
+          - "所有设置类动作有 .shizukuOnly() 标记"
+          - "Brightness 参数有范围验证 (0-100, INT_PERCENT)，内部映射 percentage * 255 / 100"
+          - "文件路径参数无 path traversal 风险"
+          - "无 CRLF injection 风险"
+        failure_modes:
+          - scenario: "审查发现安全漏洞需要回退修复"
+            likelihood: medium
+            impact: high
+            mitigation: "安全修复优先，在 T17 commit 基础上追加修复 commit"
+        tech_stack: []
+        test_coverage: null
+        requires_review: true
+        review_depth: full
+        review_security_sensitive: true
+
+planning_pass: 2
+planning_history:
+  - pass: 1
+    reason: "初始计划创建，基于研究文件 research_findings_action_constraint_infra.yaml"
+    timestamp: "2026-04-14"
+  - pass: 2
+    reason: |
+      审查修复 3 个问题 + 额外改进:
+      1. MAJOR: ControlActionRegistry ordinal 0x0020 重复 — pauseFor→0x0021, toggleMacro→0x0022, exportMacros→0x0023; T09/T13 已更新
+      2. MEDIUM: 移除 T01↔T02 false conflicts_with（修改不同文件，无冲突）
+      3. MEDIUM: T04 setBrightness 参数统一为 INT_PERCENT (0-100)，内部映射 percentage * 255 / 100
+      4. T05 C-PHONE-001 加注 @Suppress("DEPRECATION") for getCallState()
+      5. T08/T09/T11/T12/T13 的 verification 添加单测执行命令
+    timestamp: "2026-04-14"
