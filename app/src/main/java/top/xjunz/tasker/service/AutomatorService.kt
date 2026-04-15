@@ -26,6 +26,7 @@ import top.xjunz.tasker.task.event.BluetoothEventDispatcher
 import top.xjunz.tasker.task.event.ClipboardEventDispatcher
 import top.xjunz.tasker.task.event.HeadsetEventDispatcher
 import top.xjunz.tasker.task.event.IntentEventDispatcher
+import top.xjunz.tasker.task.event.NotificationEventDispatcher
 import top.xjunz.tasker.task.event.MetaEventDispatcher
 import top.xjunz.tasker.task.event.NetworkEventDispatcher
 import top.xjunz.tasker.task.event.PhoneCallEventDispatcher
@@ -112,6 +113,7 @@ interface AutomatorService {
         eventDispatcher.registerEventDispatcher(PhoneCallEventDispatcher())
         eventDispatcher.registerEventDispatcher(SmsEventDispatcher())
         eventDispatcher.registerEventDispatcher(IntentEventDispatcher())
+        eventDispatcher.registerEventDispatcher(NotificationEventDispatcher())
         eventDispatcher.addCallback(residentTaskScheduler)
         eventDispatcher.addCallback(oneshotTaskScheduler)
     }

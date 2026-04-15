@@ -96,6 +96,9 @@
                 <data android:pathPattern="/.*..*..*..*.xtsks" />
                 <data android:pathPattern="/.*..*..*..*..*.xtsks" />
             </intent-filter>
+            <meta-data
+                android:name="android.app.shortcuts"
+                android:resource="@xml/shortcuts" />
         </activity>
 
         <activity
@@ -103,6 +106,21 @@
             android:exported="false"
             android:launchMode="singleTask"
             android:theme="@style/Base.Dialog.Min.CrashReport" />
+
+        <activity
+            android:name=".ui.main.ShortcutActivity"
+            android:exported="true"
+            android:theme="@android:style/Theme.NoDisplay"
+            android:excludeFromRecents="true">
+            <intent-filter>
+                <action android:name="top.xjunz.tasker.ACTION_CREATE_MACRO" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="top.xjunz.tasker.ACTION_QUICK_RUN" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
 
         <provider
             android:name="rikka.shizuku.ShizukuProvider"
@@ -133,6 +151,15 @@
             <meta-data
                 android:name="android.accessibilityservice"
                 android:resource="@xml/automator_service" />
+        </service>
+
+        <service
+            android:name=".service.AutoPilotNotificationListenerService"
+            android:exported="true"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
         </service>
 
         <receiver

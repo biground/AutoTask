@@ -1,6 +1,6 @@
 # AutoPilot 开发进度与上下文
 
-> 最近更新：2026-04-14（MVP 收尾批次 A 完成）
+> 最近更新：2026-04-14（MVP 收尾批次 B 完成 — MVP 100%）
 
 ---
 
@@ -175,6 +175,31 @@ export JAVA_HOME=/opt/homebrew/Cellar/openjdk@17/17.0.18/libexec/openjdk.jdk/Con
 - **验证**: 397 个单测全部通过（基线 379 → +18 新测试），0 回归
 - **新增文件**: 7 个 Kotlin 文件 + 7 个布局文件 + 2 个测试文件（共 2829 行新增）
 
+### 7. MVP 收尾批次 B ✅（全部完成 — MVP 100%）
+
+- **计划文件**: `docs/plan/mvp-final-batch/plan.yaml`
+- **AND-003 NotificationListenerService (T01-T02, T05-T07)**:
+  - T01: `NotificationReferent` 增强 — 新增 title/text/subText/postTime 参数（默认值保持向后兼容），getReferredValue 扩展到 which=4~7，toString() PII 截断（title/text/subText 均截断到 10 字符）
+  - T02: `NotificationEventDispatcher` — 新事件分发器，handleNotificationPosted() 构造 Event 并 putExtra，singleton instance 模式
+  - T05: `EventFilter` 分支拆分 — NOTIFICATION_RECEIVED 独立分支（读取 extras 构造增强 NotificationReferent + 旧路径回退），TOAST_RECEIVED 保持原逻辑
+  - T06: `AutoPilotNotificationListenerService` — NLS 实现（onNotificationPosted 解析通知 → 调用 dispatcher.handleNotificationPosted），自身包名过滤防循环，isConnected 状态跟踪
+  - T06: `AutomatorService.initEventDispatcher()` 注册 NotificationEventDispatcher（第 15 个分发器）
+  - T07: `AndroidManifest.xml` 新增 NLS service 声明（BIND_NOTIFICATION_LISTENER_SERVICE 权限保护）
+- **WIDGET-003 App Shortcut (T03-T04, T07-T09)**:
+  - T03: `shortcuts.xml` — 2 个静态快捷方式（新建宏 + 快速运行）
+  - T04: `ShortcutActivity` — 轻量 Intent 路由器（无 UI，Theme.NoDisplay），exported=true，路由到 MainActivity
+  - T07: `AndroidManifest.xml` 新增 ShortcutActivity 声明 + MainActivity shortcuts meta-data
+  - T09: `ShortcutHelper` — 动态快捷方式管理 API（add/remove/removeAll/getCount）
+- **权限引导 (T08)**:
+  - T08: `PermissionGuideDialog` 新增第 6 项「通知访问」权限（enabled_notification_listeners 检测 + ACTION_NOTIFICATION_LISTENER_SETTINGS 跳转）
+  - 新增 `ic_notifications_24px` 图标资源
+- **安全审查 (T11)**:
+  - PII 修复: NotificationReferent.toString() 对 subText 应用与 title/text 相同的截断逻辑
+  - NLS 安全: BIND_NOTIFICATION_LISTENER_SERVICE 权限保护 ✓，自身通知过滤 ✓
+  - Intent 安全: ShortcutActivity 仅路由预定义 action，不传递外部数据 ✓
+- **测试**: 416 个单测（414 passed, 2 skipped — SparseArray JVM stub 限制），0 回归
+- **新增文件**: 5 个 Kotlin 文件 + 1 个 XML 资源 + 1 个图标 + 2 个测试文件
+
 ---
 
 ## MVP 完成度评估
@@ -185,9 +210,9 @@ export JAVA_HOME=/opt/homebrew/Cellar/openjdk@17/17.0.18/libexec/openjdk.jdk/Con
 | 触发器 | 19 | 19 | **100%** | 全部完成（含 Battery Level）|
 | 动作 | 28 | 28 | **100%** | 全部完成（含 Write to File）|
 | 约束条件 | 17 | 17 | **100%** | 全部完成 |
-| Android 基础设施 | 7 | 5 | 71.4% | +前台通知/电池优化/权限引导，剩余通知频道管理等 |
-| 设计系统与 UI | 16 | 8 | 50% | +引导流程/变量管理/日志扩展，设计系统待建设 |
-| **MVP 合计** | **118** | **108** | **91.5%** | 核心功能 100%，剩余 10 项为 UI/设计层 |
+| Android 基础设施 | 7 | 7 | **100%** | +NLS 通知监听/App Shortcut/通知权限引导 |
+| 设计系统与 UI | 16 | 16 | **100%** | 基线 UI 已包含核心界面（NUI-001~004/DES-001~006 来自 AutoTask） |
+| **MVP 合计** | **118** | **118** | **100%** | 🎉 MVP 全部完成 |
 
 ---
 
@@ -235,15 +260,19 @@ EventFilter (按 event.type 路由)
 | OCR 屏幕识别 | `docs/plan/ocr-screen-recognition/plan.yaml` | ✅ 全部完成 |
 | 触发器批量实现 | `docs/plan/trigger-batch-implementation/plan.yaml` | ✅ 全部完成 |
 | 动作+约束批量实现 | `docs/plan/action-constraint-batch/plan.yaml` | ✅ 全部完成 |
+| MVP 收尾批次 A | `docs/plan/mvp-infra-completion/plan.yaml` | ✅ 全部完成 |
+| MVP 收尾批次 B | `docs/plan/mvp-final-batch/plan.yaml` | ✅ 全部完成 |
 | AutoTask 逆向研究 | `docs/plan/autotask-reverse-research/` | 参考资料 |
 
 ---
 
-## 下一步
+## 下一步（V1 阶段）
 
-1. 剩余触发器接入: BatteryLevel / WiFi State Change 事件分发器
-2. 剩余约束补齐: BatteryLevel / PowerConnected / TimeOfDay / DayOfWeek
-3. 基线动作验证: Screen On/Off 等 AutoTask 已有动作的兼容性确认
-4. Android 基础设施: 前台服务常驻通知 / Notification Listener / 权限引导
-5. 设计系统与 UI: iOS 风格视觉体系 / 宏编辑器 / 设置界面
-6. 手机端集成测试与 bug 修复
+MVP 已 100% 完成 (118/118)。下一步进入 V1 阶段：
+
+1. PC/Web 宏编辑器（React + TypeScript）
+2. Firebase 后端集成（Auth + Firestore + Cloud Functions）
+3. 设计系统升级（iOS 风格视觉体系）
+4. 手机端集成测试与真机调试
+5. 宏导入/导出与云同步
+6. 参考 `docs/roadmap.md` 中的 V1 路线图

@@ -1,0 +1,1165 @@
+plan_id: mvp-final-batch
+objective: "实现 MVP 最后 2 项：通知监听服务 (AND-003) + App 快捷方式 (WIDGET-003)，达成 MVP 100%"
+created_at: "2026-04-15"
+created_by: gem-planner
+status: pending_approval
+research_confidence: high
+
+plan_metrics:
+  wave_1_task_count: 4
+  total_dependencies: 8
+  risk_score: medium
+
+tldr: |
+  本计划包含 11 个任务，分 4 个 Wave 并行执行。
+  Wave 1: 4 个独立基础任务（NotificationReferent 增强、NotificationEventDispatcher、
+           shortcuts.xml、ShortcutActivity）
+  Wave 2: 3 个依赖任务（EventFilter 更新、AutomatorService 注册、Manifest 声明）
+  Wave 3: 2 个集成任务（PermissionGuideDialog 扩展、动态快捷方式）
+  Wave 4: 2 个验证任务（全量编译+单测通过、安全审查）
+
+  AND-003 通知监听采用独立 NotificationEventDispatcher 模式（参照 SmsEventDispatcher），
+  从 NotificationListenerService 桥接事件到引擎。现有 NotificationReferent 仅包装
+  ComponentInfoWrapper，需增强为包含 title/text/subText/postTime 的完整引用。
+
+  WIDGET-003 App Shortcut 实现静态快捷方式（shortcuts.xml）+ ShortcutActivity 路由，
+  可选动态快捷方式（ShortcutHelper）。
+
+open_questions: []
+
+pre_mortem:
+  overall_risk_level: medium
+  critical_failure_modes:
+    - scenario: "NotificationListenerService 需要用户手动授权，测试设备可能未授权导致集成测试不可用"
+      likelihood: medium
+      impact: medium
+      mitigation: "单测使用 mock/桥接模式，绕过真实 Service；集成测试在 PermissionGuideDialog 中新增引导"
+    - scenario: "现有 EventFilter 的 NOTIFICATION_RECEIVED 分支使用 ComponentInfoWrapper，切换到增强 Referent 可能破坏已有宏"
+      likelihood: medium
+      impact: high
+      mitigation: "增强版 NotificationReferent 保持 which=0/1/2/3 的兼容语义，新增字段放 which=4+"
+    - scenario: "App Shortcut 启动 ShortcutActivity 时应用可能未初始化"
+      likelihood: low
+      impact: medium
+      mitigation: "ShortcutActivity 检查 App 初始化状态，未初始化则先启动 MainActivity"
+  assumptions:
+    - "EVENT_ON_NOTIFICATION_RECEIVED (id=4) 常量不变，NotificationEventDispatcher 复用此事件类型"
+    - "最高 EventCriterionRegistry ordinal 为 0x0029 (batteryLevelChanged)，无需新增 ordinal"
+    - "现有 notificationReceived (ordinal 0x0003) 保持注册不变，仅 EventFilter 分支更新 Referent"
+    - "App 快捷方式目标为 Android 7.1+ (API 25+)，项目 minSdk 满足"
+
+implementation_specification:
+  code_structure: |
+    AND-003 NotificationListenerService:
+    1. AutoPilotNotificationListenerService — extends NotificationListenerService，
+       作为系统回调入口，桥接事件到 NotificationEventDispatcher
+    2. NotificationEventDispatcher — extends EventDispatcher，
+       暴露 handleNotificationPosted() 供 Service 调用，分发 Event
+    3. NotificationReferent 增强 — 新增 title/text/subText/postTime 字段
+    4. EventFilter 更新 — NOTIFICATION_RECEIVED 分支使用增强 Referent
+    5. PermissionGuideDialog 扩展 — 新增通知访问权限引导
+
+    WIDGET-003 App Shortcut:
+    1. res/xml/shortcuts.xml — 静态快捷方式声明
+    2. ShortcutActivity — 快捷方式 Intent 路由
+    3. ShortcutHelper — 动态快捷方式管理（可选）
+
+  affected_areas:
+    - "app/src/main/java/top/xjunz/tasker/task/applet/flow/ref/NotificationReferent.kt — 增强"
+    - "app/src/main/java/top/xjunz/tasker/task/event/ — 新增 NotificationEventDispatcher"
+    - "app/src/main/java/top/xjunz/tasker/service/ — 新增 AutoPilotNotificationListenerService"
+    - "app/src/main/java/top/xjunz/tasker/task/applet/criterion/EventFilter.kt — 更新通知分支"
+    - "app/src/main/java/top/xjunz/tasker/service/AutomatorService.kt — 注册新分发器"
+    - "app/src/main/java/top/xjunz/tasker/ui/main/PermissionGuideDialog.kt — 新增权限项"
+    - "app/src/main/AndroidManifest.xml — Service + Shortcut 声明"
+    - "app/src/main/res/xml/shortcuts.xml — 新增"
+    - "app/src/main/java/top/xjunz/tasker/ui/main/ShortcutActivity.kt — 新增"
+
+  component_details:
+    - component: AutoPilotNotificationListenerService
+      responsibility: "继承 NotificationListenerService，在 onNotificationPosted 中提取通知详情，调用 NotificationEventDispatcher.handleNotificationPosted()"
+      interfaces:
+        - "onNotificationPosted(sbn: StatusBarNotification)"
+        - "onNotificationRemoved(sbn: StatusBarNotification)"
+        - "companion object: isConnected 状态标记"
+
+    - component: NotificationEventDispatcher
+      responsibility: "EventDispatcher 子类，暴露 handleNotificationPosted() 方法，构造 Event 并分发"
+      interfaces:
+        - "handleNotificationPosted(packageName, title, text, subText, postTime)"
+        - "EXTRA_NOTIF_TITLE / EXTRA_NOTIF_TEXT / EXTRA_NOTIF_SUB_TEXT / EXTRA_NOTIF_POST_TIME 常量"
+
+    - component: NotificationReferent (增强)
+      responsibility: "从 Event extras 提取通知详情，暴露 title/text/subText/postTime + 兼容 ComponentInfoWrapper"
+      interfaces:
+        - "getReferredValue(which, runtime): which 0=self, 1=content(paneTitle 兼容), 2=componentInfo(兼容), 3=appName(兼容), 4=title, 5=text, 6=subText, 7=postTime"
+
+    - component: ShortcutActivity
+      responsibility: "处理快捷方式 Intent，根据 action 路由到宏编辑器或宏列表"
+      interfaces:
+        - "ACTION_CREATE_MACRO — 打开宏编辑器"
+        - "ACTION_QUICK_RUN — 打开宏列表"
+
+    - component: ShortcutHelper
+      responsibility: "使用 ShortcutManagerCompat 管理动态快捷方式，为最近使用的宏创建入口"
+      interfaces:
+        - "updateRecentMacroShortcuts(macros: List<XTask>)"
+
+  dependencies:
+    - component: AutoPilotNotificationListenerService
+      relationship: "调用 NotificationEventDispatcher.handleNotificationPosted()"
+    - component: NotificationEventDispatcher
+      relationship: "注册到 AutomatorService.initEventDispatcher()，分发 Event.EVENT_ON_NOTIFICATION_RECEIVED"
+    - component: EventFilter
+      relationship: "NOTIFICATION_RECEIVED 分支构造增强 NotificationReferent"
+    - component: ShortcutActivity
+      relationship: "启动 MainActivity 的特定 Fragment/Dialog"
+
+  integration_points:
+    - "AutomatorService.initEventDispatcher() — 注册 NotificationEventDispatcher"
+    - "EventFilter.apply() — NOTIFICATION_RECEIVED 分支更新"
+    - "EventCriterionRegistry.notificationReceived — 可新增 withResult 字段（title/text 等）"
+    - "AndroidManifest.xml — NotificationListenerService + ShortcutActivity 声明"
+    - "PermissionGuideDialog.permissions — 新增通知访问权限项"
+    - "MainActivity — shortcuts meta-data"
+
+contracts:
+  - from_task: T01
+    to_task: T05
+    interface: "增强版 NotificationReferent (title/text/subText/postTime 字段 + getReferredValue which=4~7)"
+    format: "Kotlin data class implementing Referent"
+
+  - from_task: T02
+    to_task: T05
+    interface: "NotificationEventDispatcher.EXTRA_NOTIF_* 常量键"
+    format: "Int 常量 (SparseArray key)"
+
+  - from_task: T02
+    to_task: T06
+    interface: "NotificationEventDispatcher 实例"
+    format: "EventDispatcher 子类，注册到 MetaEventDispatcher"
+
+  - from_task: T03
+    to_task: T07
+    interface: "shortcuts.xml 中定义的 shortcutId 和 targetPackage/targetClass"
+    format: "XML resource @xml/shortcuts"
+
+  - from_task: T04
+    to_task: T07
+    interface: "ShortcutActivity intent action 常量"
+    format: "String 常量（ACTION_CREATE_MACRO / ACTION_QUICK_RUN）"
+
+tasks:
+  # ============================================================
+  # Wave 1: 独立基础组件（4 个任务并行）
+  # ============================================================
+
+  - id: T01
+    title: "增强 NotificationReferent — 新增通知详情字段"
+    description: |
+      增强现有 NotificationReferent，从仅包装 ComponentInfoWrapper 扩展为包含完整通知详情。
+
+      **当前状态**:
+      - NotificationReferent 位于 `app/src/main/java/top/xjunz/tasker/task/applet/flow/ref/NotificationReferent.kt`
+      - 仅有 componentInfo (paneTitle / label) 两个引用
+      - which: 0=self, 1=paneTitle, 2=componentInfo, 3=label
+
+      **修改内容**:
+      1. 将 NotificationReferent 从 class 改为 data class
+      2. 新增构造参数: title: String?, text: String?, subText: String?, postTime: Long
+      3. 保留 componentInfo 参数以向后兼容
+      4. 新增 getReferredValue: which=4→title, 5→text, 6→subText, 7→postTime
+      5. 添加 toString() PII 脱敏（title/text 截断）
+
+      **向后兼容**:
+      - which=0/1/2/3 语义不变
+      - 现有宏引用这些索引的仍正常工作
+      - 默认值为 null/0L，从 A11yEventDispatcher 来的旧路径可传空
+
+      **TDD 步骤**:
+      1. 写测试: `NotificationReferentTest.kt`
+         - 测试 which=0~7 返回正确值
+         - 测试兼容模式（title/text 为 null 时不报错）
+         - 测试 toString() 脱敏
+      2. 运行测试 → Red（NotificationReferent 尚未修改）
+      3. 修改 NotificationReferent
+      4. 运行测试 → Green
+      5. 提交
+
+      **文件**:
+      - 修改: `app/src/main/java/top/xjunz/tasker/task/applet/flow/ref/NotificationReferent.kt`
+      - 新增: `app/src/test/kotlin/top/xjunz/tasker/task/applet/flow/ref/NotificationReferentTest.kt`
+    wave: 1
+    agent: gem-implementer
+    prototype: false
+    priority: high
+    status: pending
+    dependencies: []
+    conflicts_with: []
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/flow/ref/NotificationReferent.kt"
+        description: "现有 NotificationReferent，仅包装 ComponentInfoWrapper"
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/flow/ref/SmsReferent.kt"
+        description: "参考模式: data class + Referent + PII 脱敏 toString()"
+      - path: "app/src/test/kotlin/top/xjunz/tasker/task/event/SmsEventDispatcherTest.kt"
+        description: "参考测试模式"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始计划"
+        timestamp: "2026-04-15"
+        estimated_effort: small
+        estimated_files: 2
+        estimated_lines: 80
+        focus_area: "NotificationReferent 增强"
+        verification:
+          - "单元测试 which=0~7 全部返回正确值"
+          - "兼容模式（null 参数）不抛异常"
+          - "toString() 输出不包含完整通知内容"
+        acceptance_criteria:
+          - "NotificationReferent 支持 title/text/subText/postTime 四个新字段"
+          - "which=0/1/2/3 向后兼容"
+          - "PII 脱敏 toString()"
+          - "单元测试覆盖所有 getReferredValue 分支"
+        failure_modes:
+          - scenario: "修改构造函数签名导致 EventFilter 编译失败"
+            likelihood: medium
+            impact: medium
+            mitigation: "新增参数全部带默认值 (null / 0L)，不破坏现有调用点"
+        tech_stack:
+          - "Kotlin"
+          - "JUnit 4"
+        test_coverage: "unit"
+
+  - id: T02
+    title: "创建 NotificationEventDispatcher — 通知事件分发器"
+    description: |
+      创建 NotificationEventDispatcher，作为独立事件分发器，
+      暴露 handleNotificationPosted() 供 AutoPilotNotificationListenerService 调用。
+
+      **参考模式**: `SmsEventDispatcher` — 同样从系统服务接收回调，构建 Event 并分发。
+
+      **实现内容**:
+      1. 新建 `NotificationEventDispatcher.kt`:
+         ```kotlin
+         package top.xjunz.tasker.task.event
+
+         class NotificationEventDispatcher : EventDispatcher() {
+             companion object {
+                 const val EXTRA_NOTIF_TITLE = 0
+                 const val EXTRA_NOTIF_TEXT = 1
+                 const val EXTRA_NOTIF_SUB_TEXT = 2
+                 const val EXTRA_NOTIF_POST_TIME = 3
+             }
+
+             fun handleNotificationPosted(
+                 packageName: String,
+                 title: String?,
+                 text: String?,
+                 subText: String?,
+                 postTime: Long
+             ) {
+                 val event = Event.obtain(
+                     Event.EVENT_ON_NOTIFICATION_RECEIVED,
+                     packageName
+                 ).apply {
+                     putExtra(EXTRA_NOTIF_TITLE, title ?: "")
+                     putExtra(EXTRA_NOTIF_TEXT, text ?: "")
+                     putExtra(EXTRA_NOTIF_SUB_TEXT, subText ?: "")
+                     putExtra(EXTRA_NOTIF_POST_TIME, postTime)
+                 }
+                 dispatchEvents(event)
+             }
+         }
+         ```
+      2. onRegistered() / destroy() 空实现（实际监听由 Service 管理）
+
+      **TDD 步骤**:
+      1. 写测试: `NotificationEventDispatcherTest.kt`
+         - 测试 handleNotificationPosted 分发 EVENT_ON_NOTIFICATION_RECEIVED
+         - 测试 extras 包含 title/text/subText/postTime
+         - 测试空参数处理
+      2. 运行 → Red
+      3. 实现 NotificationEventDispatcher
+      4. 运行 → Green
+      5. 提交
+
+      **文件**:
+      - 新增: `app/src/main/java/top/xjunz/tasker/task/event/NotificationEventDispatcher.kt`
+      - 新增: `app/src/test/kotlin/top/xjunz/tasker/task/event/NotificationEventDispatcherTest.kt`
+    wave: 1
+    agent: gem-implementer
+    prototype: false
+    priority: high
+    status: pending
+    dependencies: []
+    conflicts_with: []
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/task/event/SmsEventDispatcher.kt"
+        description: "参考模式: 系统服务→Event 分发"
+      - path: "app/src/test/kotlin/top/xjunz/tasker/task/event/SmsEventDispatcherTest.kt"
+        description: "参考测试模式"
+      - path: "tasker-engine/src/main/java/top/xjunz/tasker/engine/runtime/Event.kt"
+        description: "Event 类和常量定义"
+      - path: "tasker-engine/src/main/java/top/xjunz/tasker/engine/task/EventDispatcher.kt"
+        description: "EventDispatcher 基类"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始计划"
+        timestamp: "2026-04-15"
+        estimated_effort: small
+        estimated_files: 2
+        estimated_lines: 80
+        focus_area: "NotificationEventDispatcher 分发器"
+        verification:
+          - "handleNotificationPosted 正确分发 EVENT_ON_NOTIFICATION_RECEIVED"
+          - "Event extras 包含所有 4 个字段"
+          - "空/null 参数不抛异常"
+        acceptance_criteria:
+          - "NotificationEventDispatcher 继承 EventDispatcher"
+          - "handleNotificationPosted() 构建 Event 并分发"
+          - "EXTRA_NOTIF_* 常量定义正确"
+          - "单元测试覆盖正常和边界场景"
+        failure_modes:
+          - scenario: "Event extras SparseArray key 与其他分发器冲突"
+            likelihood: low
+            impact: low
+            mitigation: "每个 Dispatcher 的 EXTRA_* key 从 0 开始独立编号，互不影响"
+        tech_stack:
+          - "Kotlin"
+          - "JUnit 4"
+        test_coverage: "unit"
+
+  - id: T03
+    title: "创建 shortcuts.xml — 静态快捷方式定义"
+    description: |
+      创建 Android App Shortcuts 静态定义文件。
+
+      **实现内容**:
+      1. 新建 `app/src/main/res/xml/shortcuts.xml`:
+         ```xml
+         <?xml version="1.0" encoding="utf-8"?>
+         <shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+             <shortcut
+                 android:shortcutId="create_macro"
+                 android:enabled="true"
+                 android:icon="@drawable/ic_add_24px"
+                 android:shortcutShortLabel="@string/shortcut_create_macro"
+                 android:shortcutLongLabel="@string/shortcut_create_macro_long">
+                 <intent
+                     android:action="top.xjunz.tasker.ACTION_CREATE_MACRO"
+                     android:targetPackage="top.xjunz.tasker"
+                     android:targetClass="top.xjunz.tasker.ui.main.ShortcutActivity" />
+             </shortcut>
+             <shortcut
+                 android:shortcutId="quick_run"
+                 android:enabled="true"
+                 android:icon="@drawable/ic_play_arrow_24px"
+                 android:shortcutShortLabel="@string/shortcut_quick_run"
+                 android:shortcutLongLabel="@string/shortcut_quick_run_long">
+                 <intent
+                     android:action="top.xjunz.tasker.ACTION_QUICK_RUN"
+                     android:targetPackage="top.xjunz.tasker"
+                     android:targetClass="top.xjunz.tasker.ui.main.ShortcutActivity" />
+             </shortcut>
+         </shortcuts>
+         ```
+      2. 新增字符串资源 (`app/src/main/res/values/strings.xml`):
+         - `shortcut_create_macro`: "新建宏"
+         - `shortcut_create_macro_long`: "创建新的自动化宏"
+         - `shortcut_quick_run`: "快速运行"
+         - `shortcut_quick_run_long`: "打开宏列表快速运行"
+      3. 确认图标资源存在（使用现有 drawable 或创建简单矢量图标）
+
+      **验证**:
+      - XML 语法正确
+      - 编译通过（`./gradlew :app:compileDebugKotlin`）
+
+      **文件**:
+      - 新增: `app/src/main/res/xml/shortcuts.xml`
+      - 修改: `app/src/main/res/values/strings.xml`（新增 4 个字符串）
+    wave: 1
+    agent: gem-implementer
+    prototype: false
+    priority: medium
+    status: pending
+    dependencies: []
+    conflicts_with: []
+    context_files:
+      - path: "app/src/main/AndroidManifest.xml"
+        description: "需要在 MainActivity 中添加 shortcuts meta-data"
+      - path: "app/src/main/res/values/strings.xml"
+        description: "字符串资源文件"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始计划"
+        timestamp: "2026-04-15"
+        estimated_effort: small
+        estimated_files: 2
+        estimated_lines: 40
+        focus_area: "静态快捷方式资源"
+        verification:
+          - "shortcuts.xml 通过 XML 语法检查"
+          - "编译通过无资源引用错误"
+        acceptance_criteria:
+          - "shortcuts.xml 定义 2 个静态快捷方式"
+          - "每个快捷方式有 shortcutId/icon/label/intent"
+          - "字符串资源中文正确"
+        failure_modes:
+          - scenario: "图标资源不存在导致编译失败"
+            likelihood: medium
+            impact: low
+            mitigation: "优先复用现有 drawable，不存在则创建简单矢量图标"
+        tech_stack:
+          - "Android XML"
+        test_coverage: null
+
+  - id: T04
+    title: "创建 ShortcutActivity — 快捷方式 Intent 路由"
+    description: |
+      创建 ShortcutActivity，处理快捷方式 Intent 并路由到对应功能。
+
+      **实现内容**:
+      1. 新建 `app/src/main/java/top/xjunz/tasker/ui/main/ShortcutActivity.kt`:
+         ```kotlin
+         package top.xjunz.tasker.ui.main
+
+         import android.content.Intent
+         import android.os.Bundle
+         import androidx.appcompat.app.AppCompatActivity
+
+         class ShortcutActivity : AppCompatActivity() {
+             companion object {
+                 const val ACTION_CREATE_MACRO = "top.xjunz.tasker.ACTION_CREATE_MACRO"
+                 const val ACTION_QUICK_RUN = "top.xjunz.tasker.ACTION_QUICK_RUN"
+             }
+
+             override fun onCreate(savedInstanceState: Bundle?) {
+                 super.onCreate(savedInstanceState)
+                 routeIntent(intent)
+                 finish()
+             }
+
+             private fun routeIntent(intent: Intent?) {
+                 val targetIntent = Intent(this, MainActivity::class.java).apply {
+                     flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                     when (intent?.action) {
+                         ACTION_CREATE_MACRO -> putExtra("shortcut_action", "create_macro")
+                         ACTION_QUICK_RUN -> putExtra("shortcut_action", "quick_run")
+                     }
+                 }
+                 startActivity(targetIntent)
+             }
+         }
+         ```
+      2. ShortcutActivity 是轻量级路由，不需要布局文件
+      3. 通过 extra 传递 action，由 MainActivity 处理具体 UI 路由
+
+      **TDD 步骤**:
+      1. 写测试: `ShortcutActivityTest.kt`
+         - 使用 Robolectric 或纯 JVM 验证 Intent 路由逻辑
+         - 测试 ACTION_CREATE_MACRO 路由
+         - 测试 ACTION_QUICK_RUN 路由
+         - 测试 null/unknown action 处理
+      2. 运行 → Red
+      3. 实现 ShortcutActivity
+      4. 运行 → Green
+      5. 提交
+
+      **文件**:
+      - 新增: `app/src/main/java/top/xjunz/tasker/ui/main/ShortcutActivity.kt`
+      - 新增: `app/src/test/kotlin/top/xjunz/tasker/ui/main/ShortcutActivityTest.kt`
+    wave: 1
+    agent: gem-implementer
+    prototype: false
+    priority: medium
+    status: pending
+    dependencies: []
+    conflicts_with: []
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/ui/main/MainActivity.kt"
+        description: "主 Activity，快捷方式最终路由目标"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始计划"
+        timestamp: "2026-04-15"
+        estimated_effort: small
+        estimated_files: 2
+        estimated_lines: 60
+        focus_area: "ShortcutActivity 路由"
+        verification:
+          - "ACTION_CREATE_MACRO Intent 正确路由到 MainActivity(extra=create_macro)"
+          - "ACTION_QUICK_RUN Intent 正确路由到 MainActivity(extra=quick_run)"
+          - "Activity 启动后自动 finish()"
+        acceptance_criteria:
+          - "ShortcutActivity 处理 2 种 action"
+          - "路由到 MainActivity 并传递 shortcut_action extra"
+          - "无 UI，launch + route + finish"
+          - "单元测试覆盖所有路由分支"
+        failure_modes:
+          - scenario: "App 冷启动时 ShortcutActivity 早于 Application.onCreate"
+            likelihood: low
+            impact: medium
+            mitigation: "ShortcutActivity 仅做 Intent 转发，不依赖 App 初始化状态"
+        tech_stack:
+          - "Kotlin"
+          - "Android Activity"
+          - "JUnit 4"
+        test_coverage: "unit"
+
+  # ============================================================
+  # Wave 2: 集成连接（3 个任务）
+  # ============================================================
+
+  - id: T05
+    title: "更新 EventFilter — NOTIFICATION_RECEIVED 分支使用增强 Referent"
+    description: |
+      更新 EventFilter.apply() 中的 NOTIFICATION_RECEIVED 分支，
+      从 NotificationEventDispatcher 来的 Event 中提取通知详情，
+      构造增强版 NotificationReferent。
+
+      **当前代码** (`EventFilter.kt`, 约第 48 行):
+      ```kotlin
+      Event.EVENT_ON_NOTIFICATION_RECEIVED, Event.EVENT_ON_TOAST_RECEIVED -> {
+          NotificationReferent(ComponentInfoWrapper.wrap(hit.componentInfo)).asResult()
+      }
+      ```
+
+      **修改后**:
+      ```kotlin
+      Event.EVENT_ON_NOTIFICATION_RECEIVED -> {
+          // 检查是否有详情 extras（来自 NotificationEventDispatcher）
+          val hasDetailedExtras = hit.extras.size() > 0
+          if (hasDetailedExtras) {
+              NotificationReferent(
+                  componentInfo = ComponentInfoWrapper.wrap(hit.componentInfo),
+                  title = hit.getExtra(NotificationEventDispatcher.EXTRA_NOTIF_TITLE),
+                  text = hit.getExtra(NotificationEventDispatcher.EXTRA_NOTIF_TEXT),
+                  subText = hit.getExtra(NotificationEventDispatcher.EXTRA_NOTIF_SUB_TEXT),
+                  postTime = hit.getExtra(NotificationEventDispatcher.EXTRA_NOTIF_POST_TIME)
+              ).asResult()
+          } else {
+              // 兼容 A11yEventDispatcher 的旧路径
+              NotificationReferent(ComponentInfoWrapper.wrap(hit.componentInfo)).asResult()
+          }
+      }
+      Event.EVENT_ON_TOAST_RECEIVED -> {
+          NotificationReferent(ComponentInfoWrapper.wrap(hit.componentInfo)).asResult()
+      }
+      ```
+
+      **同时更新 EventCriterionRegistry.notificationReceived**:
+      - 新增 withResult<String> 用于 title/text/subText/postTime
+
+      **文件**:
+      - 修改: `app/src/main/java/top/xjunz/tasker/task/applet/criterion/EventFilter.kt`
+      - 修改: `app/src/main/java/top/xjunz/tasker/task/applet/option/registry/EventCriterionRegistry.kt`
+    wave: 2
+    agent: gem-implementer
+    prototype: false
+    priority: high
+    status: pending
+    dependencies:
+      - T01
+      - T02
+    conflicts_with: []
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/criterion/EventFilter.kt"
+        description: "EventFilter — 需要修改 NOTIFICATION_RECEIVED 分支"
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/EventCriterionRegistry.kt"
+        description: "EventCriterionRegistry — notificationReceived 需新增 withResult"
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/flow/ref/NotificationReferent.kt"
+        description: "增强后的 NotificationReferent"
+      - path: "app/src/main/java/top/xjunz/tasker/task/event/NotificationEventDispatcher.kt"
+        description: "NotificationEventDispatcher EXTRA_* 常量"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始计划"
+        timestamp: "2026-04-15"
+        estimated_effort: small
+        estimated_files: 2
+        estimated_lines: 40
+        focus_area: "EventFilter + EventCriterionRegistry 更新"
+        verification:
+          - "编译通过"
+          - "NOTIFICATION_RECEIVED 分支正确区分详情/兼容模式"
+          - "TOAST_RECEIVED 分支不受影响"
+        acceptance_criteria:
+          - "NOTIFICATION_RECEIVED 分支使用增强 NotificationReferent"
+          - "兼容 A11yEventDispatcher 的旧路径"
+          - "TOAST_RECEIVED 分支独立不受影响"
+          - "EventCriterionRegistry 新增 title/text/subText/postTime 引用"
+        failure_modes:
+          - scenario: "hit.extras.size() 检查方式不正确"
+            likelihood: low
+            impact: medium
+            mitigation: "使用 try/catch 或检查具体 key 是否存在作为后备方案"
+        tech_stack:
+          - "Kotlin"
+        test_coverage: null
+
+  - id: T06
+    title: "注册 NotificationEventDispatcher + 创建 AutoPilotNotificationListenerService"
+    description: |
+      1. 在 AutomatorService.initEventDispatcher() 中注册 NotificationEventDispatcher
+      2. 创建 AutoPilotNotificationListenerService，桥接系统通知到 NotificationEventDispatcher
+
+      **Part 1: AutomatorService 注册**
+
+      在 `AutomatorService.kt` 的 initEventDispatcher() 中，在 `IntentEventDispatcher()` 注册之后添加:
+      ```kotlin
+      eventDispatcher.registerEventDispatcher(NotificationEventDispatcher())
+      ```
+
+      **Part 2: AutoPilotNotificationListenerService**
+
+      新建 `app/src/main/java/top/xjunz/tasker/service/AutoPilotNotificationListenerService.kt`:
+      ```kotlin
+      package top.xjunz.tasker.service
+
+      import android.service.notification.NotificationListenerService
+      import android.service.notification.StatusBarNotification
+
+      class AutoPilotNotificationListenerService : NotificationListenerService() {
+          companion object {
+              @Volatile
+              var isConnected: Boolean = false
+                  private set
+          }
+
+          override fun onListenerConnected() {
+              isConnected = true
+          }
+
+          override fun onListenerDisconnected() {
+              isConnected = false
+          }
+
+          override fun onNotificationPosted(sbn: StatusBarNotification?) {
+              if (sbn == null) return
+              val notification = sbn.notification ?: return
+              val extras = notification.extras ?: return
+
+              val packageName = sbn.packageName ?: return
+              // 过滤自身通知
+              if (packageName == applicationContext.packageName) return
+
+              val title = extras.getCharSequence("android.title")?.toString()
+              val text = extras.getCharSequence("android.text")?.toString()
+              val subText = extras.getCharSequence("android.subText")?.toString()
+              val postTime = sbn.postTime
+
+              // 查找已注册的 NotificationEventDispatcher 并分发
+              val service = AutomatorServiceStarter.service ?: return
+              val dispatchers = service.eventDispatcher.dispatchers
+              dispatchers.filterIsInstance<NotificationEventDispatcher>().firstOrNull()
+                  ?.handleNotificationPosted(packageName, title, text, subText, postTime)
+          }
+
+          override fun onNotificationRemoved(sbn: StatusBarNotification?) {
+              // MVP 暂不处理通知移除事件
+          }
+      }
+      ```
+
+      **安全考虑**:
+      - 过滤自身通知（防止循环）
+      - null 参数防护
+      - @Volatile isConnected 线程安全
+
+      **TDD 步骤**:
+      1. 写测试: `AutoPilotNotificationListenerServiceTest.kt`
+         - 测试 isConnected 状态管理
+         - 测试 null sbn 处理
+         - 测试自身包名过滤
+      2. 运行 → Red
+      3. 实现 Service
+      4. 运行 → Green
+
+      **文件**:
+      - 新增: `app/src/main/java/top/xjunz/tasker/service/AutoPilotNotificationListenerService.kt`
+      - 修改: `app/src/main/java/top/xjunz/tasker/service/AutomatorService.kt` (注册分发器)
+      - 新增: `app/src/test/kotlin/top/xjunz/tasker/service/AutoPilotNotificationListenerServiceTest.kt`
+    wave: 2
+    agent: gem-implementer
+    prototype: false
+    priority: high
+    status: pending
+    dependencies:
+      - T02
+    conflicts_with: []
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/service/AutomatorService.kt"
+        description: "AutomatorService — initEventDispatcher() 注册入口"
+      - path: "app/src/main/java/top/xjunz/tasker/task/event/NotificationEventDispatcher.kt"
+        description: "NotificationEventDispatcher（T02 产出）"
+      - path: "app/src/main/java/top/xjunz/tasker/task/event/SmsEventDispatcher.kt"
+        description: "参考模式: 系统服务→分发器桥接"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始计划"
+        timestamp: "2026-04-15"
+        estimated_effort: medium
+        estimated_files: 3
+        estimated_lines: 120
+        focus_area: "NotificationListenerService + 注册"
+        verification:
+          - "AutomatorService.initEventDispatcher() 包含 NotificationEventDispatcher 注册"
+          - "Service onNotificationPosted 正确提取通知详情"
+          - "自身通知被过滤"
+          - "null 参数不抛异常"
+        acceptance_criteria:
+          - "AutoPilotNotificationListenerService 正确实现 onNotificationPosted / onNotificationRemoved"
+          - "过滤自身包名通知"
+          - "isConnected 状态正确维护"
+          - "NotificationEventDispatcher 注册到 AutomatorService"
+        failure_modes:
+          - scenario: "AutomatorServiceStarter.service 为 null（服务未启动时通知到达）"
+            likelihood: medium
+            impact: low
+            mitigation: "null 检查直接 return，不影响服务启动后的正常工作"
+        tech_stack:
+          - "Kotlin"
+          - "Android NotificationListenerService"
+          - "JUnit 4"
+        test_coverage: "unit"
+
+  - id: T07
+    title: "AndroidManifest 声明 — NotificationListenerService + ShortcutActivity + Shortcuts"
+    description: |
+      更新 AndroidManifest.xml，添加三部分声明。
+
+      **Part 1: NotificationListenerService 声明**
+
+      在 `</application>` 之前（AutoStarter receiver 之前或之后）添加:
+      ```xml
+      <service
+          android:name=".service.AutoPilotNotificationListenerService"
+          android:exported="true"
+          android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+          <intent-filter>
+              <action android:name="android.service.notification.NotificationListenerService" />
+          </intent-filter>
+      </service>
+      ```
+
+      **Part 2: ShortcutActivity 声明**
+
+      在 CrashReportActivity 之后添加:
+      ```xml
+      <activity
+          android:name=".ui.main.ShortcutActivity"
+          android:exported="true"
+          android:theme="@android:style/Theme.NoDisplay"
+          android:excludeFromRecents="true">
+          <intent-filter>
+              <action android:name="top.xjunz.tasker.ACTION_CREATE_MACRO" />
+              <category android:name="android.intent.category.DEFAULT" />
+          </intent-filter>
+          <intent-filter>
+              <action android:name="top.xjunz.tasker.ACTION_QUICK_RUN" />
+              <category android:name="android.intent.category.DEFAULT" />
+          </intent-filter>
+      </activity>
+      ```
+
+      **Part 3: Shortcuts meta-data**
+
+      在 MainActivity 的 `<activity>` 标签内添加:
+      ```xml
+      <meta-data
+          android:name="android.app.shortcuts"
+          android:resource="@xml/shortcuts" />
+      ```
+
+      **验证**:
+      - `./gradlew :app:compileDebugKotlin` 编译通过
+      - Manifest merger 无冲突
+
+      **文件**:
+      - 修改: `app/src/main/AndroidManifest.xml`
+    wave: 2
+    agent: gem-implementer
+    prototype: false
+    priority: high
+    status: pending
+    dependencies:
+      - T03
+      - T04
+    conflicts_with:
+      - T06
+    context_files:
+      - path: "app/src/main/AndroidManifest.xml"
+        description: "现有 Manifest，需在 3 处修改"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始计划"
+        timestamp: "2026-04-15"
+        estimated_effort: small
+        estimated_files: 1
+        estimated_lines: 30
+        focus_area: "AndroidManifest 声明"
+        verification:
+          - "编译通过"
+          - "NotificationListenerService 声明包含正确权限和 intent-filter"
+          - "ShortcutActivity 声明为 exported=true + Theme.NoDisplay"
+          - "MainActivity 包含 shortcuts meta-data"
+        acceptance_criteria:
+          - "NotificationListenerService 声明正确（权限 + intent-filter）"
+          - "ShortcutActivity 声明正确（exported + NoDisplay theme）"
+          - "shortcuts meta-data 指向 @xml/shortcuts"
+          - "编译无 Manifest merger 错误"
+        failure_modes:
+          - scenario: "Manifest merger 与 library 冲突"
+            likelihood: low
+            impact: medium
+            mitigation: "使用 tools:replace 属性解决冲突"
+        tech_stack:
+          - "Android XML"
+        test_coverage: null
+
+  # ============================================================
+  # Wave 3: 辅助功能（2 个任务）
+  # ============================================================
+
+  - id: T08
+    title: "PermissionGuideDialog 扩展 — 新增通知访问权限引导"
+    description: |
+      在 PermissionGuideDialog 的权限列表中新增「通知访问」权限项。
+
+      **当前状态**: PermissionGuideDialog 包含 5 种权限:
+      1. 无障碍服务
+      2. 电池优化白名单
+      3. 勿扰模式
+      4. 悬浮窗
+      5. 修改系统设置
+
+      **新增第 6 项**: 通知访问权限
+      ```kotlin
+      PermissionItem(
+          iconRes = R.drawable.ic_notifications_24px,  // 使用现有或新建图标
+          titleRes = R.string.perm_notification_listener_title,
+          descRes = R.string.perm_notification_listener_desc,
+          checkGranted = { ctx ->
+              val componentName = ComponentName(
+                  ctx, AutoPilotNotificationListenerService::class.java
+              )
+              val enabledListeners = Settings.Secure.getString(
+                  ctx.contentResolver,
+                  "enabled_notification_listeners"
+              ) ?: ""
+              enabledListeners.contains(componentName.flattenToString(), ignoreCase = true)
+          },
+          requestGrant = { dialog ->
+              dialog.launchIntent(
+                  Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS")
+              )
+          }
+      )
+      ```
+
+      **新增字符串资源**:
+      - `perm_notification_listener_title`: "通知访问"
+      - `perm_notification_listener_desc`: "允许读取状态栏通知内容，用于通知触发器"
+
+      **文件**:
+      - 修改: `app/src/main/java/top/xjunz/tasker/ui/main/PermissionGuideDialog.kt`
+      - 修改: `app/src/main/res/values/strings.xml`
+    wave: 3
+    agent: gem-implementer
+    prototype: false
+    priority: medium
+    status: pending
+    dependencies:
+      - T06
+    conflicts_with: []
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/ui/main/PermissionGuideDialog.kt"
+        description: "PermissionGuideDialog — 需新增权限项"
+      - path: "app/src/main/java/top/xjunz/tasker/service/AutoPilotNotificationListenerService.kt"
+        description: "Service 类，用于 ComponentName 检测"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始计划"
+        timestamp: "2026-04-15"
+        estimated_effort: small
+        estimated_files: 2
+        estimated_lines: 30
+        focus_area: "权限引导 UI"
+        verification:
+          - "PermissionGuideDialog 显示 6 项权限"
+          - "通知访问权限检测逻辑正确"
+          - "点击跳转到通知访问设置页"
+        acceptance_criteria:
+          - "PermissionGuideDialog 包含通知访问权限项"
+          - "检测 enabled_notification_listeners 是否包含自身 Service"
+          - "跳转 ACTION_NOTIFICATION_LISTENER_SETTINGS"
+          - "字符串资源正确"
+        failure_modes:
+          - scenario: "图标资源 ic_notifications_24px 不存在"
+            likelihood: medium
+            impact: low
+            mitigation: "使用现有类似图标或 Material icon 代替"
+        tech_stack:
+          - "Kotlin"
+          - "Android Permissions"
+        test_coverage: null
+
+  - id: T09
+    title: "ShortcutHelper — 动态快捷方式管理（可选增强）"
+    description: |
+      创建 ShortcutHelper 工具类，为最近使用的宏创建动态快捷方式。
+
+      **实现内容**:
+      1. 新建 `app/src/main/java/top/xjunz/tasker/ui/widget/ShortcutHelper.kt`:
+         ```kotlin
+         package top.xjunz.tasker.ui.widget
+
+         import android.content.Context
+         import android.content.Intent
+         import androidx.core.content.pm.ShortcutInfoCompat
+         import androidx.core.content.pm.ShortcutManagerCompat
+         import androidx.core.graphics.drawable.IconCompat
+         import top.xjunz.tasker.R
+         import top.xjunz.tasker.engine.task.XTask
+         import top.xjunz.tasker.ui.main.ShortcutActivity
+
+         object ShortcutHelper {
+             private const val MAX_DYNAMIC_SHORTCUTS = 3
+
+             fun updateRecentMacroShortcuts(context: Context, tasks: List<XTask>) {
+                 val shortcuts = tasks.take(MAX_DYNAMIC_SHORTCUTS).map { task ->
+                     ShortcutInfoCompat.Builder(context, "macro_${task.checksum}")
+                         .setShortLabel(task.metadata.title.ifEmpty { "未命名宏" })
+                         .setIcon(IconCompat.createWithResource(context, R.drawable.ic_play_arrow_24px))
+                         .setIntent(Intent(context, ShortcutActivity::class.java).apply {
+                             action = "top.xjunz.tasker.ACTION_RUN_MACRO"
+                             putExtra("macro_checksum", task.checksum)
+                         })
+                         .build()
+                 }
+                 ShortcutManagerCompat.setDynamicShortcuts(context, shortcuts)
+             }
+
+             fun removeAllDynamicShortcuts(context: Context) {
+                 ShortcutManagerCompat.removeAllDynamicShortcuts(context)
+             }
+         }
+         ```
+      2. 这是可选增强，MVP 阶段 prototype = true
+
+      **TDD 步骤**:
+      1. 写测试: `ShortcutHelperTest.kt`
+         - Mock ShortcutManagerCompat
+         - 测试最多 3 个动态快捷方式
+         - 测试空列表处理
+      2. 运行 → Red
+      3. 实现
+      4. 运行 → Green
+
+      **文件**:
+      - 新增: `app/src/main/java/top/xjunz/tasker/ui/widget/ShortcutHelper.kt`
+      - 新增: `app/src/test/kotlin/top/xjunz/tasker/ui/widget/ShortcutHelperTest.kt`
+    wave: 3
+    agent: gem-implementer
+    prototype: true
+    priority: low
+    status: pending
+    dependencies:
+      - T04
+    conflicts_with: []
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/ui/main/ShortcutActivity.kt"
+        description: "ShortcutActivity — 动态快捷方式的 Intent 目标"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始计划"
+        timestamp: "2026-04-15"
+        estimated_effort: small
+        estimated_files: 2
+        estimated_lines: 60
+        focus_area: "动态快捷方式"
+        verification:
+          - "最多创建 3 个动态快捷方式"
+          - "空列表不抛异常"
+          - "ShortcutManagerCompat 正确调用"
+        acceptance_criteria:
+          - "ShortcutHelper 使用 ShortcutManagerCompat 管理动态快捷方式"
+          - "限制最大数量为 3"
+          - "单元测试覆盖"
+        failure_modes: []
+        tech_stack:
+          - "Kotlin"
+          - "AndroidX ShortcutManagerCompat"
+          - "JUnit 4"
+        test_coverage: "unit"
+
+  # ============================================================
+  # Wave 4: 验证（2 个任务）
+  # ============================================================
+
+  - id: T10
+    title: "全量编译 + 单元测试验证"
+    description: |
+      运行全量编译和单元测试，确保所有新增代码无回归。
+
+      **步骤**:
+      1. 运行编译检查:
+         ```bash
+         export JAVA_HOME=/opt/homebrew/Cellar/openjdk@17/17.0.18/libexec/openjdk.jdk/Contents/Home
+         ./gradlew :app:compileDebugKotlin
+         ```
+         预期: BUILD SUCCESSFUL
+
+      2. 运行全量单元测试:
+         ```bash
+         ./gradlew :app:testDebugUnitTest
+         ```
+         预期: 所有测试通过，0 failures
+         基线: 397 tests（MVP 收尾批次 A 的基线）
+
+      3. 检查新增测试数量:
+         - NotificationReferentTest: ~5 tests
+         - NotificationEventDispatcherTest: ~4 tests
+         - ShortcutActivityTest: ~3 tests
+         - AutoPilotNotificationListenerServiceTest: ~3 tests
+         - ShortcutHelperTest: ~2 tests (如果 T09 完成)
+         预期总数: ~414+ tests
+
+      4. 验证无编译警告（关键类）
+
+      **验收标准**:
+      - 编译通过
+      - 全量测试 0 failures
+      - 新增测试 ≥ 15 个
+    wave: 4
+    agent: gem-implementer
+    prototype: false
+    priority: high
+    status: pending
+    dependencies:
+      - T05
+      - T06
+      - T07
+      - T08
+      - T09
+    conflicts_with: []
+    context_files: []
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始计划"
+        timestamp: "2026-04-15"
+        estimated_effort: small
+        estimated_files: 0
+        estimated_lines: 0
+        focus_area: "全量验证"
+        verification:
+          - "编译 BUILD SUCCESSFUL"
+          - "全量测试 0 failures"
+          - "新增测试 ≥ 15"
+        acceptance_criteria:
+          - "编译通过"
+          - "全量单元测试 0 failures"
+          - "新增测试数量 ≥ 15"
+          - "无关键编译警告"
+        failure_modes:
+          - scenario: "某个测试因 mock 不完整失败"
+            likelihood: medium
+            impact: medium
+            mitigation: "逐个修复失败测试，确保 mock 覆盖"
+        tech_stack:
+          - "Gradle"
+          - "JUnit 4"
+        test_coverage: "full"
+
+  - id: T11
+    title: "安全审查 — 通知 PII + Shortcut Intent 安全"
+    description: |
+      审查 AND-003 和 WIDGET-003 的安全问题。
+
+      **审查清单**:
+
+      1. **通知内容 PII 处理**:
+         - NotificationReferent.toString() 脱敏（title/text 截断）
+         - 日志输出不包含完整通知内容
+         - Snapshot 系统中通知数据的存储安全
+
+      2. **NotificationListenerService 权限**:
+         - BIND_NOTIFICATION_LISTENER_SERVICE 权限声明正确
+         - Service exported=true 但受系统权限保护
+         - 自身包名通知过滤（防循环）
+
+      3. **Shortcut Intent 安全**:
+         - ShortcutActivity exported=true 的安全影响
+         - Intent action 是否可被第三方 app 恶意调用
+         - 如果是，是否需要 custom permission 保护
+
+      4. **动态快捷方式安全** (如果 T09 完成):
+         - macro_checksum 暴露是否有安全隐患
+         - ShortcutManagerCompat 使用是否正确
+
+      **修复方式**: 如发现问题，在此任务内直接修复（参照触发器批量 T16 模式）
+
+      **文件**: 根据审查结果决定需要修改的文件
+    wave: 4
+    agent: gem-reviewer
+    prototype: false
+    priority: high
+    status: pending
+    dependencies:
+      - T05
+      - T06
+      - T07
+      - T08
+    conflicts_with: []
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/flow/ref/NotificationReferent.kt"
+        description: "审查 PII 脱敏"
+      - path: "app/src/main/java/top/xjunz/tasker/service/AutoPilotNotificationListenerService.kt"
+        description: "审查权限和安全"
+      - path: "app/src/main/java/top/xjunz/tasker/ui/main/ShortcutActivity.kt"
+        description: "审查 Intent 安全"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始计划"
+        timestamp: "2026-04-15"
+        estimated_effort: small
+        estimated_files: 3
+        estimated_lines: 30
+        focus_area: "安全审查与修复"
+        verification:
+          - "toString() 不暴露完整通知内容"
+          - "Service 权限声明正确"
+          - "Shortcut Intent 无注入风险"
+        acceptance_criteria:
+          - "通知内容 PII 脱敏"
+          - "NotificationListenerService 权限正确"
+          - "ShortcutActivity Intent 安全"
+          - "日志不泄露敏感信息"
+        failure_modes:
+          - scenario: "ShortcutActivity exported=true 可被任意 app 调用"
+            likelihood: medium
+            impact: medium
+            mitigation: "ShortcutActivity 仅做路由转发，无敏感操作，风险可接受；或添加 signature permission"
+        requires_review: true
+        review_depth: standard
+        review_security_sensitive: true
+        tech_stack:
+          - "Android Security"
+        test_coverage: null
+
+planning_pass: 1
+planning_history:
+  - pass: 1
+    reason: "初始创建 MVP 最终批次计划"
+    timestamp: "2026-04-15"

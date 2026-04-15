@@ -13,17 +13,38 @@ import top.xjunz.tasker.task.applet.option.registry.EventCriterionRegistry
  *
  * @author xjunz 2023/02/12
  */
-class NotificationReferent(private val componentInfo: ComponentInfoWrapper) : Referent {
+class NotificationReferent(
+    private val componentInfo: ComponentInfoWrapper,
+    val title: String? = null,
+    val text: String? = null,
+    val subText: String? = null,
+    val postTime: Long = 0L
+) : Referent {
 
     override fun getReferredValue(which: Int, runtime: TaskRuntime): Any? {
         return when (which) {
             0 -> this
-            // Notification content
+            // 通知内容（paneTitle）
             1 -> componentInfo.paneTitle
-            // ComponentInfo which sends the notification
+            // 发送通知的 ComponentInfo
             2 -> componentInfo
             3 -> componentInfo.label
+            // 通知标题
+            4 -> title
+            // 通知正文
+            5 -> text
+            // 通知副标题
+            6 -> subText
+            // 通知时间戳
+            7 -> postTime
             else -> super.getReferredValue(which, runtime)
         }
+    }
+
+    override fun toString(): String {
+        val t = title?.take(10)?.let { if (title.length > 10) "$it..." else it }
+        val tx = text?.take(10)?.let { if (text.length > 10) "$it..." else it }
+        val st = subText?.take(10)?.let { if (subText.length > 10) "$it..." else it }
+        return "NotificationReferent(title=$t, text=$tx, subText=$st, postTime=$postTime)"
     }
 }

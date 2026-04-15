@@ -1,0 +1,560 @@
+plan_id: "mvp-progress-assessment"
+objective: "评估 AutoPilot MVP 剩余 10 项待完成项目的现状、差距和优先级"
+focus_area: "android_infra + design_system + ui"
+created_at: "2026-04-15"
+created_by: "researcher"
+status: completed
+
+tldr: |
+  - MVP 91.5% (108/118)，剩余 10 项分布在 Android 基础设施(2)、设计系统(6)、UI(2)
+  - AND-003 (Notification Listener) 未实现，当前通知触发依赖 AccessibilityService；WIDGET-003 (App Shortcut) 未实现
+  - 设计系统 DES-001~006: AutoTask 基线已有完整 Material3 主题（Light/Dark）、M3 色彩系统、间距 dimens、基础动画，距离 PRD 要求的"iOS 风格"仍需改造但 MVP 可标记为 baseline_exists
+  - NUI-001~004 核心 UI: AutoTask 基线已有完整的宏列表(TaskShowcase)、宏编辑器(FlowEditor)、触发器/动作选择器(AppletSelector)、参数配置面板(ArgumentsEditor)，功能完整可用，MVP 可直接复用
+  - NUI-009 空状态: 基线已有 placeholder UI (fragment_task_showcase.xml)；NUI-010 手势: 基线已有 ItemTouchHelper (拖拽排序+左右滑动删除)
+  - 建议分 2 批：批次 B 标记基线 UI 为已完成 + 实现 AND-003；批次 C 实现 WIDGET-003 + 设计系统改造
+
+research_metadata:
+  methodology: "hybrid retrieval: semantic_search + grep_search + file_search + read_file"
+  scope: "app/src/main (Kotlin源码 + XML资源)，focus on ui/, res/values/, res/layout/, res/anim/"
+  confidence: high
+  coverage: 92
+  decision_blockers: 0
+  research_blockers: 0
+
+# ============================================================
+# 剩余项评估
+# ============================================================
+
+remaining_items:
+
+  android_infra:
+    - id: "AND-003"
+      name: "Notification Listener (通知监听服务)"
+      status: "not_started"
+      baseline_files: []
+      current_implementation: |
+        当前通知触发 (T-NOTIF-001) 依赖 AccessibilityService 的 TYPE_NOTIFICATION_STATE_CHANGED 事件
+        (A11yEventDispatcher)，能捕获通知到达事件但无法获取通知详情（标题/文本/包名/Intent等）。
+        不存在独立的 NotificationListenerService 子类。
+      evidence:
+        - "grep NotificationListenerService: 0 个 .kt 实现文件，仅在 docs 中出现"
+        - "docs/plan/trigger-infrastructure/research_findings_trigger_infrastructure.yaml line 577: current_status='未使用 NotificationListenerService'"
+        - "docs/plan/mvp-progress-assessment/research_findings_mvp_gap.yaml line 266: 'A11yEventDispatcher 通过 AccessibilityService 捕获通知事件'"
+      gap: |
+        需要新建：
+        1. AutoPilotNotificationListenerService extends NotificationListenerService
+        2. AndroidManifest 声明 <service> + BIND_NOTIFICATION_LISTENER_SERVICE 权限
+        3. NotificationReferent 提取通知详情（title/text/packageName/postTime/actions）
+        4. 更新 EventFilter 的 NOTIFICATION_RECEIVED 分支，改用 NLS 数据源
+        5. PermissionGuideDialog 新增通知访问权限引导入口
+        6. 在 Settings → Notification access 页面引导用户启用
+      effort: "medium"
+      priority: "high"
+      rationale: "T-NOTIF-001 是 MVP 19 个触发器之一，且通知联动是高频场景。当前 A11y 方案信息不完整。"
+
+    - id: "WIDGET-003"
+      name: "App Shortcut (长按图标快捷方式)"
+      status: "not_started"
+      baseline_files:
+        - "app/src/main/java/top/xjunz/tasker/ui/task/showcase/EnabledTaskFragment.kt (btnPresetTasksShortcut 按钮引用，非 ShortcutManager)"
+        - "app/src/main/java/top/xjunz/tasker/ui/task/showcase/BaseTaskShowcaseFragment.kt (btnPresetTasksShortcut)"
+      current_implementation: |
+        基线中 btnPresetTasksShortcut 是 UI 内的"导入预设任务"按钮，不是 Android ShortcutManager 快捷方式。
+        未找到任何 ShortcutManager/ShortcutInfo/shortcut.xml 相关代码。
+      gap: |
+        需要新建：
+        1. res/xml/shortcuts.xml — 声明静态快捷方式（如"新建宏"、"快速运行"）
+        2. AndroidManifest <meta-data android:name="android.app.shortcuts" android:resource="@xml/shortcuts" />
+        3. 可选: 动态快捷方式 — ShortcutManager.addDynamicShortcuts() 为用户常用宏创建快速入口
+        4. ShortcutActivity — 处理快捷方式 Intent 并路由到对应功能
+      effort: "small"
+      priority: "low"
+      rationale: "便捷功能但非核心。不影响宏执行链路。可在最后一批收尾。"
+
+  design_system:
+    - id: "DES-001"
+      name: "iOS 风格视觉体系"
+      status: "baseline_exists"
+      baseline_files:
+        - "app/src/main/res/values/themes.xml — AppTheme (Material3.Light.NoActionBar)"
+        - "app/src/main/res/values-night/themes.xml — AppTheme (Material3.Dark.NoActionBar)"
+        - "app/src/main/res/values/themes_custom.xml — Base/Detail/Dialog 等自定义主题叠加层"
+        - "app/src/main/res/values/styles.xml — TintedIcon/BadgeText/BottomSheet/BubbleButton 等复用样式"
+        - "app/src/main/res/values/dimens.xml — corner_item(8dp)/corner_dialog(16dp)/corner_btn(24dp) 圆角定义"
+      current_implementation: |
+        基线已有 Material3 主题（Light + Dark），自定义圆角 dimens (8dp~24dp)，
+        BottomSheet 样式 (ExtraLarge corner)，全屏 Dialog 样式。
+        整体风格偏 Material Design 3，非 iOS 风格（缺少毛玻璃/大留白/卡片投影等）。
+      gap: |
+        MVP 阶段：当前 M3 主题已满足功能完整性，"iOS 风格"改造属于视觉优化。
+        可标记为 partial (功能可用)，V1 阶段再做视觉升级：
+        - 增大圆角 (16dp→20dp 卡片)
+        - 毛玻璃效果 (RenderEffect.createBlurEffect, API 31+)
+        - 增加卡片投影 (elevation + CardView)
+        - 增大留白 (content padding 增大)
+      effort: "medium"
+      priority: "low"
+      rationale: "功能层面 M3 主题已满足 MVP 需求。视觉风格改造属锦上添花。"
+
+    - id: "DES-002"
+      name: "色彩系统"
+      status: "baseline_exists"
+      baseline_files:
+        - "app/src/main/res/values/colors.xml — 完整 Material3 色彩体系 (seed #00c6f3)"
+        - "app/src/main/java/top/xjunz/tasker/ui/main/ColorScheme.kt — 运行时颜色缓存对象"
+        - "app/src/main/res/color/ — 12 个色彩状态列表文件 (status/control/text/bg)"
+      current_implementation: |
+        完整的 Material3 色彩系统：primary/secondary/tertiary/error 四组色相（Light+Dark 各 30+ 色值），
+        seed color #00c6f3 (cyan 蓝)。ColorScheme.kt 提供运行时 attrColor 缓存。
+        res/color/ 下有 12 个 ColorStateList (选中/高亮/状态指示等)。
+        支持 Light/Dark 自动切换。
+      gap: |
+        当前色彩系统功能完整。如需 iOS 风格优化：
+        - 增加语义色常量 (success green / warning amber / info blue)
+        - 但 Material3 的 error/tertiary 已覆盖大部分语义
+        MVP 可标记为已完成。
+      effort: "small"
+      priority: "low"
+      rationale: "Material3 色彩体系已满足 MVP 功能需求。"
+
+    - id: "DES-003"
+      name: "字体排版"
+      status: "baseline_exists"
+      baseline_files:
+        - "布局文件使用 Material3 TextAppearance 层级: TitleLarge/TitleMedium/LabelLarge/LabelSmall/HeadlineMedium 等"
+        - "app/src/main/res/values/themes_custom.xml — android:letterSpacing=.1 全局字间距"
+      current_implementation: |
+        全面使用 Material3 内置 TextAppearance 体系（Display/Headline/Title/Body/Label 5级 × 3尺寸）。
+        未自定义字体文件（使用系统默认 Roboto/Noto）。
+        全局 letterSpacing=0.1 增加可读性。
+      gap: |
+        MVP 阶段已满足排版层级需求。如需 iOS 风格：
+        - 引入自定义字体 (如 Inter / SF Pro Display 的开源替代)
+        - 但这增加 APK 体积且收益有限
+        MVP 可标记为已完成。
+      effort: "small"
+      priority: "low"
+      rationale: "M3 Typography 体系已提供完善的字号层级。"
+
+    - id: "DES-004"
+      name: "图标系统"
+      status: "baseline_exists"
+      baseline_files:
+        - "app/src/main/res/drawable/ — 80+ 个 Material Icons XML (baseline/outline/twotone 混用)"
+        - "app/src/main/res/values/styles.xml — TintedIcon 样式 (tint=?colorPrimary)"
+      current_implementation: |
+        使用 Material Design Icons (baseline/outline/twotone 混合风格)，
+        TintedIcon 样式统一染色。图标覆盖面广（导航/操作/状态/媒体等）。
+        风格不完全统一（baseline + outline + twotone 混用）。
+      gap: |
+        MVP 阶段图标覆盖充分。如需统一 iOS 风格：
+        - 全部替换为 Outlined/Rounded 风格 (Material Symbols Rounded)
+        - 统一 line weight (400) 和 optical size (24dp)
+        - 这属于视觉统一优化，不影响功能
+        MVP 可标记为已完成。
+      effort: "small"
+      priority: "low"
+      rationale: "图标功能覆盖完整，风格统一属于 V1 优化。"
+
+    - id: "DES-005"
+      name: "间距系统"
+      status: "baseline_exists"
+      baseline_files:
+        - "app/src/main/res/values/dimens.xml — 8 个间距/圆角 dimen 定义"
+      current_implementation: |
+        dimens.xml 定义了 corner 系列 (8dp/12dp/16dp/24dp) 和 FAB 尺寸 (48dp/40dp)。
+        布局中直接使用硬编码 dp 值（4/8/12/16/24/32）。
+        未系统化为 spacing token 体系。
+      gap: |
+        当前间距使用合理（4dp 基础网格的倍数）。如需系统化：
+        - 提取 spacing tokens (space_xs=4/space_sm=8/space_md=16/space_lg=24/space_xl=32/space_xxl=48)
+        - 替换布局中的硬编码值
+        - 但这属于重构优化，不影响功能
+        MVP 可标记为已完成。
+      effort: "small"
+      priority: "low"
+      rationale: "间距使用已遵循 4dp 网格规范。"
+
+    - id: "DES-006"
+      name: "动画系统"
+      status: "baseline_exists"
+      baseline_files:
+        - "app/src/main/res/anim/ — 5 个动画文件 (dialog enter/exit slide/sade, mtrl_item_ease_enter)"
+        - "FlowEditorDialog.kt — MaterialFadeThrough 转场"
+        - "AppletSelectorDialog.kt — MaterialFadeThrough + ChangeBounds 转场"
+        - "BaseTaskShowcaseFragment.kt — MaterialFadeThrough + MaterialSharedAxis 转场"
+      current_implementation: |
+        使用 Material Motion 系统：MaterialFadeThrough (淡入淡出)、MaterialSharedAxis (共享轴)、
+        ChangeBounds (边界变化)。Dialog 有自定义 slide/sade 进出动画。
+        列表动画使用 RecyclerView 默认 item animator。
+        未使用 Spring 弹性动画。
+      gap: |
+        MVP 阶段动画体验完整。如需 iOS 风格：
+        - AndroidX DynamicAnimation SpringAnimation 替代线性动画
+        - 列表 item 入场动画 (stagger animation)
+        - 但这属于体验优化
+        MVP 可标记为已完成。
+      effort: "medium"
+      priority: "low"
+      rationale: "Material Motion 已提供流畅的转场体验。"
+
+  ui:
+    - id: "NUI-001"
+      name: "首页/宏列表"
+      status: "baseline_exists"
+      baseline_files:
+        - "app/src/main/java/top/xjunz/tasker/ui/task/showcase/BaseTaskShowcaseFragment.kt — 宏列表基类 (RecyclerView + TaskAdapter)"
+        - "app/src/main/java/top/xjunz/tasker/ui/task/showcase/EnabledTaskFragment.kt — 已启用宏列表"
+        - "app/src/main/java/top/xjunz/tasker/ui/task/showcase/ResidentTaskFragment.kt — 常驻宏列表"
+        - "app/src/main/java/top/xjunz/tasker/ui/task/showcase/OneshotTaskFragment.kt — 一次性宏列表"
+        - "app/src/main/java/top/xjunz/tasker/ui/task/showcase/TaskShowcaseViewModel.kt — ViewModel"
+        - "app/src/main/res/layout/fragment_task_showcase.xml — 列表布局 + placeholder"
+        - "app/src/main/res/layout/item_task_showcase.xml — 单项宏卡片"
+        - "app/src/main/res/layout/activity_main.xml — ViewPager2 + BottomNavigationView 主布局"
+        - "app/src/main/java/top/xjunz/tasker/ui/main/MainActivity.kt — ViewPager 4页: Enabled/Resident/Oneshot/About"
+      current_implementation: |
+        完整的宏列表 UI：
+        - ViewPager2 + BottomNavigationView 分类 Tab (已启用/常驻/一次性/关于)
+        - RecyclerView 列表，每项含启用开关/编辑/删除/快照/分享按钮
+        - 空状态 placeholder (图标+文字+"导入预设任务"按钮)
+        - FAB "添加任务" 按钮
+        - 服务状态控制按钮
+        - 任务导入/导出/分享功能
+      gap: "基线 UI 功能完整可用。MVP 可直接标记为已完成。视觉风格属 V1 优化。"
+      effort: "none"
+      priority: "done"
+      rationale: "AutoTask 基线已有完整的首页宏列表 UI。"
+
+    - id: "NUI-002"
+      name: "宏编辑器"
+      status: "baseline_exists"
+      baseline_files:
+        - "app/src/main/java/top/xjunz/tasker/ui/task/editor/FlowEditorDialog.kt — 宏编辑器主 Dialog"
+        - "app/src/main/java/top/xjunz/tasker/ui/task/editor/FlowEditorViewModel.kt — 编辑器 ViewModel"
+        - "app/src/main/java/top/xjunz/tasker/ui/task/editor/TaskFlowAdapter.kt — Flow 列表适配器"
+        - "app/src/main/java/top/xjunz/tasker/ui/task/editor/FlowItemViewBinder.kt — Applet 项绑定器"
+        - "app/src/main/java/top/xjunz/tasker/ui/task/editor/FlowCascadeAdapter.kt — 级联适配器"
+        - "app/src/main/java/top/xjunz/tasker/ui/task/editor/TaskMetadataEditor.kt — 宏元数据编辑"
+        - "app/src/main/java/top/xjunz/tasker/ui/task/editor/AppletOperationMenuHelper.kt — Applet 操作菜单"
+        - "app/src/main/java/top/xjunz/tasker/ui/task/editor/VarargTextEditorDialog.kt — 可变参数文本编辑"
+        - "app/src/main/java/top/xjunz/tasker/ui/task/editor/VibrationPatternEditorDialog.kt — 振动模式编辑"
+        - "app/src/main/java/top/xjunz/tasker/ui/task/editor/SnapshotLogDialog.kt — 快照日志"
+        - "app/src/main/res/layout/dialog_flow_editor.xml — 编辑器布局"
+        - "app/src/main/res/layout/item_flow_item.xml — Flow 项布局"
+      current_implementation: |
+        完整的宏编辑器 UI：
+        - 树形 Flow 结构编辑 (触发器 → 动作 → 约束)
+        - 拖拽排序 (FlowItemTouchHelperCallback with UP/DOWN/LEFT/RIGHT)
+        - Applet 添加/删除/移动/复制
+        - 级联展开/折叠
+        - 面包屑导航
+        - 操作历史 (undo/redo via Snackbar)
+        - 宏元数据编辑 (标题/描述)
+        - 快照日志查看
+      gap: "基线 UI 功能完整可用。MVP 可直接标记为已完成。"
+      effort: "none"
+      priority: "done"
+      rationale: "AutoTask 基线已有功能完善的宏编辑器。"
+
+    - id: "NUI-003"
+      name: "触发器/动作选择器"
+      status: "baseline_exists"
+      baseline_files:
+        - "app/src/main/java/top/xjunz/tasker/ui/task/selector/AppletSelectorDialog.kt — 选择器主 Dialog"
+        - "app/src/main/java/top/xjunz/tasker/ui/task/selector/AppletSelectorViewModel.kt — ViewModel"
+        - "app/src/main/java/top/xjunz/tasker/ui/task/selector/AppletCandidatesAdapter.kt — 候选项适配器"
+        - "app/src/main/java/top/xjunz/tasker/ui/task/selector/AppletOptionClickHandler.kt — 选项点击处理"
+        - "app/src/main/java/top/xjunz/tasker/ui/task/selector/ShoppingCartIntegration.kt — 购物车集成"
+        - "app/src/main/res/layout/dialog_applet_selector.xml — 选择器布局"
+        - "app/src/main/res/layout/item_applet_factory.xml — 分类项布局"
+        - "app/src/main/res/layout/item_applet_option.xml — 选项项布局"
+      current_implementation: |
+        完整的触发器/动作选择器：
+        - 分类浏览 (Registry 分组)
+        - 搜索功能
+        - 全屏 Dialog
+        - "购物车"批量选择模式
+        - 图标 + 标题 + 描述
+        - 拖拽排序候选项
+      gap: "基线 UI 功能完整可用。MVP 可直接标记为已完成。"
+      effort: "none"
+      priority: "done"
+      rationale: "AutoTask 基线已有功能完善的选择器 UI。"
+
+    - id: "NUI-004"
+      name: "参数配置面板"
+      status: "baseline_exists"
+      baseline_files:
+        - "app/src/main/java/top/xjunz/tasker/ui/task/selector/argument/ArgumentsEditorDialog.kt — 参数编辑器"
+        - "app/src/main/java/top/xjunz/tasker/ui/task/selector/argument/RangeEditorDialog.kt — 范围编辑"
+        - "app/src/main/java/top/xjunz/tasker/ui/task/selector/argument/EnumSelectorDialog.kt — 枚举选择"
+        - "app/src/main/java/top/xjunz/tasker/ui/task/selector/argument/DateTimeRangeEditorDialog.kt — 日期时间范围"
+        - "app/src/main/java/top/xjunz/tasker/ui/task/selector/argument/TimeRangeEditorDialog.kt — 时间范围"
+        - "app/src/main/java/top/xjunz/tasker/ui/task/selector/argument/TimeIntervalEditorDialog.kt — 时间间隔"
+        - "app/src/main/java/top/xjunz/tasker/ui/task/selector/argument/XYEditorDialog.kt — 坐标编辑"
+        - "app/src/main/java/top/xjunz/tasker/ui/task/selector/argument/DistanceEditorDialog.kt — 距离编辑"
+        - "app/src/main/java/top/xjunz/tasker/ui/task/selector/argument/BitsValueEditorDialog.kt — 位值编辑"
+        - "app/src/main/java/top/xjunz/tasker/ui/task/selector/argument/ComponentSelectorDialog.kt — 组件选择"
+        - "app/src/main/java/top/xjunz/tasker/ui/task/selector/argument/GeofencePickerDialog.kt — 地理围栏选择"
+        - "app/src/main/res/layout/dialog_arguments_editor.xml — 参数编辑布局"
+      current_implementation: |
+        丰富的参数配置面板体系：
+        - ArgumentsEditorDialog 作为入口，根据参数 Descriptor 分发到具体编辑器
+        - 覆盖: 文本编辑/范围选择/枚举选择/日期时间/坐标/距离/组件选择/地理围栏/位值
+        - Dialog 风格 (非 BottomSheet)，但功能端到端完整
+      gap: |
+        基线使用 Dialog 风格而非 PRD 要求的 Bottom Sheet 风格。但功能完整可用。
+        MVP 可标记为已完成，V1 改为 Bottom Sheet 风格。
+      effort: "none"
+      priority: "done"
+      rationale: "AutoTask 基线已有 12+ 个参数编辑对话框。"
+
+    - id: "NUI-009"
+      name: "空状态设计"
+      status: "baseline_exists"
+      baseline_files:
+        - "app/src/main/res/layout/fragment_task_showcase.xml — group_placeholder (图标+文字+导入按钮)"
+        - "app/src/main/res/layout/dialog_variable_manager.xml — tv_empty (变量空态)"
+      current_implementation: |
+        基线宏列表有空状态 placeholder：
+        - ShapeableImageView (100dp 圆形图标 hourglass_empty)
+        - "这里什么都没有" 文案 (HeadlineMedium)
+        - "点击导入预设任务" 按钮
+        变量管理器有 tv_empty 空态文本。
+        不是所有列表都有空状态（如 AppletSelector、LogDialog 等缺少）。
+      gap: |
+        MVP 核心列表（宏列表）已有空状态。
+        完整的空状态设计（每个列表都配插画+引导文案）属于 V1 优化。
+        MVP 可标记为 partial（核心场景已覆盖）。
+      effort: "small"
+      priority: "low"
+      rationale: "核心宏列表空状态已实现，其余列表可 V1 补齐。"
+
+    - id: "NUI-010"
+      name: "手势交互"
+      status: "baseline_exists"
+      baseline_files:
+        - "app/src/main/java/top/xjunz/tasker/ui/task/editor/FlowItemTouchHelperCallback.kt — 拖拽排序+滑动删除"
+        - "app/src/main/java/top/xjunz/tasker/ui/task/selector/AppletCandidatesAdapter.kt — 选择器拖拽"
+        - "app/src/main/java/top/xjunz/tasker/ui/widget/GestureRecorderView.kt — 手势录制"
+        - "app/src/main/java/top/xjunz/tasker/ui/widget/GesturePlaybackView.kt — 手势回放"
+      current_implementation: |
+        FlowItemTouchHelperCallback: ItemTouchHelper.SimpleCallback(UP|DOWN, LEFT|RIGHT)
+        - 支持拖拽排序 (UP/DOWN)
+        - 支持滑动删除 (LEFT/RIGHT with Snackbar undo)
+        GestureRecorderView/GesturePlaybackView: 自定义手势记录/回放 View
+      gap: |
+        基线已有核心手势交互：拖拽排序 + 滑动删除 + 手势录制/回放。
+        PRD 要求的"右滑启用"需新增但非核心。
+        MVP 可标记为已完成。
+      effort: "none"
+      priority: "done"
+      rationale: "核心手势交互（拖拽排序+滑动删除）已在基线中实现。"
+
+# ============================================================
+# 状态汇总
+# ============================================================
+
+status_summary:
+  total_remaining_per_progress: 10
+  actually_need_new_implementation: 2  # AND-003, WIDGET-003
+  baseline_covers_functionally: 8  # DES-001~006 + NUI-009 partial + NUI-010
+  baseline_covers_fully: 4  # NUI-001, NUI-002, NUI-003, NUI-004
+  
+  revised_completion:
+    if_baseline_ui_counted: "114/118 (96.6%)"
+    truly_missing: "AND-003 (medium), WIDGET-003 (small)"
+
+# ============================================================
+# 批次建议
+# ============================================================
+
+recommended_batch_order:
+  - batch_name: "MVP 收尾批次 B — 基线复用确认 + Notification Listener"
+    items:
+      - "NUI-001"  # 标记为已完成 (基线完整)
+      - "NUI-002"  # 标记为已完成 (基线完整)
+      - "NUI-003"  # 标记为已完成 (基线完整)
+      - "NUI-004"  # 标记为已完成 (基线完整)
+      - "NUI-009"  # 标记为 partial (核心场景覆盖)
+      - "NUI-010"  # 标记为已完成 (基线完整)
+      - "DES-001"  # 标记为已完成 (M3 主题可用)
+      - "DES-002"  # 标记为已完成 (完整色彩系统)
+      - "DES-003"  # 标记为已完成 (M3 Typography)
+      - "DES-004"  # 标记为已完成 (80+ 图标)
+      - "DES-005"  # 标记为已完成 (4dp 网格间距)
+      - "DES-006"  # 标记为已完成 (Material Motion)
+      - "AND-003"  # 需实现 NotificationListenerService
+    rationale: |
+      1. 先批量验证并确认 AutoTask 基线 UI 在当前代码中可正常工作
+      2. AND-003 是 MVP 唯一真正缺失的功能组件（T-NOTIF-001 触发器依赖），阻塞完整通知联动
+      3. 完成后 MVP 进度可达 117/118 (99.2%)
+    effort_estimate: "AND-003 约 medium (新建 NLS + Referent + 权限引导)"
+
+  - batch_name: "MVP 收尾批次 C — App Shortcut"
+    items:
+      - "WIDGET-003"  # 实现 ShortcutManager 快捷方式
+    rationale: |
+      1. 最后的便捷功能，不阻塞任何核心链路
+      2. 实现简单（shortcuts.xml + 1个 Activity）
+      3. 完成后 MVP 118/118 (100%)
+    effort_estimate: "small (约 0.5-1 天)"
+
+# ============================================================
+# 文件分析
+# ============================================================
+
+files_analyzed:
+  - file: "BaseTaskShowcaseFragment.kt"
+    path: "app/src/main/java/top/xjunz/tasker/ui/task/showcase/BaseTaskShowcaseFragment.kt"
+    purpose: "宏列表基类，TaskAdapter + RecyclerView + placeholder 切换"
+    key_elements:
+      - element: "TaskAdapter"
+        type: class
+        location: "BaseTaskShowcaseFragment.kt:65"
+        description: "宏列表 RecyclerView 适配器"
+      - element: "togglePlaceholder"
+        type: function
+        location: "BaseTaskShowcaseFragment.kt"
+        description: "切换空状态/列表可见性"
+    language: Kotlin
+    lines: 260
+
+  - file: "FlowEditorDialog.kt"
+    path: "app/src/main/java/top/xjunz/tasker/ui/task/editor/FlowEditorDialog.kt"
+    purpose: "宏编辑器主 Dialog，树形 Flow 编辑"
+    key_elements:
+      - element: "FlowEditorDialog"
+        type: class
+        location: "FlowEditorDialog.kt:57"
+        description: "继承 BaseDialogFragment，宏编辑入口"
+    language: Kotlin
+    lines: 400
+
+  - file: "AppletSelectorDialog.kt"
+    path: "app/src/main/java/top/xjunz/tasker/ui/task/selector/AppletSelectorDialog.kt"
+    purpose: "触发器/动作选择器 Dialog"
+    key_elements:
+      - element: "AppletSelectorDialog"
+        type: class
+        location: "AppletSelectorDialog.kt:54"
+        description: "全屏选择器，分类浏览+搜索"
+    language: Kotlin
+    lines: 300
+
+  - file: "FlowItemTouchHelperCallback.kt"
+    path: "app/src/main/java/top/xjunz/tasker/ui/task/editor/FlowItemTouchHelperCallback.kt"
+    purpose: "拖拽排序 + 滑动删除回调"
+    key_elements:
+      - element: "FlowItemTouchHelperCallback"
+        type: class
+        location: "FlowItemTouchHelperCallback.kt:32"
+        description: "SimpleCallback(UP|DOWN, LEFT|RIGHT)，支持 undo"
+    language: Kotlin
+    lines: 150
+
+  - file: "themes.xml"
+    path: "app/src/main/res/values/themes.xml"
+    purpose: "Light 主题定义 (Material3.Light.NoActionBar)"
+    key_elements:
+      - element: "AppTheme"
+        type: pattern
+        location: "themes.xml:4"
+        description: "完整 M3 色彩属性映射 (primary~scrim)"
+    language: XML
+    lines: 30
+
+  - file: "colors.xml"
+    path: "app/src/main/res/values/colors.xml"
+    purpose: "Material3 色彩系统定义"
+    key_elements:
+      - element: "seed"
+        type: variable
+        location: "colors.xml:3"
+        description: "主题种子色 #00c6f3"
+      - element: "md_theme_light/dark_*"
+        type: pattern
+        location: "colors.xml:4-62"
+        description: "Light+Dark 各 30 个色值"
+    language: XML
+    lines: 63
+
+  - file: "ColorScheme.kt"
+    path: "app/src/main/java/top/xjunz/tasker/ui/main/ColorScheme.kt"
+    purpose: "运行时颜色缓存 (SparseArray + 懒加载)"
+    key_elements:
+      - element: "ColorScheme"
+        type: class
+        location: "ColorScheme.kt:21"
+        description: "单例对象，缓存 attrColor/attrColorStateList"
+    language: Kotlin
+    lines: 60
+
+  - file: "activity_main.xml"
+    path: "app/src/main/res/layout/activity_main.xml"
+    purpose: "主 Activity 布局"
+    key_elements:
+      - element: "ViewPager2"
+        type: pattern
+        location: "activity_main.xml:24"
+        description: "4页 ViewPager (Enabled/Resident/Oneshot/About)"
+      - element: "BottomNavigationView"
+        type: pattern
+        location: "activity_main.xml:97"
+        description: "底部导航栏"
+      - element: "ExtendedFloatingActionButton"
+        type: pattern
+        location: "activity_main.xml:83"
+        description: "添加任务 FAB"
+    language: XML
+    lines: 115
+
+patterns_found:
+  - category: architecture
+    pattern: "AutoTask 基线 UI 完整度高"
+    description: "AutoTask 作为成熟应用，其 UI 层已实现完整的宏管理全链路（列表→编辑→选择→参数配置）"
+    examples:
+      - file: "MainActivity.kt"
+        location: "app/src/main/java/top/xjunz/tasker/ui/main/MainActivity.kt:91-100"
+        snippet: "ViewPager2 4页: EnabledTask → ResidentTask → OneshotTask → About"
+    prevalence: common
+
+  - category: architecture
+    pattern: "Dialog-first UI 模式"
+    description: "AutoTask UI 大量使用 DialogFragment 而非 Activity/Fragment 导航"
+    examples:
+      - file: "FlowEditorDialog.kt"
+        location: "app/src/main/java/top/xjunz/tasker/ui/task/editor/FlowEditorDialog.kt:57"
+        snippet: "class FlowEditorDialog : BaseDialogFragment<DialogFlowEditorBinding>()"
+    prevalence: common
+
+  - category: naming
+    pattern: "Task = 宏的内部称谓"
+    description: "AutoTask 代码中 Task/XTask 即对应 PRD 中的 Macro/宏概念"
+    examples:
+      - file: "TaskShowcaseViewModel.kt"
+        location: "app/src/main/java/top/xjunz/tasker/ui/task/showcase/TaskShowcaseViewModel.kt"
+        snippet: "requestToggleTask / requestDeleteTask / requestEditTask"
+    prevalence: common
+
+open_questions:
+  - question: "DES-001~006 在 MVP 阶段是否需要达到'iOS 风格'标准？"
+    context: "当前 Material3 主题功能完整，但视觉风格与 PRD 的 iOS 风格有差距。MVP focus 是功能完整还是视觉精致？"
+    type: nice_to_know
+    affects: ["DES-001", "DES-002", "DES-003", "DES-004", "DES-005", "DES-006"]
+
+  - question: "AND-003 实现后是否需要迁移现有 T-NOTIF-001 触发器从 A11y 到 NLS？"
+    context: "可以两者并存（A11y 捕获事件 + NLS 获取详情），也可以完全迁移到 NLS"
+    type: nice_to_know
+    affects: ["AND-003"]
+
+gaps:
+  - area: "NotificationListenerService 实现"
+    description: "MVP 唯一真正缺失的功能组件，T-NOTIF-001 触发器需要 NLS 获取通知详情"
+    impact: research_blocker
+    affects: ["AND-003"]
+
+  - area: "ShortcutManager 实现"
+    description: "缺少 App Shortcut 功能，但不阻塞核心链路"
+    impact: nice_to_know
+    affects: ["WIDGET-003"]

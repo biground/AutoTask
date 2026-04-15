@@ -21,6 +21,7 @@ import top.xjunz.tasker.task.event.BluetoothEventDispatcher
 import top.xjunz.tasker.task.event.ClipboardEventDispatcher
 import top.xjunz.tasker.task.event.IntentEventDispatcher
 import top.xjunz.tasker.task.event.NetworkEventDispatcher
+import top.xjunz.tasker.task.event.NotificationEventDispatcher
 import top.xjunz.tasker.task.event.PhoneCallEventDispatcher
 import top.xjunz.tasker.task.event.SmsEventDispatcher
 import top.xjunz.tasker.task.location.LocationEventDispatcher
@@ -45,7 +46,24 @@ class EventFilter(private val eventType: Int) : Applet() {
             AppletResult.EMPTY_FAILURE
         } else {
             when (hit.type) {
-                Event.EVENT_ON_NOTIFICATION_RECEIVED, Event.EVENT_ON_TOAST_RECEIVED -> {
+                Event.EVENT_ON_NOTIFICATION_RECEIVED -> {
+                    // 检查是否有来自 NotificationEventDispatcher 的详情
+                    val title: String? = try { hit.getExtra<String>(NotificationEventDispatcher.EXTRA_NOTIF_TITLE) } catch (_: Exception) { null }
+                    if (title != null) {
+                        NotificationReferent(
+                            componentInfo = ComponentInfoWrapper.wrap(hit.componentInfo),
+                            title = title,
+                            text = try { hit.getExtra<String>(NotificationEventDispatcher.EXTRA_NOTIF_TEXT) } catch (_: Exception) { null },
+                            subText = try { hit.getExtra<String>(NotificationEventDispatcher.EXTRA_NOTIF_SUB_TEXT) } catch (_: Exception) { null },
+                            postTime = try { hit.getExtra<Long>(NotificationEventDispatcher.EXTRA_NOTIF_POST_TIME) } catch (_: Exception) { 0L }
+                        ).asResult()
+                    } else {
+                        // 兼容 A11yEventDispatcher 的旧路径（无 extras）
+                        NotificationReferent(ComponentInfoWrapper.wrap(hit.componentInfo)).asResult()
+                    }
+                }
+
+                Event.EVENT_ON_TOAST_RECEIVED -> {
                     NotificationReferent(ComponentInfoWrapper.wrap(hit.componentInfo)).asResult()
                 }
 
