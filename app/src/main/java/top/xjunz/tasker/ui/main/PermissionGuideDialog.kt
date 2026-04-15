@@ -20,17 +20,19 @@ import top.xjunz.tasker.databinding.DialogPermissionGuideBinding
 import top.xjunz.tasker.databinding.ItemPermissionGuideBinding
 import top.xjunz.tasker.ktx.toast
 import top.xjunz.tasker.service.A11yAutomatorService
+import top.xjunz.tasker.service.AutoPilotNotificationListenerService
 import top.xjunz.tasker.ui.base.BaseDialogFragment
 import top.xjunz.tasker.ui.base.inlineAdapter
 import top.xjunz.tasker.util.ClickListenerUtil.setNoDoubleClickListener
 
 /**
- * 特殊权限引导对话框，引导用户逐步授予 5 种特殊权限：
+ * 特殊权限引导对话框，引导用户逐步授予 6 种特殊权限：
  * - 无障碍服务
  * - 电池优化白名单
  * - 勿扰模式
  * - 悬浮窗权限
  * - 修改系统设置
+ * - 通知访问
  *
  * @author xjunz 2024
  */
@@ -55,7 +57,7 @@ class PermissionGuideDialog : BaseDialogFragment<DialogPermissionGuideBinding>()
     )
 
     /**
-     * 5 种特殊权限定义
+     * 6 种特殊权限定义
      */
     private val permissions: List<PermissionItem> = listOf(
         // 无障碍服务
@@ -133,6 +135,23 @@ class PermissionGuideDialog : BaseDialogFragment<DialogPermissionGuideBinding>()
                         Uri.parse("package:${dialog.requireContext().packageName}")
                     )
                 )
+            }
+        ),
+        // 通知访问权限
+        PermissionItem(
+            iconRes = R.drawable.ic_notifications_24px,
+            titleRes = R.string.perm_notification_listener_title,
+            descRes = R.string.perm_notification_listener_desc,
+            checkGranted = { ctx ->
+                val flat = Settings.Secure.getString(
+                    ctx.contentResolver,
+                    "enabled_notification_listeners"
+                ) ?: ""
+                val myComponent = ComponentName(ctx, AutoPilotNotificationListenerService::class.java)
+                flat.contains(myComponent.flattenToString(), ignoreCase = true)
+            },
+            requestGrant = { dialog ->
+                dialog.launchIntent(Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS"))
             }
         )
     )

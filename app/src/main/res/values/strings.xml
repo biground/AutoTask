@@ -873,6 +873,9 @@
     <!-- 修改系统设置权限 -->
     <string name="perm_write_settings_title">修改系统设置</string>
     <string name="perm_write_settings_desc">允许应用修改亮度、音量等系统设置，支持相关自动化任务。</string>
+    <!-- 通知访问权限 -->
+    <string name="perm_notification_listener_title">通知访问</string>
+    <string name="perm_notification_listener_desc">允许应用监听系统通知，用于通知触发的自动化任务。</string>
 
     <!-- 引导页 -->
     <string name="onboarding_welcome_title">欢迎使用自动任务</string>
