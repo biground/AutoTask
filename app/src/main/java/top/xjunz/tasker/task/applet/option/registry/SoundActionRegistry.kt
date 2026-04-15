@@ -12,6 +12,7 @@ import top.xjunz.tasker.engine.applet.action.doubleArgsAction
 import top.xjunz.tasker.engine.applet.action.optimisticVarRefAction
 import top.xjunz.tasker.engine.applet.action.simpleSingleNonNullArgAction
 import top.xjunz.tasker.task.applet.action.PlaySoundAction
+import top.xjunz.tasker.task.applet.action.SetAlarmAction
 import top.xjunz.tasker.ktx.array
 import top.xjunz.tasker.ktx.foreColored
 import top.xjunz.tasker.ktx.formatSpans
@@ -100,4 +101,12 @@ class SoundActionRegistry(id: Int) : AppletOptionRegistry(id) {
     val playSound = appletOption(R.string.play_sound) {
         PlaySoundAction()
     }.withValueArgument<String>(R.string.sound_file_path, VariantArgType.TEXT_FILE_PATH)
+
+    @AppletOrdinal(0x0005)
+    val setAlarm = appletOption(R.string.set_alarm_action) {
+        SetAlarmAction()
+    }.withValueArgument<Int>(R.string.alarm_hour)
+        .withValueArgument<Int>(R.string.alarm_minute)
+        .withValueArgument<String>(R.string.alarm_message)
+        .withValueArgument<Boolean>(R.string.alarm_vibrate)
 }

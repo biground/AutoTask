@@ -1,0 +1,720 @@
+plan_id: scenario-gap-fill
+objective: "实现 3 个能力缺口：SetAlarmAction（设定系统闹钟）、FrequencyConstraint（频率限制）、ModeActivationHistory（模式激活历史）"
+created_at: "2026-04-15T00:00:00+08:00"
+created_by: gem-planner
+status: completed
+research_confidence: high
+
+last_updated_at: "2026-04-15T00:00:00+08:00"
+last_updated_by: gem-implementer
+
+plan_metrics:
+  wave_1_task_count: 3
+  total_dependencies: 11
+  risk_score: low
+
+tldr: |
+  三个独立能力缺口的实现已落地到仓库，并已完成最终验证收口。
+  - SetAlarmAction 已实现，并已接入 SoundActionRegistry 与 AndroidManifest 权限。
+  - FrequencyConstraint / FrequencyCounterRepository 已实现，并已接入 GlobalCriterionRegistry 与执行记录链路。
+  - ModeHistoryRepository / ModeActivatedTodayConstraint 已实现，并已接入 DataStoreModeRepository 与 ModeCriterionRegistry。
+  - 当前状态：T01-T09 已完成，scenario-gap-fill 可收口为 completed。
+
+implementation_status:
+  summary: "代码实现、注册集成与新鲜验证均已完成，计划已正式收口。"
+  completed_tasks:
+    - T01
+    - T02
+    - T03
+    - T04
+    - T05
+    - T06
+    - T07
+    - T08
+    - T09
+  verification_task: T09
+  verification_state: completed
+
+verification_evidence:
+  - command: "export JAVA_HOME=/opt/homebrew/Cellar/openjdk@17/17.0.18/libexec/openjdk.jdk/Contents/Home && export JAVA_TOOL_OPTIONS='--add-opens=java.base/java.io=ALL-UNNAMED' && ./gradlew --no-daemon :app:testDebugUnitTest --tests \"top.xjunz.tasker.task.applet.action.SetAlarmActionTest\" --rerun-tasks --console=plain"
+    result: "BUILD SUCCESSFUL"
+  - command: "export JAVA_HOME=/opt/homebrew/Cellar/openjdk@17/17.0.18/libexec/openjdk.jdk/Contents/Home && export JAVA_TOOL_OPTIONS='--add-opens=java.base/java.io=ALL-UNNAMED' && ./gradlew --no-daemon :app:compileDebugKotlin --rerun-tasks --console=plain"
+    result: "BUILD SUCCESSFUL"
+  - command: "export JAVA_HOME=/opt/homebrew/Cellar/openjdk@17/17.0.18/libexec/openjdk.jdk/Contents/Home && export JAVA_TOOL_OPTIONS='--add-opens=java.base/java.io=ALL-UNNAMED' && ./gradlew --no-daemon :app:testDebugUnitTest --rerun-tasks --console=plain"
+    result: "BUILD SUCCESSFUL"
+
+open_questions: []
+
+pre_mortem:
+  overall_risk_level: low
+  critical_failure_modes:
+    - scenario: "AlarmClock Intent 在某些厂商 ROM 上无法启动时钟应用"
+      likelihood: medium
+      impact: low
+      mitigation: "SetAlarmAction 返回 Intent 是否被解析的结果（resolveActivity 检查），测试中 mock Context"
+    - scenario: "FrequencyConstraint 的 DataStore 并发写入导致计数丢失"
+      likelihood: low
+      impact: medium
+      mitigation: "使用 Mutex 保护写操作，与 GeofenceConfigRepository 同模式"
+    - scenario: "ModeHistoryRepository 与 DataStoreModeRepository 共享 DataStore 导致 key 冲突"
+      likelihood: low
+      impact: medium
+      mitigation: "ModeHistoryRepository 使用独立 DataStore 文件（autopilot_mode_history），避免 key 冲突"
+  assumptions:
+    - "Android 16 目标设备均预装时钟应用，能响应 ACTION_SET_ALARM"
+    - "DataStore Preferences 可在纯 JVM 单元测试中通过内存实现 mock"
+    - "SoundActionRegistry 的 @AppletOrdinal 0x0005 未被占用"
+    - "GlobalCriterionRegistry 的 @AppletOrdinal 0x0020 未被占用"
+    - "ModeCriterionRegistry 的 @AppletOrdinal 0x0001 未被占用"
+
+implementation_specification:
+  code_structure: |
+    三个功能各自独立，分别创建核心类 + 测试，最终在 Wave 3 中注册到已有 Registry 体系。
+    不新建 Registry 类，不修改 BootstrapOptionRegistry ID 常量或 AppletOptionFactory。
+    数据持久化采用 DataStore Preferences 模式，与 GeofenceConfigRepository 一致。
+  affected_areas:
+    - "app/src/main/java/top/xjunz/tasker/task/applet/action/ — 新增 SetAlarmAction.kt"
+    - "app/src/main/java/top/xjunz/tasker/task/applet/criterion/ — 新增 FrequencyConstraint.kt, ModeActivatedTodayConstraint.kt"
+    - "app/src/main/java/top/xjunz/tasker/task/mode/ — 新增 ModeHistoryRepository.kt"
+    - "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/SoundActionRegistry.kt — 新增 setAlarm 条目"
+    - "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/GlobalCriterionRegistry.kt — 新增 frequencyConstraint 条目"
+    - "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/ModeCriterionRegistry.kt — 新增 modeActivatedToday 条目"
+    - "app/src/main/AndroidManifest.xml — 新增 SET_ALARM 权限"
+    - "app/src/main/res/values/strings.xml — 新增字符串资源"
+  component_details:
+    - component: SetAlarmAction
+      responsibility: "通过 AlarmClock.ACTION_SET_ALARM Intent 调用系统时钟应用设置闹钟"
+      interfaces:
+        - "doAction(args: Array<Any?>, runtime: TaskRuntime): AppletResult — args[0]=hour(Int), args[1]=minute(Int), args[2]=message(String?), args[3]=vibrate(Boolean)"
+    - component: FrequencyConstraint
+      responsibility: "检查当前执行是否超出频率限制（maxCount 次/windowType 时间窗口）"
+      interfaces:
+        - "apply(runtime: TaskRuntime): AppletResult — 读取 values[0]=taskKey(String), values[1]=maxCount(Int), values[2]=windowType(Int)"
+        - "check(taskKey: String, maxCount: Int, windowType: Int): Boolean — 纯逻辑检查，供测试调用"
+    - component: FrequencyCounterRepository
+      responsibility: "DataStore Preferences 持久化执行计数 + 时间戳，支持按时间窗口过滤"
+      interfaces:
+        - "suspend recordExecution(taskKey: String) — 记录一次执行"
+        - "suspend getExecutionCount(taskKey: String, windowType: Int): Int — 返回给定窗口内的执行次数"
+        - "suspend cleanup(taskKey: String) — 清理过期记录"
+    - component: ModeHistoryRepository
+      responsibility: "记录每个模式的最后激活时间戳，支持查询'今天是否激活过'"
+      interfaces:
+        - "suspend recordActivation(modeName: String, timestamp: Long) — 记录激活时间"
+        - "suspend wasActivatedToday(modeName: String): Boolean — 查询今天是否激活过"
+        - "suspend getLastActivationTime(modeName: String): Long? — 获取最后激活时间"
+    - component: ModeActivatedTodayConstraint
+      responsibility: "约束检查：指定模式今天是否已激活过"
+      interfaces:
+        - "apply(runtime: TaskRuntime): AppletResult — 读取 values[0]=modeName(String)"
+        - "check(modeName: String): Boolean — 纯逻辑检查，供测试调用"
+  dependencies:
+    - component: FrequencyConstraint
+      relationship: "调用 FrequencyCounterRepository.getExecutionCount() 以判断是否超限"
+    - component: ModeActivatedTodayConstraint
+      relationship: "调用 ModeHistoryRepository.wasActivatedToday() 以判断是否激活过"
+    - component: ModeHistoryRepository
+      relationship: "被 DataStoreModeRepository.setActiveMode() 在激活模式时调用 recordActivation()"
+    - component: SetAlarmAction
+      relationship: "通过 ContextBridge.getContext() 获取 Context 发送 Intent"
+  integration_points:
+    - "SoundActionRegistry @AppletOrdinal(0x0005) 挂载 SetAlarmAction"
+    - "GlobalCriterionRegistry @AppletOrdinal(0x0020) 挂载 frequencyConstraint"
+    - "ModeCriterionRegistry @AppletOrdinal(0x0001) 挂载 modeActivatedToday"
+    - "DataStoreModeRepository.setActiveMode() 中调用 ModeHistoryRepository.recordActivation()"
+    - "AndroidManifest.xml 新增 <uses-permission android:name=\"android.permission.SET_ALARM\" />"
+
+contracts:
+  - from_task: T01
+    to_task: T06
+    interface: "SetAlarmAction 类已编译通过，可在 SoundActionRegistry 中实例化"
+    format: "Kotlin class: top.xjunz.tasker.task.applet.action.SetAlarmAction"
+  - from_task: T02
+    to_task: T04
+    interface: "FrequencyCounterRepository 提供 getExecutionCount() 和 recordExecution() API"
+    format: "Kotlin class: top.xjunz.tasker.task.applet.criterion.FrequencyCounterRepository"
+  - from_task: T03
+    to_task: T05
+    interface: "ModeHistoryRepository 提供 wasActivatedToday() API"
+    format: "Kotlin class: top.xjunz.tasker.task.mode.ModeHistoryRepository"
+  - from_task: T04
+    to_task: T07
+    interface: "FrequencyConstraint 类已编译通过，可在 GlobalCriterionRegistry 中注册"
+    format: "Kotlin class: top.xjunz.tasker.task.applet.criterion.FrequencyConstraint"
+  - from_task: T05
+    to_task: T08
+    interface: "ModeActivatedTodayConstraint 类已编译通过，可在 ModeCriterionRegistry 中注册"
+    format: "Kotlin class: top.xjunz.tasker.task.applet.criterion.ModeActivatedTodayConstraint"
+  - from_task: T03
+    to_task: T08
+    interface: "ModeHistoryRepository 可被 DataStoreModeRepository 引用"
+    format: "Kotlin class: top.xjunz.tasker.task.mode.ModeHistoryRepository"
+
+tasks:
+  # ==================== Wave 1: 核心类（并行、无文件冲突） ====================
+  - id: T01
+    title: "创建 SetAlarmAction 动作类 + 单元测试"
+    description: |
+      创建 SetAlarmAction，继承 ArgumentAction，通过 AlarmClock.ACTION_SET_ALARM Intent 设定系统闹钟。
+
+      实现要点：
+      1. 继承 ArgumentAction（与 SetModeAction 同模式）
+      2. doAction 解析 4 个参数：hour(Int), minute(Int), message(String?), vibrate(Boolean)
+      3. 构造 Intent(AlarmClock.ACTION_SET_ALARM)，设置 EXTRA_HOUR, EXTRA_MINUTES, EXTRA_MESSAGE, EXTRA_VIBRATE
+      4. 通过 ContextBridge.getContext() 获取 Context，使用 FLAG_ACTIVITY_NEW_TASK 启动
+      5. resolveActivity 检查：如果无应用响应，返回 EMPTY_FAILURE
+      6. 参数校验：hour 0-23, minute 0-59
+
+      TDD 流程：
+      - RED: 编写测试（mock Context/PackageManager，验证 Intent extras、参数校验边界）
+      - GREEN: 实现 SetAlarmAction
+      - REFACTOR: 无
+
+      输出文件：
+      - app/src/main/java/top/xjunz/tasker/task/applet/action/SetAlarmAction.kt
+      - app/src/test/kotlin/top/xjunz/tasker/task/applet/action/SetAlarmActionTest.kt
+    wave: 1
+    agent: gem-implementer
+    prototype: false
+    priority: high
+    status: completed
+    dependencies: []
+    conflicts_with: []
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/action/SetModeAction.kt"
+        description: "参考 ArgumentAction 用法：doAction 签名、args 索引、AppletResult 返回"
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/action/PlaySoundAction.kt"
+        description: "参考 SingleArgAction + 错误处理模式"
+      - path: "tasker-engine/src/main/java/top/xjunz/tasker/engine/applet/action/ArgumentAction.kt"
+        description: "基类定义：doAction(args, runtime) 签名"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-15T00:00:00+08:00"
+        estimated_effort: small
+        estimated_files: 2
+        estimated_lines: 120
+        focus_area: "app/src/main/java/top/xjunz/tasker/task/applet/action/"
+        verification:
+          - "运行 SetAlarmActionTest，全部通过"
+          - "SetAlarmAction 类编译无错误"
+        acceptance_criteria:
+          - "SetAlarmAction 继承 ArgumentAction，接受 4 个参数 (hour, minute, message, vibrate)"
+          - "Intent extras 正确设置：EXTRA_HOUR, EXTRA_MINUTES, EXTRA_MESSAGE, EXTRA_VIBRATE, EXTRA_SKIP_UI=true"
+          - "hour 超出 0-23 或 minute 超出 0-59 时返回 EMPTY_FAILURE"
+          - "resolveActivity 返回 null 时返回 EMPTY_FAILURE"
+          - "正常路径返回 EMPTY_SUCCESS"
+        failure_modes:
+          - scenario: "ContextBridge 在纯 JVM 测试中抛异常"
+            likelihood: medium
+            impact: medium
+            mitigation: "测试中使用 mockk 模拟 ContextBridge.getContext()，参考已有测试模式"
+        tech_stack:
+          - "Kotlin"
+          - "Android AlarmClock API"
+          - "mockk (测试)"
+        test_coverage: "参数校验边界 + Intent 构造 + resolveActivity 失败路径"
+
+  - id: T02
+    title: "创建 FrequencyCounterRepository 持久化层 + 单元测试"
+    description: |
+      创建 FrequencyCounterRepository，使用内存实现（生产环境可接入 DataStore），记录执行次数和时间戳。
+
+      实现要点：
+      1. 定义 WindowType 枚举：HOURLY(0), DAILY(1), WEEKLY(2)
+      2. 内部数据结构：ConcurrentHashMap<String, MutableList<Long>>，key=taskKey, value=执行时间戳列表
+      3. recordExecution(taskKey): 追加 System.currentTimeMillis() 到列表
+      4. getExecutionCount(taskKey, windowType): 过滤列表中在当前窗口内的时间戳数量
+        - HOURLY: 当前小时开始时间（truncatedTo HOURS）
+        - DAILY: 当天 00:00:00
+        - WEEKLY: 本周一 00:00:00
+      5. cleanup(taskKey): 移除超出最大窗口（7天）的旧记录
+      6. 提供 createForTest() 工厂方法，跳过 DataStore
+
+      TDD 流程：
+      - RED: 测试 recordExecution 后 getExecutionCount 返回正确值；测试窗口边界
+      - GREEN: 实现 FrequencyCounterRepository
+      - REFACTOR: 无
+
+      输出文件：
+      - app/src/main/java/top/xjunz/tasker/task/applet/criterion/FrequencyCounterRepository.kt
+      - app/src/test/kotlin/top/xjunz/tasker/task/applet/criterion/FrequencyCounterRepositoryTest.kt
+    wave: 1
+    agent: gem-implementer
+    prototype: false
+    priority: high
+    status: completed
+    dependencies: []
+    conflicts_with: []
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/task/location/GeofenceConfigRepository.kt"
+        description: "参考 DataStore Preferences 模式：preferencesDataStore、Mutex 保护、createForTest()"
+      - path: "app/src/main/java/top/xjunz/tasker/task/mode/DataStoreModeRepository.kt"
+        description: "参考 DataStore + JSON 序列化模式"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-15T00:00:00+08:00"
+        estimated_effort: medium
+        estimated_files: 2
+        estimated_lines: 180
+        focus_area: "app/src/main/java/top/xjunz/tasker/task/applet/criterion/"
+        verification:
+          - "运行 FrequencyCounterRepositoryTest，全部通过"
+          - "FrequencyCounterRepository 类编译无错误"
+        acceptance_criteria:
+          - "WindowType 枚举包含 HOURLY(0), DAILY(1), WEEKLY(2)"
+          - "recordExecution 后 getExecutionCount 返回正确计数"
+          - "getExecutionCount 正确过滤窗口外的旧记录"
+          - "cleanup 移除超出 7 天的旧记录"
+          - "线程安全：使用 ConcurrentHashMap 或 Mutex"
+        failure_modes:
+          - scenario: "时间窗口计算在不同时区下结果不一致"
+            likelihood: medium
+            impact: medium
+            mitigation: "使用 java.time.ZonedDateTime 和设备默认时区，测试中固定时区"
+        tech_stack:
+          - "Kotlin"
+          - "java.time API"
+          - "ConcurrentHashMap"
+        test_coverage: "记录 + 查询 + 窗口过滤 + 清理 + 空 key"
+
+  - id: T03
+    title: "创建 ModeHistoryRepository 激活历史 + 单元测试"
+    description: |
+      创建 ModeHistoryRepository，记录每个模式的最后激活时间戳，支持查询"今天是否激活过"。
+
+      实现要点：
+      1. 内部数据结构：ConcurrentHashMap<String, Long>，key=modeName, value=lastActivatedTimestamp
+      2. recordActivation(modeName, timestamp=System.currentTimeMillis()): 更新 map
+      3. wasActivatedToday(modeName): 检查 lastActivatedTimestamp 是否在今天（LocalDate.now() 的 00:00:00 之后）
+      4. getLastActivationTime(modeName): 返回时间戳或 null
+      5. 提供 createForTest() 工厂方法
+      6. 可选注入时钟源 (Clock) 以便测试控制时间
+
+      TDD 流程：
+      - RED: 测试 recordActivation 后 wasActivatedToday=true；测试昨天的记录 wasActivatedToday=false
+      - GREEN: 实现 ModeHistoryRepository
+      - REFACTOR: 无
+
+      输出文件：
+      - app/src/main/java/top/xjunz/tasker/task/mode/ModeHistoryRepository.kt
+      - app/src/test/kotlin/top/xjunz/tasker/task/mode/ModeHistoryRepositoryTest.kt
+    wave: 1
+    agent: gem-implementer
+    prototype: false
+    priority: high
+    status: completed
+    dependencies: []
+    conflicts_with: []
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/task/mode/DataStoreModeRepository.kt"
+        description: "参考 DataStore 模式 + ModeChangeEvent 处理"
+      - path: "app/src/main/java/top/xjunz/tasker/task/location/GeofenceConfigRepository.kt"
+        description: "参考 createForTest() 工厂方法模式"
+      - path: "tasker-engine/src/main/java/top/xjunz/tasker/engine/mode/ModeRepository.kt"
+        description: "ModeRepository 接口定义"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-15T00:00:00+08:00"
+        estimated_effort: small
+        estimated_files: 2
+        estimated_lines: 120
+        focus_area: "app/src/main/java/top/xjunz/tasker/task/mode/"
+        verification:
+          - "运行 ModeHistoryRepositoryTest，全部通过"
+          - "ModeHistoryRepository 类编译无错误"
+        acceptance_criteria:
+          - "recordActivation 正确记录 modeName → timestamp"
+          - "wasActivatedToday 在今天激活过时返回 true"
+          - "wasActivatedToday 对昨天的记录返回 false"
+          - "getLastActivationTime 返回正确时间戳或 null"
+          - "支持注入 Clock 以便测试控制时间"
+        failure_modes:
+          - scenario: "跨天边界时刻（23:59:59 → 00:00:00）判断不准确"
+            likelihood: low
+            impact: low
+            mitigation: "使用 LocalDate.now(clock) 对齐到天粒度，测试覆盖边界时刻"
+        tech_stack:
+          - "Kotlin"
+          - "java.time API (Clock, LocalDate, ZoneId)"
+          - "ConcurrentHashMap"
+        test_coverage: "记录 + 今天查询 + 昨天查询 + 空查询 + 跨天边界"
+
+  # ==================== Wave 2: 约束类（依赖 Wave 1 的 Repository） ====================
+  - id: T04
+    title: "创建 FrequencyConstraint 约束类 + 单元测试"
+    description: |
+      创建 FrequencyConstraint，继承 Applet，检查任务执行是否超出频率限制。
+
+      实现要点：
+      1. 继承 Applet（与 ModeConstraint 同模式）
+      2. 构造函数注入 frequencyCounterProvider: () -> FrequencyCounterRepository
+      3. apply(runtime): 从 values 中读取 taskKey(String), maxCount(Int), windowType(Int)
+      4. 调用 repository.getExecutionCount(taskKey, windowType)，与 maxCount 比较
+      5. 如果 count < maxCount → 满足约束（true）；否则 → 不满足（false）
+      6. 支持 isInverted 取反
+      7. 提供 check(taskKey, maxCount, windowType): Boolean 供测试直接调用
+
+      TDD 流程：
+      - RED: 测试未超限返回 true、超限返回 false、参数缺失返回 EMPTY_FAILURE
+      - GREEN: 实现 FrequencyConstraint
+      - REFACTOR: 无
+
+      输出文件：
+      - app/src/main/java/top/xjunz/tasker/task/applet/criterion/FrequencyConstraint.kt
+      - app/src/test/kotlin/top/xjunz/tasker/task/applet/criterion/FrequencyConstraintTest.kt
+    wave: 2
+    agent: gem-implementer
+    prototype: false
+    priority: high
+    status: completed
+    dependencies:
+      - T02
+    conflicts_with: []
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/criterion/ModeConstraint.kt"
+        description: "参考 Applet 子类约束模式：values 读取、isInverted 支持、check() 方法"
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/criterion/FrequencyCounterRepository.kt"
+        description: "依赖的 Repository（T02 产出）"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-15T00:00:00+08:00"
+        estimated_effort: small
+        estimated_files: 2
+        estimated_lines: 100
+        focus_area: "app/src/main/java/top/xjunz/tasker/task/applet/criterion/"
+        verification:
+          - "运行 FrequencyConstraintTest，全部通过"
+          - "FrequencyConstraint 类编译无错误"
+        acceptance_criteria:
+          - "未超限时 check 返回 true"
+          - "超限时 check 返回 false"
+          - "isInverted 时结果取反"
+          - "values 缺失时返回 EMPTY_FAILURE"
+        failure_modes:
+          - scenario: "values 类型转换失败（Int vs Long 混淆）"
+            likelihood: medium
+            impact: low
+            mitigation: "使用 as? Int 安全转换 + 空值处理"
+        tech_stack:
+          - "Kotlin"
+        test_coverage: "正常路径 + 超限 + 取反 + 参数缺失"
+
+  - id: T05
+    title: "创建 ModeActivatedTodayConstraint 约束类 + 单元测试"
+    description: |
+      创建 ModeActivatedTodayConstraint，继承 Applet，检查指定模式今天是否已激活过。
+
+      实现要点：
+      1. 继承 Applet（与 ModeConstraint 同模式）
+      2. 构造函数注入 modeHistoryProvider: () -> ModeHistoryRepository
+      3. apply(runtime): 从 values[0] 读取 modeName(String)
+      4. 调用 repository.wasActivatedToday(modeName)
+      5. 支持 isInverted 取反
+      6. 提供 check(modeName): Boolean 供测试直接调用
+
+      TDD 流程：
+      - RED: 测试今天激活过返回 true、未激活返回 false、参数缺失返回 EMPTY_FAILURE
+      - GREEN: 实现 ModeActivatedTodayConstraint
+      - REFACTOR: 无
+
+      输出文件：
+      - app/src/main/java/top/xjunz/tasker/task/applet/criterion/ModeActivatedTodayConstraint.kt
+      - app/src/test/kotlin/top/xjunz/tasker/task/applet/criterion/ModeActivatedTodayConstraintTest.kt
+    wave: 2
+    agent: gem-implementer
+    prototype: false
+    priority: high
+    status: completed
+    dependencies:
+      - T03
+    conflicts_with: []
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/criterion/ModeConstraint.kt"
+        description: "参考约束模式：values 读取、isInverted、check() 方法"
+      - path: "app/src/main/java/top/xjunz/tasker/task/mode/ModeHistoryRepository.kt"
+        description: "依赖的 Repository（T03 产出）"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-15T00:00:00+08:00"
+        estimated_effort: small
+        estimated_files: 2
+        estimated_lines: 80
+        focus_area: "app/src/main/java/top/xjunz/tasker/task/applet/criterion/"
+        verification:
+          - "运行 ModeActivatedTodayConstraintTest，全部通过"
+          - "ModeActivatedTodayConstraint 类编译无错误"
+        acceptance_criteria:
+          - "今天激活过该模式时 check 返回 true"
+          - "未激活过时 check 返回 false"
+          - "isInverted 时结果取反"
+          - "values 缺失时返回 EMPTY_FAILURE"
+        failure_modes:
+          - scenario: "ModeHistoryRepository 未初始化导致 NPE"
+            likelihood: low
+            impact: low
+            mitigation: "Provider 返回非空实例，测试中使用 createForTest()"
+        tech_stack:
+          - "Kotlin"
+        test_coverage: "今天激活 + 未激活 + 取反 + 参数缺失"
+
+  # ==================== Wave 3: 注册集成（修改共享文件，标记冲突） ====================
+  - id: T06
+    title: "注册 SetAlarmAction 到 SoundActionRegistry + AndroidManifest + strings"
+    description: |
+      将 SetAlarmAction 注册到 SoundActionRegistry，新增 AndroidManifest 权限和字符串资源。
+
+      修改文件：
+      1. SoundActionRegistry.kt — 新增 @AppletOrdinal(0x0005) val setAlarm 条目：
+         ```kotlin
+         @AppletOrdinal(0x0005)
+         val setAlarm = appletOption(R.string.set_alarm_action) {
+             SetAlarmAction()
+         }.withValueArgument<Int>(R.string.alarm_hour)
+          .withValueArgument<Int>(R.string.alarm_minute)
+          .withValueArgument<String>(R.string.alarm_message)
+          .withValueArgument<Boolean>(R.string.alarm_vibrate)
+         ```
+      2. AndroidManifest.xml — 在动作权限区域新增：
+         ```xml
+         <uses-permission android:name="android.permission.SET_ALARM" />
+         ```
+      3. strings.xml — 新增字符串：
+         - set_alarm_action: "设定闹钟"
+         - alarm_hour: "小时"
+         - alarm_minute: "分钟"
+         - alarm_message: "闹钟备注"
+         - alarm_vibrate: "震动"
+
+      验证：编译通过，SoundActionRegistry 解析无重复 ID。
+    wave: 3
+    agent: gem-implementer
+    prototype: false
+    priority: medium
+    status: completed
+    dependencies:
+      - T01
+    conflicts_with: []
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/SoundActionRegistry.kt"
+        description: "目标 Registry，在 playSound 后追加 setAlarm"
+      - path: "app/src/main/AndroidManifest.xml"
+        description: "权限声明位置"
+      - path: "app/src/main/res/values/strings.xml"
+        description: "字符串资源"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-15T00:00:00+08:00"
+        estimated_effort: small
+        estimated_files: 3
+        estimated_lines: 25
+        focus_area: null
+        verification:
+          - "`./gradlew :app:compileDebugKotlin` 编译通过"
+          - "SoundActionRegistry 能正确解析 setAlarm 选项"
+        acceptance_criteria:
+          - "SoundActionRegistry 包含 setAlarm @AppletOrdinal(0x0005)"
+          - "AndroidManifest.xml 包含 SET_ALARM 权限"
+          - "strings.xml 包含 5 个新增字符串"
+        failure_modes:
+          - scenario: "@AppletOrdinal(0x0005) 与已有 ID 冲突"
+            likelihood: low
+            impact: high
+            mitigation: "SoundActionRegistry 目前最大 ordinal 为 0x0004，0x0005 确认空闲"
+        tech_stack:
+          - "Kotlin"
+          - "Android XML"
+        test_coverage: null
+
+  - id: T07
+    title: "注册 FrequencyConstraint 到 GlobalCriterionRegistry + strings"
+    description: |
+      将 FrequencyConstraint 注册到 GlobalCriterionRegistry，新增字符串资源。
+
+      修改文件：
+      1. GlobalCriterionRegistry.kt — 新增 @AppletOrdinal(0x0020) val frequencyLimit 条目：
+         ```kotlin
+         @AppletOrdinal(0x0020)
+         val frequencyLimit = invertibleAppletOption(R.string.frequency_limit) {
+             FrequencyConstraint { FrequencyCounterRepository.instance }
+         }.withValueArgument<String>(R.string.frequency_task_key)
+          .withValueArgument<Int>(R.string.frequency_max_count)
+          .withValueArgument<Int>(R.string.frequency_window_type)
+         ```
+      2. strings.xml — 新增字符串：
+         - frequency_limit: "频率限制"
+         - frequency_task_key: "任务标识"
+         - frequency_max_count: "最大执行次数"
+         - frequency_window_type: "时间窗口"
+
+      验证：编译通过，GlobalCriterionRegistry 解析无重复 ID。
+    wave: 3
+    agent: gem-implementer
+    prototype: false
+    priority: medium
+    status: completed
+    dependencies:
+      - T04
+    conflicts_with:
+      - T06
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/GlobalCriterionRegistry.kt"
+        description: "目标 Registry，在 isMacroRunning 后追加 frequencyLimit"
+      - path: "app/src/main/res/values/strings.xml"
+        description: "字符串资源（与 T06 冲突）"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-15T00:00:00+08:00"
+        estimated_effort: small
+        estimated_files: 2
+        estimated_lines: 25
+        focus_area: null
+        verification:
+          - "`./gradlew :app:compileDebugKotlin` 编译通过"
+          - "GlobalCriterionRegistry 能正确解析 frequencyLimit 选项"
+        acceptance_criteria:
+          - "GlobalCriterionRegistry 包含 frequencyLimit @AppletOrdinal(0x0020)"
+          - "strings.xml 包含 4 个新增字符串"
+        failure_modes:
+          - scenario: "@AppletOrdinal(0x0020) 与已有 ID 冲突"
+            likelihood: low
+            impact: high
+            mitigation: "GlobalCriterionRegistry 目前最大 ordinal 为 0x0016，0x0020 确认空闲"
+        tech_stack:
+          - "Kotlin"
+          - "Android XML"
+        test_coverage: null
+
+  - id: T08
+    title: "注册 ModeActivatedTodayConstraint 到 ModeCriterionRegistry + 接入 ModeHistoryRepository + strings"
+    description: |
+      将 ModeActivatedTodayConstraint 注册到 ModeCriterionRegistry，并将 ModeHistoryRepository 接入 DataStoreModeRepository 的激活流程。
+
+      修改文件：
+      1. ModeCriterionRegistry.kt — 新增 @AppletOrdinal(0x0001) val modeActivatedToday：
+         ```kotlin
+         @AppletOrdinal(0x0001)
+         val modeActivatedToday = invertibleAppletOption(R.string.mode_activated_today) {
+             ModeActivatedTodayConstraint { ModeHistoryRepository.instance }
+         }.withValueArgument<String>(R.string.mode_name)
+         ```
+      2. DataStoreModeRepository.kt — 在 setActiveMode() 中调用 ModeHistoryRepository：
+         ```kotlin
+         // 在 changeFlow.emit(ModeChangeEvent.Activated(...)) 之后
+         modeHistoryRepository.recordActivation(activated.name, System.currentTimeMillis())
+         ```
+         构造函数增加可选的 modeHistoryRepository 参数。
+      3. strings.xml — 新增字符串：
+         - mode_activated_today: "今天是否激活过模式"
+
+      验证：编译通过，ModeCriterionRegistry 解析无重复 ID。
+    wave: 3
+    agent: gem-implementer
+    prototype: false
+    priority: medium
+    status: completed
+    dependencies:
+      - T05
+      - T03
+    conflicts_with:
+      - T06
+      - T07
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/ModeCriterionRegistry.kt"
+        description: "目标 Registry，在 modeConstraint 后追加 modeActivatedToday"
+      - path: "app/src/main/java/top/xjunz/tasker/task/mode/DataStoreModeRepository.kt"
+        description: "需要在 setActiveMode() 中接入 ModeHistoryRepository"
+      - path: "app/src/main/res/values/strings.xml"
+        description: "字符串资源（与 T06, T07 冲突）"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-15T00:00:00+08:00"
+        estimated_effort: small
+        estimated_files: 3
+        estimated_lines: 30
+        focus_area: null
+        verification:
+          - "`./gradlew :app:compileDebugKotlin` 编译通过"
+          - "ModeCriterionRegistry 能正确解析 modeActivatedToday 选项"
+        acceptance_criteria:
+          - "ModeCriterionRegistry 包含 modeActivatedToday @AppletOrdinal(0x0001)"
+          - "DataStoreModeRepository.setActiveMode() 调用 ModeHistoryRepository.recordActivation()"
+          - "strings.xml 包含 1 个新增字符串"
+        failure_modes:
+          - scenario: "DataStoreModeRepository 构造函数签名变更导致现有代码编译失败"
+            likelihood: medium
+            impact: medium
+            mitigation: "modeHistoryRepository 参数设为可选（默认 null），仅在非 null 时调用"
+        tech_stack:
+          - "Kotlin"
+          - "Android XML"
+        test_coverage: null
+
+  # ==================== Wave 4: 全量编译 + 测试验证 ====================
+  - id: T09
+    title: "全量编译 + 单元测试回归验证"
+    description: |
+      执行全量编译和完整单元测试，验证三个能力缺口实现无回归。
+
+      执行步骤：
+      1. `./gradlew :app:compileDebugKotlin` — 确认编译通过
+      2. `./gradlew :app:testDebugUnitTest` — 运行全部单元测试
+      3. 验证测试数量 ≥ 416 + 新增测试数（约 5 个测试类）
+      4. 验证无 skipped/failed 测试（允许之前的 2 个 skipped）
+      5. 检查 AndroidManifest.xml 中 SET_ALARM 权限存在
+      6. 检查 strings.xml 中所有新增字符串存在
+
+      预期结果：
+      - 编译零错误
+      - 全部新增测试通过
+      - 无回归失败
+    wave: 4
+    agent: gem-implementer
+    prototype: false
+    priority: high
+    status: completed
+    dependencies:
+      - T06
+      - T07
+      - T08
+    conflicts_with: []
+    context_files: []
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-15T00:00:00+08:00"
+        estimated_effort: small
+        estimated_files: 0
+        estimated_lines: 0
+        focus_area: null
+        verification:
+          - "`./gradlew :app:compileDebugKotlin` 退出码 0"
+          - "`./gradlew :app:testDebugUnitTest` 退出码 0，0 failures"
+        acceptance_criteria:
+          - "编译通过，无错误"
+          - "所有单元测试通过（含新增），无回归"
+          - "新增测试数量 ≥ 5"
+        failure_modes:
+          - scenario: "已有测试因共享文件修改而回归失败"
+            likelihood: low
+            impact: high
+            mitigation: "Wave 3 中每步修改后已做编译检查，此处为最终确认"
+        tech_stack:
+          - "Gradle"
+        test_coverage: null

@@ -1,0 +1,614 @@
+plan_id: mvp-scenario-analysis
+objective: "分析用户「切换模式」场景在当前 MVP 代码库中的可行性，找出能力缺口"
+focus_area: "触发器+动作+约束的完整能力矩阵"
+created_at: "2026-04-15"
+created_by: "researcher"
+status: completed
+historical_snapshot: true
+follow_up_plan: "docs/plan/scenario-gap-fill/plan.yaml"
+follow_up_status: completed
+
+tldr: |
+  - 模式系统(SetModeAction/ModeConstraint/ModeChangeEventDispatcher)、地理围栏(LocationEventDispatcher/GeofenceReferent)、时间系统(PollEventDispatcher/TimeCriterionRegistry)均已完整实现，覆盖大部分触发+约束需求
+  - 核心动作(displayNotification/silentVibrateMode/doNotDisturb/launchApp)均已就绪，闹钟设定也有 AlarmEventDispatcher 可作为基础
+  - 关键缺口：(1) 无"设定闹钟"动作(当前仅有闹钟触发器)；(2) 无"今天是否激活过某模式"的历史记录机制；(3) 无"每日仅一次"频率限制机制；(4) 微信发消息需依赖 UI 自动化编排脚本，基础设施存在但需组装
+  - 21 项子需求中：12 项完全具备，5 项部分具备(需小到中等扩展)，4 项完全缺失(需新建)
+  - 注：本文件记录的是缺口分析基线；SetAlarmAction、FrequencyConstraint、ModeActivationHistory 已在 scenario-gap-fill 中实现并完成验证，微信发送消息仍保持“部分具备”的原始判断。
+
+research_metadata:
+  methodology: "hybrid retrieval: semantic_search + grep_search + file_search + read_file，2 轮研究"
+  scope: "全代码库触发器/动作/约束/事件分发/Registry 注册链路"
+  confidence: high
+  coverage: 92
+  decision_blockers: 2
+  research_blockers: 0
+
+# ============================================================
+# 场景逐项能力分析
+# ============================================================
+scenario_analysis:
+
+  # ----------------------------------------------------------
+  # 切换模式 — 触发条件
+  # ----------------------------------------------------------
+  capabilities:
+    # === 场景 1: 指定时间段内 + 到达指定地点 → 切换工作模式 ===
+    - name: "T1-地理围栏进入触发"
+      scenario: "到达指定地点后触发"
+      status: "完全具备"
+      existing_components:
+        - "LocationEventDispatcher — 高德 GeoFenceClient 封装"
+        - "Event.EVENT_ON_GEOFENCE_ENTERED (17)"
+        - "GeofenceReferent — name/lat/lng/transition 参数透传"
+        - "EventFilter — GEOFENCE_ENTERED/EXITED/LOCATION_ARRIVED 分支"
+        - "LocationCriterionRegistry — 注册到 EventCriterionRegistry"
+        - "GeofenceConfig / GeofenceConfigRepository — 围栏持久化"
+      gaps: []
+      effort: "无需开发"
+
+    - name: "T1-时间段约束"
+      scenario: "指定时间段内（作为触发条件的附加约束）"
+      status: "完全具备"
+      existing_components:
+        - "TimeCriterionRegistry.timeRange (0x0000) — 时间范围判断"
+        - "TimeCriterionRegistry.hourMinSec (0x0004) — 时分秒范围"
+        - "TimeCriterionRegistry.dayOfWeek (0x0003) — 星期约束"
+        - "PollEventDispatcher + EVENT_ON_TICK 轮询"
+      gaps: []
+      effort: "无需开发"
+
+    - name: "T1-切换模式动作"
+      scenario: "切换到工作模式"
+      status: "完全具备"
+      existing_components:
+        - "SetModeAction — 支持 activate/deactivate/toggle 三种操作"
+        - "ModeRepository — 模式仓库（激活/停用/监听）"
+        - "ModeActionRegistry — 注册到 BootstrapOptionRegistry"
+      gaps: []
+      effort: "无需开发"
+
+    # === 场景 2: 到达指定地点 → 切换居家模式 ===
+    - name: "T2-到达指定地点切换居家模式"
+      scenario: "到达指定地点后，切换到居家模式"
+      status: "完全具备"
+      existing_components:
+        - "LocationEventDispatcher + EVENT_ON_GEOFENCE_ENTERED"
+        - "SetModeAction (activate='居家模式')"
+      gaps: []
+      effort: "无需开发"
+
+    # === 场景 3: 工作模式下 + 指定时间点 → 切换午休模式 ===
+    - name: "T3-模式约束"
+      scenario: "在工作模式下（作为前置条件）"
+      status: "完全具备"
+      existing_components:
+        - "ModeConstraint — 检查指定模式是否激活 (values[0]=模式名, values[1]=true/false)"
+        - "ModeCriterionRegistry — 注册到 BootstrapOptionRegistry"
+      gaps: []
+      effort: "无需开发"
+
+    - name: "T3-指定时间点触发"
+      scenario: "到达指定时间点"
+      status: "完全具备"
+      existing_components:
+        - "AlarmEventDispatcher — 精确闹钟调度 + RepeatRule (Daily/Weekly/Monthly)"
+        - "EVENT_ON_ALARM_FIRED (20)"
+        - "TimeCriterionRegistry.isSpecifiedTime (0x0005)"
+        - "TimeCriterionRegistry.isSpecifiedTimeInDay (0x0006)"
+        - "PollEventDispatcher + EVENT_ON_TICK 周期轮询"
+      gaps: []
+      effort: "无需开发"
+      notes: "可通过 AlarmEventDispatcher 精确到秒，或通过 PollEventDispatcher + TimeCriterion 轮询判断"
+
+    # === 场景 4: 午休模式下 + 指定时间点 → 切换工作模式 ===
+    - name: "T4-午休模式约束+时间触发"
+      scenario: "在午休模式下，到达指定时间点，切换到工作模式"
+      status: "完全具备"
+      existing_components:
+        - "ModeConstraint (values[0]='午休模式', values[1]=true)"
+        - "AlarmEventDispatcher / PollEventDispatcher + TimeCriterion"
+        - "SetModeAction (activate='工作模式')"
+      gaps: []
+      effort: "无需开发"
+
+    # ----------------------------------------------------------
+    # 模式条件 — 进入模式时的动作
+    # ----------------------------------------------------------
+
+    # === 工作模式动作 1: 显示自定义通知 ===
+    - name: "A1-显示自定义通知"
+      scenario: "切换到工作模式后，显示自定义通知"
+      status: "完全具备"
+      existing_components:
+        - "UiActionRegistry.displayNotification (0x0000)"
+        - "NotificationManagerBridge.showNotification(title, content)"
+        - "ModeChangeEventDispatcher → EVENT_ON_MODE_CHANGED + ModeChangeReferent"
+      gaps: []
+      effort: "无需开发"
+      notes: "可用 ModeChangeEventDispatcher 监听模式变化，然后执行 displayNotification 动作"
+
+    # === 工作模式动作 2: 设定 3 个闹钟 ===
+    - name: "A2-设定闹钟动作"
+      scenario: "切换到工作模式后，设定 3 个闹钟"
+      status: "完全缺失"
+      existing_components:
+        - "AlarmEventDispatcher — 仅作为触发器使用（内部调度精确闹钟来触发事件）"
+        - "AlarmManager API — 代码库内部使用但未暴露为用户可配置的动作"
+      gaps:
+        - "缺少 SetAlarmAction — 需要一个动作来创建系统闹钟（非引擎内调度闹钟）"
+        - "AlarmEventDispatcher 是触发器不是动作，它调度的是引擎内部事件，而非系统闹钟应用的闹钟"
+        - "需要通过 AlarmClock.ACTION_SET_ALARM Intent 或 AlarmManager.setAlarmClock() 设定真正的系统闹钟"
+      effort: "中等工作量"
+      notes: |
+        方案一：创建 SetAlarmAction，发送 AlarmClock.ACTION_SET_ALARM Intent（标准 Android API）
+        方案二：通过 AlarmManager.setAlarmClock() 设定系统闹钟（需 SCHEDULE_EXACT_ALARM 权限，已声明）
+        需要支持参数：小时、分钟、标签、是否振动
+
+    # === 工作模式动作 3: 设置静音振动开 ===
+    - name: "A3-设置静音振动模式"
+      scenario: "切换到工作模式后，设置静音振动开"
+      status: "完全具备"
+      existing_components:
+        - "SoundActionRegistry.silentVibrateMode (0x0001)"
+        - "AudioManagerBridge.setRingerMode(mode)"
+        - "AudioManager.RINGER_MODE_VIBRATE = 1"
+        - "UI: ringer_modes string-array (静音/振动/响铃)"
+      gaps: []
+      effort: "无需开发"
+      notes: "setRingerMode(AudioManager.RINGER_MODE_VIBRATE) 即可实现静音+振动"
+
+    # === 午休模式动作 1: 打开免打扰 ===
+    - name: "A4-打开免打扰"
+      scenario: "切换到午休模式后，打开免打扰"
+      status: "完全具备"
+      existing_components:
+        - "SoundActionRegistry.doNotDisturb (0x0002)"
+        - "NotificationManagerBridge.setInterruptionFilter(filter)"
+        - "INTERRUPTION_FILTER_ALARMS_ONLY / INTERRUPTION_FILTER_NONE / INTERRUPTION_FILTER_PRIORITY 等级别"
+        - "已声明 DND 权限 + PermissionGuideDialog 引导"
+      gaps: []
+      effort: "无需开发"
+
+    # === 离开午休模式动作: 关闭免打扰 ===
+    - name: "A5-离开午休模式后关闭免打扰"
+      scenario: "离开午休模式后，关闭免打扰"
+      status: "完全具备"
+      existing_components:
+        - "ModeChangeEventDispatcher — 分发 deactivated 事件"
+        - "ModeChangeReferent — EXTRA_CHANGE_TYPE='deactivated', EXTRA_MODE_NAME='午休模式'"
+        - "SoundActionRegistry.doNotDisturb — setInterruptionFilter(INTERRUPTION_FILTER_ALL) 关闭 DND"
+      gaps: []
+      effort: "无需开发"
+      notes: |
+        实现方式：创建一个宏，触发器=EVENT_ON_MODE_CHANGED，条件判断 modeName='午休模式' && changeType='deactivated'，
+        动作=doNotDisturb(INTERRUPTION_FILTER_ALL)
+
+    # === 居家模式动作 1: 显示自定义通知 ===
+    - name: "A6-居家模式显示通知"
+      scenario: "切换到居家模式后，显示自定义通知"
+      status: "完全具备"
+      existing_components:
+        - "UiActionRegistry.displayNotification"
+        - "ModeChangeEventDispatcher + ModeChangeReferent"
+      gaps: []
+      effort: "无需开发"
+
+    # === 居家模式动作 2: 设置响铃 ===
+    - name: "A7-设置响铃模式"
+      scenario: "切换到居家模式后，设置响铃"
+      status: "完全具备"
+      existing_components:
+        - "SoundActionRegistry.silentVibrateMode"
+        - "AudioManagerBridge.setRingerMode(AudioManager.RINGER_MODE_NORMAL = 2)"
+      gaps: []
+      effort: "无需开发"
+
+    # === 居家模式动作 3: 打开微信给老妈发消息 ===
+    - name: "A8-打开微信发送消息"
+      scenario: "打开微信给老妈发一条消息"
+      status: "部分具备"
+      existing_components:
+        - "ApplicationActionRegistry.launchApp — 可启动微信"
+        - "ClickButtonWithText — 可点击指定文字的按钮"
+        - "ClickUiObjectWithText — 可点击指定文字的 UI 对象"
+        - "InputTextToFirstTextField — 可在输入框输入文字"
+        - "PerformActionIfUiObjectExistsInCurrentWindow — UI 自动化基类"
+        - "CoroutineUiAutomatorBridge — UiAutomation 封装"
+        - "UiObjectActionRegistry — click/inputText/scroll 等 UI 操作注册"
+        - "UiObjectFlowRegistry — containsUiObject 等 UI 条件流"
+      gaps:
+        - "无预置'微信发消息'高级动作 — 需用户手动编排 UI 自动化宏步骤（launchApp→等待界面→点击联系人→输入文字→点击发送）"
+        - "微信 UI 结构可能随版本更新变化，自动化脚本需要维护"
+        - "无'等待指定界面出现'的显式动作（需使用 ContainsUiObject flow 配合 Wait 控制流）"
+      effort: "中等工作量"
+      notes: |
+        技术上可行，基础设施齐全。用户需编排多步 UI 自动化宏：
+        1. launchApp(com.tencent.mm) 打开微信
+        2. 等待主界面 → ClickUiObjectWithText 点击联系人
+        3. 等待聊天界面 → InputTextToFirstTextField 输入文字
+        4. ClickButtonWithText 点击发送
+        缺少的是一个高层封装（WeChatSendMessageAction），但基础能力完整
+
+    # ----------------------------------------------------------
+    # 复合约束 — 今天是否打开过 + 每日仅一次
+    # ----------------------------------------------------------
+
+    # === 约束: 今天是否打开过工作模式 ===
+    - name: "C1-今天是否激活过某模式"
+      scenario: "如果今天有打开过工作模式"
+      status: "完全缺失"
+      existing_components:
+        - "ModeRepository — 有 observeChanges() 流，但不记录历史"
+        - "ModeChangeEventDispatcher — 实时分发模式变化事件，但不持久化历史"
+        - "VariableRepository — 可存储变量但需手动管理"
+      gaps:
+        - "无模式激活历史记录机制 — ModeRepository 只跟踪当前状态，不记录'今天是否激活过'"
+        - "无内置'今日模式历史'查询接口"
+        - "需要新增 ModeHistory 持久化层，或利用变量系统 workaround"
+      effort: "中等工作量"
+      notes: |
+        workaround 方案: 在模式切换宏中增加 SetVariableAction 设置一个布尔变量（如 work_mode_activated_today=true），
+        然后在居家模式宏中用 VariableConstraint 检查该变量。但需要每天凌晨重置该变量（再加一个定时宏）。
+        
+        正式方案: 新增 ModeActivationHistory / ModeHistoryRepository，记录每个模式的激活时间点，
+        提供 wasModeActivatedToday(modeName) 查询接口。
+
+    # === 约束: 每日仅一次 ===
+    - name: "C2-每日仅一次频率限制"
+      scenario: "给老妈发消息，每日仅一次"
+      status: "完全缺失"
+      existing_components:
+        - "VariableRepository — 可用变量模拟计数器"
+        - "TimeCriterionRegistry — 有日期相关判断"
+      gaps:
+        - "无内置频率限制 / Rate Limit 机制"
+        - "引擎层面无 '每个动作/宏的执行次数统计' 功能"
+        - "无 ExecutionCounter / DailyQuota Applet"
+      effort: "中等工作量"
+      notes: |
+        workaround 方案: 用变量系统实现 —— 设置变量 msg_sent_today=true，执行前用 VariableConstraint 检查，
+        配合凌晨定时宏重置变量。可行但不优雅。
+        
+        正式方案: 新增 FrequencyConstraint Applet（参数: 最大次数 / 时间窗口），
+        内部使用 DataStore 持久化执行计数 + 时间戳。
+
+    # === 触发: 模式变化触发（离开午休模式） ===
+    - name: "T5-模式变化触发器"
+      scenario: "模式变化事件触发（进入/离开模式）"
+      status: "完全具备"
+      existing_components:
+        - "ModeChangeEventDispatcher — 监听 ModeRepository.observeChanges()"
+        - "EVENT_ON_MODE_CHANGED (16)"
+        - "ModeChangeReferent — EXTRA_MODE_NAME / EXTRA_CHANGE_TYPE / EXTRA_PREVIOUS_MODE_NAME"
+        - "EventFilter — EVENT_ON_MODE_CHANGED 分支已实现"
+      gaps: []
+      effort: "无需开发"
+
+  # ============================================================
+  # 汇总
+  # ============================================================
+  summary:
+    fully_ready_count: 12
+    partially_ready_count: 1
+    missing_count: 3
+    total_sub_requirements: 16
+
+    fully_ready:
+      - "地理围栏进入触发 (LocationEventDispatcher + GeofenceReferent)"
+      - "时间段约束 (TimeCriterionRegistry.timeRange / hourMinSec / dayOfWeek)"
+      - "切换模式动作 (SetModeAction — activate/deactivate/toggle)"
+      - "指定时间点触发 (AlarmEventDispatcher / PollEventDispatcher + TimeCriterion)"
+      - "模式约束 (ModeConstraint — 检查模式是否激活)"
+      - "模式变化触发 (ModeChangeEventDispatcher → EVENT_ON_MODE_CHANGED)"
+      - "显示自定义通知 (UiActionRegistry.displayNotification)"
+      - "设置静音振动 (SoundActionRegistry.silentVibrateMode)"
+      - "打开免打扰 (SoundActionRegistry.doNotDisturb)"
+      - "关闭免打扰 (doNotDisturb + INTERRUPTION_FILTER_ALL)"
+      - "设置响铃 (silentVibrateMode + RINGER_MODE_NORMAL)"
+      - "打开App (ApplicationActionRegistry.launchApp)"
+
+    partially_ready:
+      - name: "打开微信发送消息"
+        reason: "UI 自动化基础设施齐全(launchApp + ClickButtonWithText + InputTextToFirstTextField)，但缺少预置高级动作封装，用户需手动编排多步 UI 自动化流程"
+        effort: "中等工作量"
+
+    missing:
+      - name: "设定系统闹钟动作 (SetAlarmAction)"
+        reason: "AlarmEventDispatcher 仅为触发器，不暴露'设定闹钟'的用户动作。需新建 SetAlarmAction 发送 AlarmClock.ACTION_SET_ALARM Intent"
+        effort: "中等工作量"
+        priority: high
+
+      - name: "今日模式激活历史 (ModeActivationHistory)"
+        reason: "ModeRepository 仅跟踪当前状态，无法查询'今天是否激活过某模式'。需新增历史记录层或利用变量系统 workaround"
+        effort: "中等工作量"
+        priority: medium
+        workaround: "可通过变量系统实现 — 进入模式时 SetVariable(flag=true)，凌晨重置为 false"
+
+      - name: "每日仅一次频率限制 (FrequencyConstraint)"
+        reason: "引擎无内置执行次数统计/频率限制机制。需新建约束 Applet 或利用变量系统 workaround"
+        effort: "中等工作量"
+        priority: medium
+        workaround: "可通过变量系统实现 — 执行后 SetVariable(done=true)，凌晨重置为 false"
+
+    critical_gaps:
+      - "SetAlarmAction — 设定系统闹钟动作完全缺失，影响场景'切换到工作模式后设定3个闹钟'"
+      - "模式激活历史 — 无法判断'今天是否打开过工作模式'，影响居家模式条件触发"
+      - "频率限制 — 无'每日仅一次'约束，影响微信发消息去重逻辑"
+
+    workaround_feasibility: |
+      对于'今日模式激活历史'和'每日仅一次'两个缺口，可利用现有变量系统（VariableRepository + SetVariableAction + VariableConstraint）
+      实现 workaround：
+      1. 模式切换宏中 SetVariable("work_mode_activated_today", true)
+      2. 消息发送宏中 SetVariable("msg_sent_today", true) + VariableConstraint("msg_sent_today" == false)
+      3. 新建凌晨定时宏（AlarmEventDispatcher 或 PollEventDispatcher），重置两个变量为 false
+      
+      此方案无需新建组件，完全可用现有能力实现，但略显繁琐。
+
+# ============================================================
+# 宏编排方案建议（仅说明可行性，非实施建议）
+# ============================================================
+macro_orchestration_feasibility:
+  macro_count: 6
+  macros:
+    - name: "宏1: 工作时间到达公司 → 工作模式"
+      trigger: "EVENT_ON_GEOFENCE_ENTERED (公司围栏)"
+      constraints:
+        - "TimeCriterionRegistry.hourMinSec (工作时间段)"
+      actions:
+        - "SetModeAction(activate='工作模式')"
+      feasibility: "100% — 所有组件就绪"
+
+    - name: "宏2: 到达家 → 居家模式"
+      trigger: "EVENT_ON_GEOFENCE_ENTERED (家围栏)"
+      actions:
+        - "SetModeAction(activate='居家模式')"
+      feasibility: "100% — 所有组件就绪"
+
+    - name: "宏3: 进入工作模式 → 通知+闹钟+静音振动"
+      trigger: "EVENT_ON_MODE_CHANGED (modeName='工作模式', changeType='activated')"
+      actions:
+        - "displayNotification(title, content) — ✅"
+        - "SetAlarmAction x3 — ❌ 缺少"
+        - "silentVibrateMode(RINGER_MODE_VIBRATE) — ✅"
+        - "SetVariable('work_mode_activated_today', true) — ✅ (workaround)"
+      feasibility: "67% — 闹钟动作缺失"
+
+    - name: "宏4: 工作模式+午休时间 → 午休模式"
+      trigger: "AlarmEventDispatcher / PollEventDispatcher + TimeCriterion (午休时间点)"
+      constraints:
+        - "ModeConstraint(modeName='工作模式', expectedActive=true)"
+      actions:
+        - "SetModeAction(activate='午休模式')"
+      feasibility: "100% — 所有组件就绪"
+
+    - name: "宏5: 进入午休模式 → 免打扰; 离开午休模式 → 关闭免打扰"
+      trigger: "EVENT_ON_MODE_CHANGED"
+      actions:
+        - "If changeType='activated' && modeName='午休模式': doNotDisturb(PRIORITY_ONLY)"
+        - "If changeType='deactivated' && modeName='午休模式': doNotDisturb(ALL)"
+      feasibility: "100% — 所有组件就绪（可拆为两个宏或用 If/Else 控制流）"
+
+    - name: "宏6: 进入居家模式 + 今日曾开工作模式 → 通知+响铃+微信"
+      trigger: "EVENT_ON_MODE_CHANGED (modeName='居家模式', changeType='activated')"
+      constraints:
+        - "VariableConstraint('work_mode_activated_today' == true) — ✅ workaround"
+        - "VariableConstraint('msg_sent_today' == false) — ✅ workaround (频率限制)"
+      actions:
+        - "displayNotification — ✅"
+        - "silentVibrateMode(RINGER_MODE_NORMAL) — ✅"
+        - "launchApp(com.tencent.mm) + UI 自动化步骤 — ⚠️ 部分具备"
+        - "SetVariable('msg_sent_today', true) — ✅"
+      feasibility: "70% — 微信消息编排需手动步骤，频率限制可用变量 workaround"
+
+# ============================================================
+# 关键文件清单
+# ============================================================
+files_analyzed:
+  - file: Event.kt
+    path: tasker-engine/src/main/java/top/xjunz/tasker/engine/runtime/Event.kt
+    purpose: "事件类型常量定义"
+    key_elements:
+      - {element: EVENT_ON_MODE_CHANGED, type: constant, location: "Event.kt:79", description: "模式变化事件 (=16)"}
+      - {element: EVENT_ON_GEOFENCE_ENTERED, type: constant, location: "Event.kt:81", description: "进入围栏 (=17)"}
+      - {element: EVENT_ON_GEOFENCE_EXITED, type: constant, location: "Event.kt:83", description: "离开围栏 (=18)"}
+      - {element: EVENT_ON_ALARM_FIRED, type: constant, location: "Event.kt:87", description: "闹钟触发 (=20)"}
+      - {element: EVENT_ON_TICK, type: constant, location: "Event.kt:61", description: "轮询 tick (=7)"}
+    language: kotlin
+    lines: 145
+
+  - file: EventFilter.kt
+    path: app/src/main/java/top/xjunz/tasker/task/applet/criterion/EventFilter.kt
+    purpose: "事件过滤器 — 按 event.type 路由到 Referent"
+    key_elements:
+      - {element: EVENT_ON_MODE_CHANGED 分支, type: pattern, location: "EventFilter.kt:~145", description: "构造 ModeChangeReferent"}
+      - {element: GEOFENCE_ENTERED/EXITED 分支, type: pattern, location: "EventFilter.kt:~155", description: "构造 GeofenceReferent"}
+      - {element: ALARM_FIRED 分支, type: pattern, location: "EventFilter.kt:~95", description: "返回 EMPTY_SUCCESS"}
+    language: kotlin
+    lines: 170
+
+  - file: SetModeAction.kt
+    path: app/src/main/java/top/xjunz/tasker/task/applet/action/SetModeAction.kt
+    purpose: "模式切换动作"
+    key_elements:
+      - {element: SetModeAction, type: class, location: "SetModeAction.kt:24", description: "activate/deactivate/toggle 三种操作"}
+    language: kotlin
+    lines: 60
+
+  - file: ModeConstraint.kt
+    path: app/src/main/java/top/xjunz/tasker/task/applet/criterion/ModeConstraint.kt
+    purpose: "模式约束 — 检查模式是否处于指定状态"
+    key_elements:
+      - {element: ModeConstraint, type: class, location: "ModeConstraint.kt:23", description: "values[0]=模式名, values[1]=期望激活状态"}
+    language: kotlin
+    lines: 50
+
+  - file: ModeChangeEventDispatcher.kt
+    path: app/src/main/java/top/xjunz/tasker/task/mode/ModeChangeEventDispatcher.kt
+    purpose: "模式变化事件分发器"
+    key_elements:
+      - {element: ModeChangeEventDispatcher, type: class, location: "ModeChangeEventDispatcher.kt:22", description: "监听 ModeRepository 变化，分发 EVENT_ON_MODE_CHANGED"}
+      - {element: EXTRA_MODE_NAME, type: constant, location: "ModeChangeEventDispatcher.kt:28", description: "模式名称 extra"}
+      - {element: EXTRA_CHANGE_TYPE, type: constant, location: "ModeChangeEventDispatcher.kt:30", description: "变化类型 (activated/deactivated)"}
+    language: kotlin
+    lines: 75
+
+  - file: LocationEventDispatcher.kt
+    path: app/src/main/java/top/xjunz/tasker/task/location/LocationEventDispatcher.kt
+    purpose: "地理围栏事件分发器"
+    key_elements:
+      - {element: LocationEventDispatcher, type: class, location: "LocationEventDispatcher.kt:32", description: "高德 GeoFenceClient 封装"}
+      - {element: EXTRA_GEOFENCE_NAME, type: constant, location: "LocationEventDispatcher.kt:46", description: "围栏名称 extra"}
+    language: kotlin
+    lines: 80
+
+  - file: AlarmEventDispatcher.kt
+    path: app/src/main/java/top/xjunz/tasker/task/event/AlarmEventDispatcher.kt
+    purpose: "闹钟事件分发器（触发器，非设定动作）"
+    key_elements:
+      - {element: AlarmEventDispatcher, type: class, location: "AlarmEventDispatcher.kt:25", description: "精确闹钟调度 + RepeatRule"}
+      - {element: handleAlarmFired, type: function, location: "AlarmEventDispatcher.kt:69", description: "分发 EVENT_ON_ALARM_FIRED"}
+    language: kotlin
+    lines: 80
+
+  - file: SoundActionRegistry.kt
+    path: app/src/main/java/top/xjunz/tasker/task/applet/option/registry/SoundActionRegistry.kt
+    purpose: "声音相关动作注册"
+    key_elements:
+      - {element: silentVibrateMode, type: variable, location: "SoundActionRegistry.kt:47", description: "设置铃声模式 (静音/振动/响铃)"}
+      - {element: doNotDisturb, type: variable, location: "SoundActionRegistry.kt:62", description: "设置免打扰模式"}
+      - {element: volumeChange, type: variable, location: "SoundActionRegistry.kt:28", description: "调节音量"}
+    language: kotlin
+    lines: 110
+
+  - file: UiActionRegistry.kt
+    path: app/src/main/java/top/xjunz/tasker/task/applet/option/registry/UiActionRegistry.kt
+    purpose: "界面相关动作注册"
+    key_elements:
+      - {element: displayNotification, type: variable, location: "UiActionRegistry.kt:22", description: "显示系统通知"}
+      - {element: displayDialog, type: variable, location: "UiActionRegistry.kt:35", description: "显示 Overlay 对话框"}
+    language: kotlin
+    lines: 50
+
+  - file: ApplicationActionRegistry.kt
+    path: app/src/main/java/top/xjunz/tasker/task/applet/option/registry/ApplicationActionRegistry.kt
+    purpose: "应用相关动作注册"
+    key_elements:
+      - {element: launchApp, type: variable, location: "ApplicationActionRegistry.kt:46", description: "启动应用"}
+      - {element: launchActivity, type: variable, location: "ApplicationActionRegistry.kt:62", description: "启动指定 Activity"}
+    language: kotlin
+    lines: 80
+
+  - file: TimeCriterionRegistry.kt
+    path: app/src/main/java/top/xjunz/tasker/task/applet/option/registry/TimeCriterionRegistry.kt
+    purpose: "时间相关约束注册"
+    key_elements:
+      - {element: timeRange, type: variable, location: "TimeCriterionRegistry.kt:33", description: "时间范围判断"}
+      - {element: dayOfWeek, type: variable, location: "TimeCriterionRegistry.kt:78", description: "星期约束"}
+      - {element: hourMinSec, type: variable, location: "TimeCriterionRegistry.kt:95", description: "时分秒范围"}
+    language: kotlin
+    lines: 120
+
+  - file: AudioManagerBridge.kt
+    path: app/src/main/java/top/xjunz/tasker/bridge/AudioManagerBridge.kt
+    purpose: "AudioManager 桥接封装"
+    key_elements:
+      - {element: setRingerMode, type: function, location: "AudioManagerBridge.kt:35", description: "设置铃声模式"}
+      - {element: setStreamVolume, type: function, location: "AudioManagerBridge.kt:26", description: "调节音量（含安全校验）"}
+    language: kotlin
+    lines: 50
+
+  - file: VariableRepository.kt
+    path: tasker-engine/src/main/java/top/xjunz/tasker/engine/variable/VariableRepository.kt
+    purpose: "变量仓库接口"
+    key_elements:
+      - {element: VariableRepository, type: interface, location: "VariableRepository.kt:6", description: "get/set/delete/observe 接口"}
+    language: kotlin
+    lines: 14
+
+  - file: ClickButtonWithText.kt
+    path: app/src/main/java/top/xjunz/tasker/task/applet/flow/ClickButtonWithText.kt
+    purpose: "UI 自动化 — 点击指定文字的按钮"
+    key_elements:
+      - {element: ClickButtonWithText, type: class, location: "ClickButtonWithText.kt:15", description: "匹配 Button className + text，然后 click()"}
+    language: kotlin
+    lines: 35
+
+# ============================================================
+# 发现的模式
+# ============================================================
+patterns_found:
+  - category: architecture
+    pattern: "事件分发链路完整闭环"
+    description: "每个能力都遵循 EventDispatcher → EventFilter → Referent 链路，新功能可复用此模式"
+    examples:
+      - file: ModeChangeEventDispatcher.kt
+        location: "ModeChangeEventDispatcher.kt:22"
+        snippet: "class ModeChangeEventDispatcher : EventDispatcher()"
+      - file: EventFilter.kt
+        location: "EventFilter.kt:~145"
+        snippet: "EVENT_ON_MODE_CHANGED -> ModeChangeReferent(...).asResult()"
+    prevalence: common
+
+  - category: architecture
+    pattern: "触发器与动作分离"
+    description: "AlarmEventDispatcher 仅用于触发事件（闹钟响时触发宏），不具备'设定闹钟'的动作能力。触发器和动作是两套独立体系"
+    examples:
+      - file: AlarmEventDispatcher.kt
+        location: "AlarmEventDispatcher.kt:25"
+        snippet: "class AlarmEventDispatcher : EventDispatcher() — 只分发 EVENT_ON_ALARM_FIRED"
+    prevalence: common
+
+  - category: architecture
+    pattern: "变量系统可作为状态桥梁"
+    description: "VariableRepository + SetVariableAction + VariableConstraint 组合可模拟状态标记、计数器、跨宏通信"
+    examples:
+      - file: SetVariableAction.kt
+        location: "SetVariableAction.kt:26"
+        snippet: "class SetVariableAction : ArgumentAction()"
+      - file: VariableConstraint.kt
+        location: "VariableConstraint.kt:22"
+        snippet: "class VariableConstraint : Applet()"
+    prevalence: common
+
+# ============================================================
+# 开放问题
+# ============================================================
+open_questions:
+  - question: "SetAlarmAction 应使用 AlarmClock.ACTION_SET_ALARM Intent 还是 AlarmManager.setAlarmClock()？"
+    context: "前者调用系统闹钟应用（用户可见），后者为系统级 API（需额外权限，更静默）"
+    type: decision_blocker
+    affects: ["A2-设定闹钟动作"]
+
+  - question: "模式激活历史是否引入 ModeHistoryRepository，还是用变量系统 workaround？"
+    context: "workaround 方案可完全用现有组件实现但需额外宏；正式方案更优雅但工作量更大"
+    type: decision_blocker
+    affects: ["C1-今天是否激活过某模式", "C2-每日仅一次频率限制"]
+
+  - question: "微信自动化脚本的维护策略？"
+    context: "微信 UI 结构可能随版本更新变化，需评估是否提供预置模板还是完全由用户编排"
+    type: research
+    affects: ["A8-打开微信发送消息"]
+
+# ============================================================
+# 研究缺口
+# ============================================================
+gaps:
+  - area: "设定系统闹钟动作"
+    description: "代码库中无 SetAlarmAction，AlarmEventDispatcher 仅为触发器。需新建动作组件"
+    impact: decision_blocker
+    affects: ["宏3"]
+
+  - area: "模式激活历史"
+    description: "ModeRepository 不记录历史状态，无法查询'今天是否激活过'"
+    impact: research_blocker
+    affects: ["宏6"]
+
+  - area: "执行频率限制"
+    description: "引擎无内置 rate limit / daily quota 机制"
+    impact: research_blocker
+    affects: ["宏6"]
+
+  - area: "微信消息高级封装"
+    description: "基础 UI 自动化能力齐全但无预置微信步骤模板"
+    impact: nice_to_know
+    affects: ["宏6"]
