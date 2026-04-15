@@ -916,4 +916,10 @@
     <string name="log_sort_oldest_first">最旧在前</string>
     <string name="format_log_match_count">找到 %d 处匹配</string>
     <string name="log_no_matches">无匹配结果</string>
+
+    <!-- App Shortcuts -->
+    <string name="shortcut_create_macro">新建宏</string>
+    <string name="shortcut_create_macro_long">创建新的自动化宏</string>
+    <string name="shortcut_quick_run">快速运行</string>
+    <string name="shortcut_quick_run_long">打开宏列表快速运行</string>
 </resources>
