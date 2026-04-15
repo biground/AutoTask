@@ -16,8 +16,8 @@ plan_metrics:
 tldr: |
   三个独立能力缺口的实现已落地到仓库，并已完成最终验证收口。
   - SetAlarmAction 已实现，并已接入 SoundActionRegistry 与 AndroidManifest 权限。
-  - FrequencyConstraint / FrequencyCounterRepository 已实现，并已接入 GlobalCriterionRegistry 与执行记录链路。
-  - ModeHistoryRepository / ModeActivatedTodayConstraint 已实现，并已接入 DataStoreModeRepository 与 ModeCriterionRegistry。
+  - FrequencyConstraint / FrequencyCounterRepository 已实现，并已接入 GlobalCriterionRegistry 与执行记录链路；当前为 MVP 内存实现。
+  - ModeHistoryRepository / ModeActivatedTodayConstraint 已实现，并已接入 DataStoreModeRepository 与 ModeCriterionRegistry；当前为 MVP 内存实现。
   - 当前状态：T01-T09 已完成，scenario-gap-fill 可收口为 completed。
 
 implementation_status:
@@ -42,6 +42,22 @@ verification_evidence:
     result: "BUILD SUCCESSFUL"
   - command: "export JAVA_HOME=/opt/homebrew/Cellar/openjdk@17/17.0.18/libexec/openjdk.jdk/Contents/Home && export JAVA_TOOL_OPTIONS='--add-opens=java.base/java.io=ALL-UNNAMED' && ./gradlew --no-daemon :app:testDebugUnitTest --rerun-tasks --console=plain"
     result: "BUILD SUCCESSFUL"
+
+finalized_design:
+  note: "以下条目描述最终已交付实现，用于覆盖原始规划中的前瞻性方案描述。"
+  set_alarm_action:
+    implementation: "SetAlarmAction 以 Applet.apply 形式实现，并通过 validateParams 进行纯逻辑边界校验。"
+    integration: "已接入 SoundActionRegistry，并声明 android.permission.SET_ALARM。"
+  frequency_limit:
+    implementation: "FrequencyCounterRepository 与 FrequencyConstraint 采用进程内单例 + ConcurrentHashMap 记录执行频次。"
+    runtime_hook: "TaskExecutionRecorder 已接入 OneshotTaskScheduler 与 ResidentTaskScheduler。"
+  mode_activation_history:
+    implementation: "ModeHistoryRepository 采用进程内单例 + ConcurrentHashMap 记录最后激活时间。"
+    runtime_hook: "DataStoreModeRepository.setActiveMode() 成功激活模式后会写入 ModeHistoryRepository。"
+
+residual_risks:
+  - "FrequencyCounterRepository 与 ModeHistoryRepository 当前为内存实现，应用进程重启后会丢失‘每日频次’与‘今日激活历史’状态。"
+  - "SetAlarmAction 的设备侧行为仍依赖 ROM 自带时钟应用对 AlarmClock.ACTION_SET_ALARM 的支持；当前验证覆盖 JVM 单测、编译与仓库单测回归，未覆盖真机闹钟 App 联调。"
 
 open_questions: []
 
