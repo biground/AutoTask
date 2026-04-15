@@ -100,6 +100,7 @@ class ResidentTaskScheduler(private val taskManager: TaskManager<*, *>) : EventD
 
         override fun onTaskSuccess(runtime: TaskRuntime) {
             super.onTaskSuccess(runtime)
+            TaskExecutionRecorder.recordSuccessfulExecution(runtime)
             logcat("-------- $runtime Success --------")
         }
 

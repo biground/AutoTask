@@ -25,7 +25,12 @@ class FrequencyCounterRepository private constructor(
             private set
 
         fun initialize(): FrequencyCounterRepository {
-            return FrequencyCounterRepository().also { instance = it }
+            return getOrInitialize()
+        }
+
+        @Synchronized
+        fun getOrInitialize(): FrequencyCounterRepository {
+            return instance ?: FrequencyCounterRepository().also { instance = it }
         }
 
         /** 测试工厂方法，可注入时钟 */

@@ -16,6 +16,8 @@ import top.xjunz.tasker.engine.applet.criterion.booleanCriterion
 import top.xjunz.tasker.engine.applet.criterion.unaryEqualCriterion
 import top.xjunz.tasker.ktx.format
 import top.xjunz.tasker.task.applet.anno.AppletOrdinal
+import top.xjunz.tasker.task.applet.criterion.FrequencyConstraint
+import top.xjunz.tasker.task.applet.criterion.FrequencyCounterRepository
 import top.xjunz.tasker.task.applet.criterion.NumberRangeCriterion.Companion.simpleNumberRangeCriterion
 import top.xjunz.tasker.task.applet.value.VariantArgType
 import top.xjunz.tasker.task.runtime.LocalTaskManager
@@ -100,5 +102,12 @@ class GlobalCriterionRegistry(id: Int) : AppletOptionRegistry(id) {
             enabledTasks.any { it.isExecuting }
         }
     }
+
+    @AppletOrdinal(0x0020)
+    val frequencyLimit = invertibleAppletOption(R.string.frequency_limit) {
+        FrequencyConstraint { FrequencyCounterRepository.getOrInitialize() }
+    }.withValueArgument<String>(R.string.frequency_task_key)
+        .withValueArgument<Int>(R.string.frequency_max_count)
+        .withValueArgument<Int>(R.string.frequency_window_type)
 
 }

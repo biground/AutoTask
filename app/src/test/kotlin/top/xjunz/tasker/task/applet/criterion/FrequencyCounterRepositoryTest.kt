@@ -95,4 +95,19 @@ class FrequencyCounterRepositoryTest {
         // 应保留
         assertEquals(1, repo.getExecutionCount("task1", FrequencyCounterRepository.WINDOW_WEEKLY))
     }
+
+    @Test
+    fun `getOrInitialize 提供可复用单例`() {
+        val taskKey = "singleton-${System.nanoTime()}"
+
+        val singleton = FrequencyCounterRepository.getOrInitialize()
+        singleton.recordExecution(taskKey)
+
+        assertTrue(singleton === FrequencyCounterRepository.getOrInitialize())
+        assertEquals(
+            1,
+            FrequencyCounterRepository.getOrInitialize()
+                .getExecutionCount(taskKey, FrequencyCounterRepository.WINDOW_DAILY)
+        )
+    }
 }

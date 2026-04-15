@@ -4,12 +4,13 @@
 
 package top.xjunz.tasker.task.applet.option
 
+import kotlinx.coroutines.runBlocking
 import top.xjunz.tasker.engine.applet.base.Applet
 import top.xjunz.tasker.engine.applet.factory.AppletFactory
-import top.xjunz.tasker.engine.mode.InMemoryModeRepository
 import top.xjunz.tasker.engine.mode.ModeRepository
 import top.xjunz.tasker.engine.variable.InMemoryVariableRepository
 import top.xjunz.tasker.engine.variable.VariableRepository
+import top.xjunz.tasker.bridge.ContextBridge
 import top.xjunz.tasker.task.applet.option.registry.AppletOptionRegistry
 import top.xjunz.tasker.task.applet.option.registry.ApplicationActionRegistry
 import top.xjunz.tasker.task.applet.option.registry.ApplicationCriterionRegistry
@@ -39,6 +40,7 @@ import top.xjunz.tasker.task.applet.option.registry.UiObjectFlowRegistry
 import top.xjunz.tasker.task.applet.option.registry.VariableActionRegistry
 import top.xjunz.tasker.task.applet.option.registry.VariableCriterionRegistry
 import top.xjunz.tasker.task.applet.option.registry.VibrationActionRegistry
+import top.xjunz.tasker.task.mode.DataStoreModeRepository
 
 
 /**
@@ -52,7 +54,13 @@ object AppletOptionFactory : AppletFactory {
 
     val variableRepository: VariableRepository by lazy { InMemoryVariableRepository() }
 
-    val modeRepository: ModeRepository by lazy { InMemoryModeRepository() }
+    val modeRepository: ModeRepository by lazy {
+        runBlocking {
+            DataStoreModeRepository(ContextBridge.getAppResourceContext()).also {
+                it.initialize()
+            }
+        }
+    }
 
     val flowRegistry = BootstrapOptionRegistry()
 

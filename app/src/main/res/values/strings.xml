@@ -925,4 +925,14 @@
     <string name="shortcut_create_macro_long">创建新的自动化宏</string>
     <string name="shortcut_quick_run">快速运行</string>
     <string name="shortcut_quick_run_long">打开宏列表快速运行</string>
+    <string name="set_alarm_action">设定闹钟</string>
+    <string name="alarm_hour">小时</string>
+    <string name="alarm_minute">分钟</string>
+    <string name="alarm_message">闹钟备注</string>
+    <string name="alarm_vibrate">震动</string>
+    <string name="frequency_limit">频率限制</string>
+    <string name="frequency_task_key">任务标识</string>
+    <string name="frequency_max_count">最大执行次数</string>
+    <string name="frequency_window_type">时间窗口</string>
+    <string name="mode_activated_today">今天是否激活过模式</string>
 </resources>

@@ -91,6 +91,8 @@ class DataStoreModeRepository(
         memoryCache[modeId] = activated
         persistMode(activated)
         changeFlow.emit(ModeChangeEvent.Activated(activated, previousActive))
+        // 记录模式激活历史
+        ModeHistoryRepository.getOrInitialize().recordActivation(activated.name)
     }
 
     override suspend fun deactivateAll(): Unit = mutex.withLock {

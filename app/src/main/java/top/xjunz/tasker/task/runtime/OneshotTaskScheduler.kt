@@ -53,6 +53,11 @@ class OneshotTaskScheduler : TaskScheduler<Unit>(), EventDispatcher.Callback {
         scheduleTasks(
             Collections.singletonList(task), Unit,
             object : XTask.TaskStateListener {
+                override fun onTaskSuccess(runtime: TaskRuntime) {
+                    TaskExecutionRecorder.recordSuccessfulExecution(runtime)
+                    onTaskFinished(runtime)
+                }
+
                 override fun onTaskFinished(runtime: TaskRuntime) {
                     super.onTaskFinished(runtime)
                     onCompletion.onTaskCompleted(runtime.isSuccessful)
