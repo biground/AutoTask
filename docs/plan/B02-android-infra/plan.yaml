@@ -1,0 +1,900 @@
+plan_id: B02-android-infra
+objective: |
+  补全 7 项 Android 平台基础设施：
+  AND-002 Accessibility Service 无障碍服务框架，AND-006 内置 HTTP Server，
+  AND-008 传感器服务，PERM-002 Shizuku/ADB 权限集成，
+  WIDGET-001 桌面小部件，WIDGET-002 Quick Settings Tile，WIDGET-004 悬浮按钮。
+  这些基础设施是 Wave 2 众多触发器和动作的硬件/系统级依赖。
+created_at: "2026-04-16"
+created_by: gem-planner
+status: pending_approval
+research_confidence: medium
+
+plan_metrics:
+  wave_1_task_count: 3
+  total_dependencies: 18
+  risk_score: high
+
+tldr: |
+  分 6 个 wave（共 22 个任务）实施 7 项基础设施功能：
+  Wave 1: Accessibility Service 增强 + 传感器服务框架 + Shizuku 权限桥接
+  Wave 2: HTTP Server 核心 + Widget Provider + QS Tile Service
+  Wave 3: 悬浮按钮管理器 + HTTP Server 路由注册
+  Wave 4: 注册表接入 + 字符串资源 + 权限引导 UI 扩展
+  Wave 5: AndroidManifest 集成 + 设置页入口
+  Wave 6: 安全审查 + 全量验证
+
+open_questions:
+  - "HTTP Server 选型：NanoHTTPD（轻量 ~60KB）vs Ktor-Server（功能丰富但 ~2MB）？建议 NanoHTTPD"
+  - "Shizuku 权限是否需要支持无线 ADB 授权？V1 先支持有线 ADB + Root"
+  - "Widget 按钮数量是否可配置？建议 V1 固定 4 个按钮槽位"
+
+pre_mortem:
+  overall_risk_level: high
+  critical_failure_modes:
+    - scenario: "Accessibility Service 在国产 ROM 上被系统自动关闭"
+      likelihood: high
+      impact: critical
+      mitigation: |
+        实现 A11yServiceMonitor 定期检测服务状态 + 重启提示；
+        引导用户加入自启动白名单（电池优化/自启动/后台运行列表）；
+        提供非 A11y 降级路径（有限功能但不崩溃）。
+    - scenario: "HTTP Server 端口被占用或防火墙拦截"
+      likelihood: medium
+      impact: medium
+      mitigation: |
+        默认端口 8765 + 备选端口自动扫描（8766-8775）；
+        绑定 127.0.0.1 而非 0.0.0.0（安全+避免防火墙）；
+        提供端口自定义设置。
+    - scenario: "Shizuku 服务未安装导致高级功能全部不可用"
+      likelihood: high
+      impact: medium
+      mitigation: |
+        所有 Shizuku 依赖功能使用 ShizukuBridge.isAvailable() 检查；
+        不可用时优雅降级（显示提示而非崩溃）；
+        提供 Shizuku 安装引导。
+    - scenario: "悬浮按钮 SYSTEM_ALERT_WINDOW 权限被拒绝"
+      likelihood: medium
+      impact: medium
+      mitigation: |
+        权限未授予时显示引导对话框跳转系统设置；
+        悬浮按钮功能降级为不可用（相关触发器/动作禁用并提示原因）。
+  assumptions:
+    - "现有 A11yAutomatorService 框架可扩展而不需要重写"
+    - "NanoHTTPD 在 Android 16 上可正常运行"
+    - "Shizuku API 在 Android 16 上兼容"
+    - "AppWidgetProvider 在主流启动器上行为一致"
+    - "TileService 在 Android 16 上的生命周期稳定"
+
+implementation_specification:
+  code_structure: |
+    在 app/src/main/java/top/xjunz/tasker/ 下新建：
+    - service/a11y/ — A11y 服务增强（CommandExecutor、UiInteractor）
+    - service/http/ — HTTP Server（核心 + 路由 + 认证）
+    - service/sensor/ — 传感器服务框架
+    - bridge/ — ShizukuBridge 扩展
+    - widget/ — Widget Provider + QS Tile + 悬浮按钮
+  affected_areas:
+    - "app/src/main/java/top/xjunz/tasker/service/ — 服务层"
+    - "app/src/main/java/top/xjunz/tasker/bridge/ — 系统桥接层"
+    - "app/src/main/java/top/xjunz/tasker/widget/ — 小部件"
+    - "app/src/main/java/top/xjunz/tasker/ui/main/ — 设置页扩展"
+    - "app/src/main/AndroidManifest.xml — 服务/权限声明"
+  component_details:
+    - component: "A11yServiceEnhancer"
+      responsibility: "增强现有 A11y 服务：支持通知交互（RemoteInput Reply）、状态栏操作、UI 元素高级操作"
+      interfaces:
+        - "performNotificationAction(notificationKey, actionIndex)"
+        - "expandStatusBar() / collapseStatusBar()"
+        - "isServiceConnected(): Boolean"
+        - "A11yServiceMonitor — 定期检测并提示重启"
+    - component: "AutoPilotHttpServer"
+      responsibility: "轻量级 HTTP Server，支持 Webhook 接收和远程控制"
+      interfaces:
+        - "start(port: Int) / stop()"
+        - "registerRoute(path, method, handler)"
+        - "unregisterRoute(path)"
+        - "isRunning(): Boolean"
+    - component: "SensorService"
+      responsibility: "统一的传感器管理框架，支持加速度/陀螺仪/光线/距离传感器"
+      interfaces:
+        - "registerSensorListener(sensorType, callback, samplingPeriod)"
+        - "unregisterSensorListener(sensorType)"
+        - "getCurrentValue(sensorType): Float?"
+        - "SensorType enum: ACCELEROMETER, GYROSCOPE, LIGHT, PROXIMITY"
+    - component: "ShizukuBridge"
+      responsibility: "封装 Shizuku API，提供特权操作桥接"
+      interfaces:
+        - "isAvailable(): Boolean"
+        - "requestPermission(callback)"
+        - "executeShellCommand(command): String"
+        - "setSecureSetting(name, value)"
+        - "forceStopPackage(packageName)"
+    - component: "AutoPilotWidgetProvider"
+      responsibility: "桌面小部件（4 个可配置按钮）"
+      interfaces:
+        - "onUpdate() — 刷新按钮状态"
+        - "onReceive(action) — 处理按钮点击 → 转发事件"
+    - component: "AutoPilotTileService"
+      responsibility: "Quick Settings Tile 实现"
+      interfaces:
+        - "onClick() — 磁贴点击 → 转发事件"
+        - "updateTile(label, icon, state)"
+    - component: "FloatingButtonManager"
+      responsibility: "悬浮按钮的显示/隐藏/配置管理"
+      interfaces:
+        - "show(config: FloatingButtonConfig)"
+        - "hide()"
+        - "isVisible(): Boolean"
+        - "setOnClickListener(listener)"
+  dependencies:
+    - component: "A11yServiceEnhancer"
+      relationship: "扩展现有 A11yAutomatorService，依赖其 AccessibilityService 基类"
+    - component: "AutoPilotHttpServer"
+      relationship: "独立模块，被 AutomatorService 管理生命周期"
+    - component: "SensorService"
+      relationship: "独立模块，被 AutomatorService 管理生命周期"
+    - component: "ShizukuBridge"
+      relationship: "被 A11yServiceEnhancer 和各种 Action 调用"
+    - component: "Widget/Tile/FloatingButton"
+      relationship: "通过 EventDispatcher 将用户交互转发为 Event"
+  integration_points:
+    - "AutomatorService.initEventDispatcher() 注册 HTTP/Sensor 相关 Dispatcher"
+    - "AndroidManifest.xml 声明新服务/权限/Widget/Tile"
+    - "PermissionGuideDialog 新增 Shizuku/Overlay 权限引导步骤"
+    - "设置页新增 HTTP Server/传感器/Shizuku 配置入口"
+
+contracts:
+  - from_task: T01
+    to_task: T10
+    interface: "A11yServiceEnhancer 的增强方法可供 Action 调用"
+    format: "Kotlin 公共方法"
+  - from_task: T03
+    to_task: T08
+    interface: "AutoPilotHttpServer 可注册/注销路由"
+    format: "registerRoute(path, method, handler)"
+  - from_task: T02
+    to_task: T10
+    interface: "SensorService 的传感器数据可供 EventDispatcher 和 Criterion 使用"
+    format: "registerSensorListener(type, callback)"
+  - from_task: T04
+    to_task: T10
+    interface: "ShizukuBridge.isAvailable() + 特权操作方法"
+    format: "Kotlin 单例方法"
+  - from_task: T05
+    to_task: T10
+    interface: "Widget 按钮点击事件"
+    format: "Intent → EventDispatcher broadcast"
+  - from_task: T06
+    to_task: T10
+    interface: "QS Tile 点击事件"
+    format: "TileService.onClick() → EventDispatcher"
+  - from_task: T07
+    to_task: T10
+    interface: "FloatingButtonManager.show()/hide()/onClick()"
+    format: "Kotlin 公共 API"
+
+tasks:
+  # ─── Wave 1: 核心服务框架 ───
+
+  - id: T01
+    title: "A11yServiceEnhancer — 无障碍服务增强"
+    description: |
+      增强现有 A11yAutomatorService（AND-002），新增以下能力：
+      1. 通知交互：通过 NotificationListenerService + AccessibilityNodeInfo 获取通知操作按钮，
+         执行 performAction（点击/展开），以及 RemoteInput reply（依赖 MVP 已完成的 NLS）
+      2. 状态栏操作：expandStatusBar() / collapseStatusBar()（通过 performGlobalAction）
+      3. 服务状态监控：A11yServiceMonitor 定期检测（每 30 秒），断连后显示通知提醒
+      4. UI 元素高级操作：findNodeByViewId / findNodeByText / performClickOnNode
+      文件：新建 service/a11y/A11yServiceEnhancer.kt + A11yServiceMonitor.kt
+      修改 A11yAutomatorService.kt 集成增强模块
+    wave: 1
+    agent: gem-implementer
+    prototype: false
+    priority: high
+    status: pending
+    dependencies: []
+    conflicts_with: []
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/service/A11yAutomatorService.kt"
+        description: "现有 Accessibility Service 实现"
+      - path: "app/src/main/java/top/xjunz/tasker/service/AutomatorService.kt"
+        description: "AutomatorService 接口"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-16"
+        estimated_effort: large
+        estimated_files: 3
+        estimated_lines: 280
+        focus_area: "无障碍服务增强"
+        verification:
+          - "编译通过：./gradlew :app:compileDebugKotlin"
+          - "单测通过：./gradlew :app:testDebugUnitTest --tests '*.A11yServiceEnhancerTest'"
+          - "A11yServiceMonitor 断连检测逻辑测试通过"
+        acceptance_criteria:
+          - "expandStatusBar()/collapseStatusBar() 正确调用 performGlobalAction"
+          - "A11yServiceMonitor 在服务断连后 30 秒内发出通知"
+          - "findNodeByViewId/findNodeByText 正确搜索节点树"
+          - "不破坏现有 A11yAutomatorService 的 UI 自动化能力"
+        failure_modes:
+          - scenario: "增强代码改动 A11yAutomatorService 导致现有 UI 自动化回归"
+            likelihood: medium
+            impact: critical
+            mitigation: "A11yServiceEnhancer 作为独立类组合到现有 Service，不修改现有方法签名"
+          - scenario: "A11yServiceMonitor 的定期检测消耗过多电量"
+            likelihood: low
+            impact: medium
+            mitigation: "使用 WorkManager 而非 Handler/Timer，系统自动优化频率"
+        tech_stack:
+          - "Android Accessibility API"
+          - "Android NotificationListenerService"
+        test_coverage: "新增 A11yServiceEnhancerTest（≥8 个用例）"
+
+  - id: T02
+    title: "SensorService — 传感器服务框架"
+    description: |
+      新建统一的传感器管理服务（AND-008）：
+      1. SensorType 枚举：ACCELEROMETER, GYROSCOPE, LIGHT, PROXIMITY
+      2. SensorService 单例：
+         - registerSensorListener(type, callback, samplingPeriod)
+         - unregisterSensorListener(type)
+         - getCurrentValue(type): Float?（缓存最近值）
+      3. 内部使用 Android SensorManager，管理传感器注册/注销的生命周期
+      4. 当无监听器时自动注销传感器（省电）
+      文件：新建 service/sensor/SensorService.kt + SensorType.kt
+    wave: 1
+    agent: gem-implementer
+    prototype: false
+    priority: high
+    status: pending
+    dependencies: []
+    conflicts_with: []
+    context_files: []
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-16"
+        estimated_effort: medium
+        estimated_files: 3
+        estimated_lines: 180
+        focus_area: "传感器框架"
+        verification:
+          - "编译通过：./gradlew :app:compileDebugKotlin"
+          - "单测通过：./gradlew :app:testDebugUnitTest --tests '*.SensorServiceTest'"
+        acceptance_criteria:
+          - "4 种传感器类型可注册监听"
+          - "无监听器时自动注销传感器"
+          - "getCurrentValue 返回最近缓存值"
+          - "多个监听器注册同一传感器不冲突"
+          - "destroy() 正确清理所有资源"
+        failure_modes:
+          - scenario: "传感器频繁注册/注销导致 SensorManager 泄露"
+            likelihood: low
+            impact: medium
+            mitigation: "引用计数管理：每种传感器维护监听者计数，归零时注销"
+        tech_stack:
+          - "Android SensorManager"
+          - "Kotlin coroutines"
+        test_coverage: "新增 SensorServiceTest（≥6 个用例）"
+
+  - id: T03
+    title: "AutoPilotHttpServer — NanoHTTPD 内置 HTTP Server"
+    description: |
+      新建内置 HTTP Server（AND-006），基于 NanoHTTPD：
+      1. AutoPilotHttpServer 继承 NanoHTTPD：
+         - start(port) / stop() / isRunning()
+         - registerRoute(path, method, handler: (session) → Response)
+         - unregisterRoute(path)
+      2. 路由表：ConcurrentHashMap<RouteKey, Handler>
+      3. 安全：
+         - 默认绑定 127.0.0.1（仅本机访问）
+         - 可选 Bearer Token 认证（通过设置页配置）
+         - 请求速率限制（默认 60 req/min）
+      4. 端口冲突处理：默认 8765，被占用时自动尝试 8766-8775
+      添加依赖：implementation 'org.nanohttpd:nanohttpd:2.3.1'
+      文件：新建 service/http/AutoPilotHttpServer.kt + HttpRoute.kt
+    wave: 1
+    agent: gem-implementer
+    prototype: false
+    priority: high
+    status: pending
+    dependencies: []
+    conflicts_with: []
+    context_files: []
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-16"
+        estimated_effort: large
+        estimated_files: 3
+        estimated_lines: 250
+        focus_area: "HTTP Server"
+        verification:
+          - "编译通过：./gradlew :app:compileDebugKotlin"
+          - "单测通过：./gradlew :app:testDebugUnitTest --tests '*.AutoPilotHttpServerTest'"
+        acceptance_criteria:
+          - "Server 启动后可响应 HTTP GET/POST 请求"
+          - "registerRoute/unregisterRoute 动态注册正确"
+          - "未注册路由返回 404"
+          - "Bearer Token 认证正确拦截未授权请求（401）"
+          - "速率限制超过阈值返回 429"
+          - "端口冲突时自动切换到备选端口"
+          - "stop() 后不再响应请求"
+        failure_modes:
+          - scenario: "HTTP Server 未正确绑定 localhost 导致局域网暴露"
+            likelihood: medium
+            impact: critical
+            mitigation: "构造函数强制绑定 '127.0.0.1'；代码审查确认无 '0.0.0.0'"
+          - scenario: "NanoHTTPD 的线程模型在高并发下内存溢出"
+            likelihood: low
+            impact: medium
+            mitigation: "限制最大并发连接数（默认 10）+ 请求体大小限制（1MB）"
+        tech_stack:
+          - "NanoHTTPD 2.3.1"
+          - "Kotlin"
+        test_coverage: "新增 AutoPilotHttpServerTest（≥10 个用例）"
+        requires_review: true
+        review_security_sensitive: true
+
+  # ─── Wave 2: 权限 + Widget + Tile ───
+
+  - id: T04
+    title: "ShizukuBridge — Shizuku 权限桥接"
+    description: |
+      新建 ShizukuBridge 单例（PERM-002），封装 Shizuku API：
+      1. isAvailable(): 检测 Shizuku 服务是否运行
+      2. isPermissionGranted(): 检测是否已授权
+      3. requestPermission(callback): 请求授权
+      4. executeShellCommand(cmd): 执行 Shell 命令
+      5. setSecureSetting(name, value): 写入 Settings.Secure
+      6. forceStopPackage(pkg): 强杀应用
+      7. 所有操作失败时返回明确的 Result<T> 而非崩溃
+      添加依赖：Shizuku API
+      文件：新建 bridge/ShizukuBridge.kt
+    wave: 2
+    agent: gem-implementer
+    prototype: false
+    priority: high
+    status: pending
+    dependencies: []
+    conflicts_with: []
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/bridge/"
+        description: "现有 Bridge 模块目录"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-16"
+        estimated_effort: medium
+        estimated_files: 2
+        estimated_lines: 180
+        focus_area: "Shizuku 权限"
+        verification:
+          - "编译通过：./gradlew :app:compileDebugKotlin"
+          - "单测通过：./gradlew :app:testDebugUnitTest --tests '*.ShizukuBridgeTest'"
+        acceptance_criteria:
+          - "isAvailable() 在无 Shizuku 时返回 false"
+          - "executeShellCommand 返回命令输出"
+          - "setSecureSetting 正确修改 Settings.Secure 值"
+          - "forceStopPackage 正确调用 IPackageManager"
+          - "所有操作失败返回 Result.failure 而非崩溃"
+        failure_modes:
+          - scenario: "Shizuku API 版本与 Android 16 不兼容"
+            likelihood: low
+            impact: high
+            mitigation: "使用 Shizuku 最新稳定版，fallback 到无特权模式"
+        tech_stack:
+          - "Shizuku API (rikka.shizuku)"
+          - "Kotlin"
+        test_coverage: "新增 ShizukuBridgeTest（mock 环境）"
+
+  - id: T05
+    title: "AutoPilotWidgetProvider — 桌面小部件"
+    description: |
+      新建桌面小部件（WIDGET-001），提供 4 个可配置按钮：
+      1. AutoPilotWidgetProvider 继承 AppWidgetProvider
+      2. widget_layout.xml：4×1 网格，每个位置一个 ImageButton
+      3. widget_configure_activity.xml：配置界面（选择每个按钮绑定的宏/动作）
+      4. 按钮点击 → PendingIntent → BroadcastReceiver → EventDispatcher 分发事件
+      5. RemoteViews 更新按钮图标/标签
+      文件：新建 widget/AutoPilotWidgetProvider.kt + WidgetConfigureActivity.kt
+    wave: 2
+    agent: gem-implementer
+    prototype: false
+    priority: medium
+    status: pending
+    dependencies: []
+    conflicts_with: []
+    context_files: []
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-16"
+        estimated_effort: medium
+        estimated_files: 3
+        estimated_lines: 200
+        focus_area: "桌面小部件"
+        verification:
+          - "编译通过：./gradlew :app:compileDebugKotlin"
+          - "手动验证：长按桌面 → 添加小部件 → 配置 → 点击按钮触发"
+        acceptance_criteria:
+          - "小部件在桌面显示 4 个按钮"
+          - "配置界面可选择每个按钮绑定的宏"
+          - "按钮点击正确触发绑定的宏"
+          - "宏状态变化时按钮图标/颜色自动更新"
+        failure_modes:
+          - scenario: "不同启动器的 RemoteViews 支持不一致"
+            likelihood: medium
+            impact: medium
+            mitigation: "使用标准 RemoteViews API，避免自定义 Layout；测试 AOSP/MIUI/OneUI"
+        tech_stack:
+          - "Android AppWidgetProvider"
+          - "RemoteViews"
+        test_coverage: null
+
+  - id: T06
+    title: "AutoPilotTileService — Quick Settings Tile"
+    description: |
+      新建 Quick Settings Tile（WIDGET-002）：
+      1. AutoPilotTileService 继承 TileService
+      2. onClick()：磁贴点击 → 通过 EventDispatcher 分发 QS_TILE_CLICKED 事件
+      3. 磁贴状态：可配置为「切换指定宏的启用/禁用」
+      4. updateTile()：根据绑定宏的状态更新磁贴图标/label/state(ACTIVE/INACTIVE)
+      5. 支持通过设置页配置磁贴绑定的宏
+      文件：新建 widget/AutoPilotTileService.kt
+    wave: 2
+    agent: gem-implementer
+    prototype: false
+    priority: medium
+    status: pending
+    dependencies: []
+    conflicts_with: []
+    context_files: []
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-16"
+        estimated_effort: medium
+        estimated_files: 2
+        estimated_lines: 120
+        focus_area: "Quick Settings Tile"
+        verification:
+          - "编译通过：./gradlew :app:compileDebugKotlin"
+          - "手动验证：下拉快速设置 → 找到磁贴 → 点击 → 检查宏状态切换"
+        acceptance_criteria:
+          - "磁贴在 Quick Settings 面板中可见"
+          - "点击磁贴正确切换绑定宏的启用/禁用状态"
+          - "磁贴图标和标签反映当前状态"
+        failure_modes:
+          - scenario: "TileService 生命周期在不同 ROM 上不稳定"
+            likelihood: medium
+            impact: medium
+            mitigation: "使用 requestListeningState() 触发更新；onClick 中做 null 检查"
+        tech_stack:
+          - "Android TileService"
+        test_coverage: null
+
+  # ─── Wave 3: 悬浮按钮 + HTTP 路由 ───
+
+  - id: T07
+    title: "FloatingButtonManager — 悬浮按钮管理"
+    description: |
+      新建悬浮按钮管理器（WIDGET-004）：
+      1. FloatingButtonConfig: data class（iconRes, position, size, opacity, bindMacroId）
+      2. FloatingButtonManager 单例：
+         - show(config): 通过 WindowManager 添加悬浮按钮
+         - hide(): 移除悬浮按钮
+         - isVisible(): Boolean
+         - updateConfig(config): 更新外观
+      3. 按钮点击 → EventDispatcher 分发 FLOATING_BUTTON_CLICKED 事件
+      4. 长按拖拽移动位置
+      5. 需要 SYSTEM_ALERT_WINDOW 权限
+      文件：新建 widget/FloatingButtonManager.kt + FloatingButtonConfig.kt + floating_button_layout.xml
+    wave: 3
+    agent: gem-implementer
+    prototype: false
+    priority: medium
+    status: pending
+    dependencies: [T01]
+    conflicts_with: []
+    context_files: []
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-16"
+        estimated_effort: medium
+        estimated_files: 3
+        estimated_lines: 200
+        focus_area: "悬浮按钮"
+        verification:
+          - "编译通过：./gradlew :app:compileDebugKotlin"
+          - "手动验证：设置页开启悬浮按钮 → 在任意应用上可见并可点击"
+        acceptance_criteria:
+          - "悬浮按钮在任意应用上可见（需 SYSTEM_ALERT_WINDOW）"
+          - "点击触发绑定事件"
+          - "长按可拖拽移动"
+          - "hide() 后完全消失"
+          - "应用重启后恢复之前的配置和位置"
+        failure_modes:
+          - scenario: "Android 16 对 SYSTEM_ALERT_WINDOW 的新限制"
+            likelihood: medium
+            impact: high
+            mitigation: "测试 Android 16 Beta 的 overlay 行为；准备使用 Accessibility overlay 作为备选"
+        tech_stack:
+          - "Android WindowManager"
+          - "SYSTEM_ALERT_WINDOW 权限"
+        test_coverage: null
+
+  - id: T08
+    title: "HTTP Server 路由体系 — Webhook + Status + Control"
+    description: |
+      为 AutoPilotHttpServer 注册核心路由：
+      1. POST /webhook/{id} — 接收外部 Webhook，转发为 WEBHOOK_RECEIVED 事件
+      2. GET /status — 返回引擎状态（运行中的宏数、最近触发时间等）
+      3. POST /macro/{id}/run — 远程触发指定宏
+      4. POST /macro/{id}/toggle — 远程启用/禁用宏
+      5. GET /macros — 列出所有宏基本信息
+      所有路由需 Bearer Token 认证（如已配置）。
+      文件：新建 service/http/routes/ 目录，每个路由一个 Handler
+    wave: 3
+    agent: gem-implementer
+    prototype: false
+    priority: medium
+    status: pending
+    dependencies: [T03]
+    conflicts_with: []
+    context_files: []
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-16"
+        estimated_effort: medium
+        estimated_files: 3
+        estimated_lines: 200
+        focus_area: "HTTP 路由"
+        verification:
+          - "编译通过：./gradlew :app:compileDebugKotlin"
+          - "单测通过：./gradlew :app:testDebugUnitTest --tests '*.HttpRouteTest'"
+        acceptance_criteria:
+          - "POST /webhook/{id} 正确触发 WEBHOOK_RECEIVED 事件"
+          - "GET /status 返回正确的 JSON 状态信息"
+          - "POST /macro/{id}/run 远程触发宏"
+          - "无 Token 时认证路由返回 401"
+          - "不存在的宏 ID 返回 404"
+        failure_modes:
+          - scenario: "Webhook 请求体过大导致 OOM"
+            likelihood: low
+            impact: medium
+            mitigation: "限制请求体大小（1MB），超过返回 413"
+          - scenario: "/macro/{id}/run 被恶意调用频繁触发宏"
+            likelihood: medium
+            impact: medium
+            mitigation: "速率限制 + Bearer Token 认证"
+        tech_stack:
+          - "NanoHTTPD"
+          - "Kotlin JSON"
+        test_coverage: "新增 HttpRouteTest（≥8 个用例）"
+        requires_review: true
+        review_security_sensitive: true
+
+  # ─── Wave 4: 注册集成 ───
+
+  - id: T09
+    title: "字符串资源 — 基础设施相关"
+    description: |
+      新增所有基础设施功能的字符串资源：
+      - Accessibility Service 增强功能描述
+      - HTTP Server 设置项（端口/Token/状态）
+      - 传感器服务设置项
+      - Shizuku 权限引导文案
+      - Widget 配置标签
+      - QS Tile 设置标签
+      - 悬浮按钮设置标签
+      文件：app/src/main/res/values/strings.xml + values-zh/strings.xml
+    wave: 4
+    agent: gem-implementer
+    prototype: false
+    priority: medium
+    status: pending
+    dependencies: [T01, T02, T03, T04, T05, T06, T07]
+    conflicts_with: []
+    context_files:
+      - path: "app/src/main/res/values/strings.xml"
+        description: "字符串资源"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-16"
+        estimated_effort: small
+        estimated_files: 2
+        estimated_lines: 60
+        focus_area: "字符串资源"
+        verification:
+          - "编译通过：./gradlew :app:compileDebugKotlin"
+        acceptance_criteria:
+          - "所有新 UI 文本有对应字符串资源"
+        failure_modes: []
+        tech_stack:
+          - "Android 资源 XML"
+        test_coverage: null
+
+  - id: T10
+    title: "PermissionGuideDialog 扩展 — Shizuku + Overlay"
+    description: |
+      扩展现有 PermissionGuideDialog（PERM-002 相关）：
+      1. 新增第 7 项「Shizuku 授权」（检测 Shizuku 安装 → 引导安装 → 请求授权）
+      2. 新增第 8 项「悬浮窗权限」（Settings.canDrawOverlays 检测 → ACTION_MANAGE_OVERLAY_PERMISSION）
+      3. 每项显示当前状态（已授权/未授权/不可用）
+      4. Shizuku 未安装时显示安装引导（跳转 Play Store 或 GitHub Release）
+    wave: 4
+    agent: gem-implementer
+    prototype: false
+    priority: medium
+    status: pending
+    dependencies: [T04, T07, T09]
+    conflicts_with: []
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/ui/main/"
+        description: "设置页目录（PermissionGuideDialog 所在）"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-16"
+        estimated_effort: medium
+        estimated_files: 2
+        estimated_lines: 80
+        focus_area: "权限引导 UI"
+        verification:
+          - "编译通过：./gradlew :app:compileDebugKotlin"
+          - "手动验证：打开权限引导 → 8 项权限全部显示 → 各项状态检测正确"
+        acceptance_criteria:
+          - "权限引导显示 8 项（含 Shizuku + 悬浮窗）"
+          - "Shizuku 未安装时显示安装引导"
+          - "悬浮窗权限检测和跳转正确"
+          - "onResume 自动刷新所有权限状态"
+        failure_modes:
+          - scenario: "Shizuku Play Store 链接在国内无法访问"
+            likelihood: high
+            impact: low
+            mitigation: "提供 GitHub Release 备选链接"
+        tech_stack:
+          - "Android 权限 API"
+          - "Jetpack Compose / Android View"
+        test_coverage: null
+
+  # ─── Wave 5: Manifest + 设置页 ───
+
+  - id: T11
+    title: "AndroidManifest 集成 — 服务/权限/Widget/Tile 声明"
+    description: |
+      更新 AndroidManifest.xml：
+      1. TileService 声明（BIND_QUICK_SETTINGS_TILE 权限保护 + meta-data icon/label）
+      2. AppWidgetProvider 声明（BIND_APPWIDGET receiver + meta-data widget_info）
+      3. widget_info.xml（minWidth/minHeight/updatePeriodMillis/previewImage）
+      4. INTERNET 权限（HTTP Server）
+      5. BODY_SENSORS 权限（传感器，可选）
+      6. Shizuku provider 声明
+      7. SYSTEM_ALERT_WINDOW 权限（悬浮按钮）
+    wave: 5
+    agent: gem-implementer
+    prototype: false
+    priority: high
+    status: pending
+    dependencies: [T05, T06, T03, T07]
+    conflicts_with: []
+    context_files:
+      - path: "app/src/main/AndroidManifest.xml"
+        description: "应用清单文件"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-16"
+        estimated_effort: medium
+        estimated_files: 3
+        estimated_lines: 80
+        focus_area: "Manifest 集成"
+        verification:
+          - "编译通过：./gradlew :app:compileDebugKotlin"
+          - "APK 构建成功：./gradlew :app:assembleDebug"
+        acceptance_criteria:
+          - "TileService 在 Quick Settings 编辑面板中可见"
+          - "Widget 在桌面小部件列表中可见"
+          - "Shizuku provider 声明正确"
+          - "权限声明完整"
+        failure_modes:
+          - scenario: "权限声明不完整导致运行时崩溃"
+            likelihood: low
+            impact: high
+            mitigation: "逐个功能编译验证，参照 PROGRESS.md 中已有的权限声明模式"
+        tech_stack:
+          - "Android Manifest XML"
+        test_coverage: null
+
+  - id: T12
+    title: "设置页 — HTTP Server / 传感器 / Shizuku / 悬浮按钮 配置入口"
+    description: |
+      在设置页中新增 4 个配置入口：
+      1. HTTP Server 设置：启用/禁用开关 + 端口配置 + Token 配置 + 当前状态
+      2. 传感器设置：各传感器启用/禁用 + 采样率配置
+      3. Shizuku 设置：连接状态 + 授权状态 + 重新授权按钮
+      4. 悬浮按钮设置：启用/禁用 + 大小/透明度/位置 + 绑定宏选择
+    wave: 5
+    agent: gem-implementer
+    prototype: false
+    priority: medium
+    status: pending
+    dependencies: [T01, T02, T03, T04, T07, T09]
+    conflicts_with: []
+    context_files: []
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-16"
+        estimated_effort: medium
+        estimated_files: 3
+        estimated_lines: 200
+        focus_area: "设置页 UI"
+        verification:
+          - "编译通过：./gradlew :app:compileDebugKotlin"
+          - "手动验证：设置页各入口可打开并正确显示状态"
+        acceptance_criteria:
+          - "4 个设置入口均可见并可操作"
+          - "HTTP Server 开关正确启停 Server"
+          - "Shizuku 连接状态实时显示"
+          - "悬浮按钮配置保存后立即生效"
+        failure_modes: []
+        tech_stack:
+          - "Jetpack Compose / Android View"
+        test_coverage: null
+
+  - id: T13
+    title: "AutomatorService 集成 — HTTP Server + SensorService 生命周期"
+    description: |
+      在 AutomatorService.init/destroy 中集成新服务：
+      1. initEventDispatcher() 中启动 AutoPilotHttpServer（如设置开启）
+      2. initEventDispatcher() 中启动 SensorService
+      3. destroy() 中停止 HTTP Server 和 SensorService
+      4. 确保服务启动顺序正确（先启动基础服务，再启动 Dispatcher）
+    wave: 5
+    agent: gem-implementer
+    prototype: false
+    priority: high
+    status: pending
+    dependencies: [T02, T03, T08]
+    conflicts_with: []
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/service/AutomatorService.kt"
+        description: "AutomatorService 接口"
+      - path: "app/src/main/java/top/xjunz/tasker/service/A11yAutomatorService.kt"
+        description: "A11y 服务实现"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-16"
+        estimated_effort: small
+        estimated_files: 2
+        estimated_lines: 40
+        focus_area: "服务集成"
+        verification:
+          - "编译通过：./gradlew :app:compileDebugKotlin"
+          - "全量测试：./gradlew :app:testDebugUnitTest — 确认 0 回归"
+        acceptance_criteria:
+          - "A11y Service 启动后 HTTP Server 和 SensorService 自动初始化"
+          - "A11y Service 停止后两者自动清理"
+          - "不影响现有 EventDispatcher 的注册和运行"
+        failure_modes:
+          - scenario: "新服务初始化异常阻塞整个 AutomatorService 启动"
+            likelihood: low
+            impact: high
+            mitigation: "每个新服务初始化用 try-catch 包裹，异常仅记录日志不阻塞"
+        tech_stack:
+          - "Kotlin"
+        test_coverage: "回归验证"
+
+  # ─── Wave 6: 安全审查 + 验证 ───
+
+  - id: T14
+    title: "安全审查 — HTTP Server + Shizuku + A11y"
+    description: |
+      审查所有新代码的安全隐患：
+      1. HTTP Server：
+         - 确认绑定 127.0.0.1 而非 0.0.0.0
+         - Bearer Token 验证链路完整
+         - 速率限制正确工作
+         - 请求体大小限制
+         - 路由参数注入防护
+      2. Shizuku：
+         - Shell 命令注入防护（禁止拼接用户输入到命令）
+         - 权限检查在每次操作前执行
+      3. A11y：
+         - 通知交互不应泄露通知内容到日志
+         - UI 操作不应绕过安全界面
+      4. 悬浮按钮：
+         - 不能被用于 tapjacking 攻击
+    wave: 6
+    agent: gem-reviewer
+    prototype: false
+    priority: high
+    status: pending
+    dependencies: [T01, T03, T04, T07, T08]
+    conflicts_with: []
+    context_files: []
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-16"
+        estimated_effort: medium
+        estimated_files: 3
+        estimated_lines: 80
+        focus_area: "安全审查"
+        verification:
+          - "所有安全问题已修复或记录 TODO（附理由）"
+        acceptance_criteria:
+          - "HTTP Server 绑定 127.0.0.1 确认"
+          - "Shell 命令注入测试通过（特殊字符参数不执行）"
+          - "Token 认证绕过测试通过（无 Token 返回 401）"
+          - "悬浮按钮 FLAG_NOT_TOUCHABLE 在适当时机设置"
+        failure_modes: []
+        requires_review: true
+        review_depth: full
+        review_security_sensitive: true
+        tech_stack:
+          - "Kotlin"
+        test_coverage: "安全边界测试"
+
+  - id: T15
+    title: "全量编译 + 测试验证"
+    description: |
+      完整构建验证：
+      1. ./gradlew :app:assembleDebug — 确认 APK 构建成功
+      2. ./gradlew :app:testDebugUnitTest — 所有测试通过
+      3. 回归检查：确认 MVP 的 416+ 测试全部通过
+      4. 新增测试数量统计
+    wave: 6
+    agent: gem-implementer
+    prototype: false
+    priority: high
+    status: pending
+    dependencies: [T14]
+    conflicts_with: []
+    context_files: []
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-16"
+        estimated_effort: small
+        estimated_files: 0
+        estimated_lines: 0
+        focus_area: "验证"
+        verification:
+          - "./gradlew :app:assembleDebug — exit 0"
+          - "./gradlew :app:testDebugUnitTest — 0 failures"
+          - "新增测试数 ≥ 25"
+        acceptance_criteria:
+          - "APK 构建成功"
+          - "所有测试通过（含 MVP 回归 + B02 新增）"
+          - "0 编译警告涉及新增代码"
+        failure_modes:
+          - scenario: "NanoHTTPD 依赖引入版本冲突"
+            likelihood: low
+            impact: medium
+            mitigation: "使用 exclude group 排除冲突依赖"
+        tech_stack:
+          - "Gradle"
+        test_coverage: "全量验证"

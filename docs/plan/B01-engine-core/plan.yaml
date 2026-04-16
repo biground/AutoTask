@@ -1,0 +1,941 @@
+plan_id: B01-engine-core
+objective: |
+  补全引擎核心能力：Dictionary 变量(V-005)、Array 变量(V-006)、
+  Iterate Dictionary/Array(CF-004)、Action Block(CF-009)、Exit Action Block(CF-010)、
+  数组操作(EX-006)、宏模板(E-007)。
+  交付可用的高级数据结构、可复用动作块、数组高阶操作和模板系统。
+created_at: "2026-04-16"
+created_by: gem-planner
+status: pending_approval
+research_confidence: medium
+
+plan_metrics:
+  wave_1_task_count: 4
+  total_dependencies: 22
+  risk_score: high
+
+tldr: |
+  分 6 个 wave（共 24 个任务）实施 7 项引擎核心功能：
+  Wave 1: 扩展 VariableType 枚举 + Dictionary/Array 数据模型与序列化
+  Wave 2: VariableRepository 适配 + 表达式引擎 Array 操作扩展
+  Wave 3: Iterate Dictionary/Array 控制流 + Action Block/Exit 引擎实现
+  Wave 4: 注册表接入 + 字符串资源 + UI 适配
+  Wave 5: 宏模板系统（模型 + 预置模板 + UI）
+  Wave 6: 安全审查 + 全量验证
+
+open_questions:
+  - "Action Block 参数传递是使用局部变量还是专用参数对象？建议用局部变量以复用现有 VariableRepository"
+  - "Dictionary 的 key 类型是否只支持 String？建议 V1 先只支持 String key"
+  - "宏模板存储在 assets 目录还是从远程获取？建议 V1 先内置 assets，后续扩展"
+
+pre_mortem:
+  overall_risk_level: high
+  critical_failure_modes:
+    - scenario: "Action Block 调用栈实现破坏现有 Runtime 执行逻辑"
+      likelihood: medium
+      impact: critical
+      mitigation: |
+        在 tasker-engine 的 TaskRuntime 中新增 BlockCallStack 独立模块，
+        不修改现有 Flow.execute() 签名；递归深度默认 16 层 + StackOverflow 捕获。
+    - scenario: "Dictionary/Array 变量序列化导致现有宏 JSON 不兼容"
+      likelihood: medium
+      impact: high
+      mitigation: |
+        VariableType 枚举新增值放在末尾（DICTIONARY=4, ARRAY=5），
+        旧 JSON 中不包含新类型不会出错；新增 version 字段用于向前兼容校验。
+    - scenario: "Iterate 控制流与现有 Repeat Loop 的 Break/Continue 语义冲突"
+      likelihood: low
+      impact: medium
+      mitigation: |
+        Iterate 继承 ContainerFlow 并复用 ControlFlow 的 Break/Continue 机制，
+        与 Repeat 共享同一退出语义。
+  assumptions:
+    - "现有 VariableType 枚举可安全扩展（追加值不影响已序列化数据）"
+    - "ExpressionEvaluator 的 AST 架构支持新增数组操作函数"
+    - "BootstrapOptionRegistry 的 AppletOrdinal 分配空间充足"
+    - "MVP 的 416 个测试在 V1 开发期间持续通过"
+
+implementation_specification:
+  code_structure: |
+    在 tasker-engine 模块扩展变量类型和控制流基类，
+    在 app 模块实现注册、UI 和模板系统，测试覆盖每个新组件。
+  affected_areas:
+    - "tasker-engine/src/main/java/top/xjunz/tasker/engine/variable/ — 变量类型扩展"
+    - "tasker-engine/src/main/java/top/xjunz/tasker/engine/applet/base/ — Iterate/ActionBlock 控制流"
+    - "tasker-engine/src/main/java/top/xjunz/tasker/engine/expression/ — 数组操作函数"
+    - "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/ — 注册表"
+    - "app/src/main/java/top/xjunz/tasker/task/applet/option/AppletOptionFactory.kt — 工厂注册"
+    - "app/src/main/java/top/xjunz/tasker/task/variable/ — DataStore 持久化适配"
+    - "app/src/main/java/top/xjunz/tasker/ui/ — 变量编辑 UI / 模板 UI"
+  component_details:
+    - component: "VariableType 扩展"
+      responsibility: "在枚举中新增 DICTIONARY 和 ARRAY 类型"
+      interfaces:
+        - "VariableType.DICTIONARY"
+        - "VariableType.ARRAY"
+    - component: "DictionaryVariable / ArrayVariable 操作"
+      responsibility: "封装 Dict/Array 的 get/set/remove/contains/size/keys/values 操作"
+      interfaces:
+        - "Variable.asDictionary(): MutableMap<String, Any?>"
+        - "Variable.asArray(): MutableList<Any?>"
+    - component: "IterateFlow"
+      responsibility: "遍历 Dictionary/Array 的控制流，每次迭代设置 key/value 或 index/element 局部变量"
+      interfaces:
+        - "class IterateFlow : ContainerFlow — execute() 循环调用子 Applet"
+    - component: "ActionBlockFlow / ExitActionBlock"
+      responsibility: "可复用动作块（类函数），支持调用栈和 Exit 提前退出"
+      interfaces:
+        - "class ActionBlockFlow : ContainerFlow — 定义动作块"
+        - "class ExitActionBlock : ControlFlow — 提前退出当前动作块"
+        - "class BlockCallStack — 调用栈管理（push/pop/depth）"
+    - component: "数组操作函数"
+      responsibility: "在表达式引擎中新增 array 高阶操作"
+      interfaces:
+        - "arraySort(array, ascending?) → Array"
+        - "arrayFilter(array, expression) → Array"
+        - "arrayMap(array, expression) → Array"
+        - "arrayFind(array, expression) → Any?"
+        - "arrayDistinct(array) → Array"
+        - "arrayLength(array) → Integer"
+    - component: "宏模板系统"
+      responsibility: "预置宏模板的定义、存储和加载"
+      interfaces:
+        - "data class MacroTemplate(id, name, description, category, macroJson)"
+        - "class MacroTemplateRepository — 从 assets 加载预置模板"
+        - "MacroTemplateDialog — 模板浏览和导入 UI"
+  dependencies:
+    - component: "IterateFlow"
+      relationship: "依赖 VariableType.DICTIONARY/ARRAY，运行时通过 VariableRepository 读写迭代变量"
+    - component: "ActionBlockFlow"
+      relationship: "依赖 BlockCallStack 管理调用深度，通过 VariableRepository 传递参数（局部变量）"
+    - component: "数组操作函数"
+      relationship: "依赖 VariableType.ARRAY，在 ExpressionEvaluator 中注册新内置函数"
+    - component: "宏模板"
+      relationship: "依赖现有宏导入导出（E-004）的 JSON 序列化能力"
+  integration_points:
+    - "VariableType 枚举扩展 → DataStoreVariableRepository.VariableDto 序列化"
+    - "BootstrapOptionRegistry 新增 Iterate/ActionBlock/Exit 流程选项"
+    - "AppletOptionFactory 注册新 Registry"
+    - "VariableManagerDialog 支持显示/编辑 Dict 和 Array 类型"
+
+contracts:
+  - from_task: T01
+    to_task: T03
+    interface: "VariableType.DICTIONARY/ARRAY 枚举值可用"
+    format: "Kotlin enum 扩展"
+  - from_task: T02
+    to_task: T04
+    interface: "Variable.asDictionary()/asArray() 扩展函数可用"
+    format: "Kotlin 扩展函数"
+  - from_task: T03
+    to_task: T07
+    interface: "DataStore 可正确读写 Dict/Array 类型变量"
+    format: "JSON 序列化格式"
+  - from_task: T05
+    to_task: T12
+    interface: "数组操作内置函数在 ExpressionEvaluator 中可调用"
+    format: "函数名 + 参数签名"
+  - from_task: T06
+    to_task: T13
+    interface: "IterateFlow 类可在 BootstrapOptionRegistry 中注册"
+    format: "Kotlin class 继承 ContainerFlow"
+  - from_task: T08
+    to_task: T14
+    interface: "ActionBlockFlow/ExitActionBlock 类可在 BootstrapOptionRegistry 中注册"
+    format: "Kotlin class 继承 ContainerFlow/ControlFlow"
+  - from_task: T10
+    to_task: T15
+    interface: "BlockCallStack 在 TaskRuntime 中可用"
+    format: "TaskRuntime.blockCallStack 属性"
+
+tasks:
+  # ─── Wave 1: 数据模型基础 ───
+
+  - id: T01
+    title: "扩展 VariableType 枚举 — 新增 DICTIONARY + ARRAY"
+    description: |
+      在 tasker-engine 的 VariableType 枚举中追加两个值：
+      DICTIONARY（键值对映射，key 为 String，value 为 Any?）
+      ARRAY（有序列表，element 为 Any?）
+      文件：tasker-engine/src/main/java/top/xjunz/tasker/engine/variable/VariableType.kt
+    wave: 1
+    agent: gem-implementer
+    prototype: false
+    priority: high
+    status: pending
+    dependencies: []
+    conflicts_with: []
+    context_files:
+      - path: "tasker-engine/src/main/java/top/xjunz/tasker/engine/variable/VariableType.kt"
+        description: "当前 VariableType 枚举（4 种类型）"
+      - path: "tasker-engine/src/main/java/top/xjunz/tasker/engine/variable/Variable.kt"
+        description: "Variable 数据类定义"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-16"
+        estimated_effort: small
+        estimated_files: 1
+        estimated_lines: 10
+        focus_area: "tasker-engine 变量类型"
+        verification:
+          - "编译通过：./gradlew :tasker-engine:compileDebugKotlin"
+          - "现有变量测试不回归：./gradlew :tasker-engine:testDebugUnitTest"
+        acceptance_criteria:
+          - "VariableType 新增 DICTIONARY 和 ARRAY 两个枚举值"
+          - "枚举值 ordinal 分别为 4 和 5（不影响已有类型的序列化）"
+          - "现有 416 个测试全部通过，0 回归"
+        failure_modes:
+          - scenario: "新增枚举值破坏 JSON 序列化中按 ordinal 映射的逻辑"
+            likelihood: low
+            impact: high
+            mitigation: "确认序列化使用 name 而非 ordinal；如用 ordinal 则追加到枚举末尾"
+        tech_stack:
+          - "Kotlin enum"
+        test_coverage: "现有 VariableTest 覆盖回归"
+
+  - id: T02
+    title: "Dictionary/Array 变量辅助操作 — 扩展函数"
+    description: |
+      为 Variable 数据类新增扩展函数，封装 Dict 和 Array 的常用操作：
+      - Variable.asDictionary(): MutableMap<String, Any?>
+      - Variable.asArray(): MutableList<Any?>
+      - Variable.dictGet(key) / dictSet(key, value) / dictRemove(key) / dictContains(key) / dictKeys() / dictValues() / dictSize()
+      - Variable.arrayGet(index) / arrayAdd(element) / arrayRemoveAt(index) / arrayContains(element) / arraySize() / arrayIndexOf(element)
+      类型不匹配时抛出 IllegalStateException。
+      文件：tasker-engine/src/main/java/top/xjunz/tasker/engine/variable/VariableExtensions.kt（新建）
+    wave: 1
+    agent: gem-implementer
+    prototype: false
+    priority: high
+    status: pending
+    dependencies: [T01]
+    conflicts_with: []
+    context_files:
+      - path: "tasker-engine/src/main/java/top/xjunz/tasker/engine/variable/Variable.kt"
+        description: "Variable 数据类"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-16"
+        estimated_effort: medium
+        estimated_files: 2
+        estimated_lines: 120
+        focus_area: "变量操作封装"
+        verification:
+          - "编译通过：./gradlew :tasker-engine:compileDebugKotlin"
+          - "单测通过：./gradlew :tasker-engine:testDebugUnitTest --tests '*.VariableExtensionsTest'"
+        acceptance_criteria:
+          - "asDictionary()/asArray() 正确返回底层 Map/List"
+          - "类型不匹配调用抛出 IllegalStateException"
+          - "dictGet/dictSet/arrayAdd/arrayRemoveAt 等操作正确"
+          - "单测覆盖正常路径 + 边界情况（空 Dict/Array、越界索引）"
+        failure_modes:
+          - scenario: "Variable.value 的类型转换不安全导致 ClassCastException"
+            likelihood: medium
+            impact: medium
+            mitigation: "使用 as? 安全转换 + 明确错误信息"
+        tech_stack:
+          - "Kotlin 扩展函数"
+        test_coverage: "新增 VariableExtensionsTest"
+
+  - id: T03
+    title: "DataStoreVariableRepository 适配 Dict/Array 序列化"
+    description: |
+      扩展 DataStoreVariableRepository.VariableDto 的 JSON 序列化逻辑，
+      使 DICTIONARY 和 ARRAY 类型变量可正确持久化到 DataStore：
+      - DICTIONARY: value 序列化为 JSON Object
+      - ARRAY: value 序列化为 JSON Array
+      - 反序列化时根据 VariableType 恢复为 MutableMap/MutableList
+      文件：app/src/main/java/top/xjunz/tasker/task/variable/DataStoreVariableRepository.kt
+    wave: 1
+    agent: gem-implementer
+    prototype: false
+    priority: high
+    status: pending
+    dependencies: [T01]
+    conflicts_with: []
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/task/variable/DataStoreVariableRepository.kt"
+        description: "DataStore 变量持久化实现"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-16"
+        estimated_effort: medium
+        estimated_files: 2
+        estimated_lines: 80
+        focus_area: "持久化序列化"
+        verification:
+          - "编译通过：./gradlew :app:compileDebugKotlin"
+          - "单测通过：./gradlew :app:testDebugUnitTest --tests '*.DataStoreVariableRepositoryTest'"
+        acceptance_criteria:
+          - "DICTIONARY 变量 save → load 往返正确（嵌套对象保持结构）"
+          - "ARRAY 变量 save → load 往返正确（保持元素顺序和类型）"
+          - "空 Dict/Array 的序列化不报错"
+          - "旧版本 JSON（不含 Dict/Array）反序列化兼容"
+        failure_modes:
+          - scenario: "嵌套 Dict/Array 的深度过大导致 JSON 序列化栈溢出"
+            likelihood: low
+            impact: medium
+            mitigation: "限制嵌套深度（默认 8 层）+ 异常捕获"
+        tech_stack:
+          - "Kotlin JSON (org.json / kotlinx.serialization)"
+          - "DataStore Preferences"
+        test_coverage: "新增 DataStoreVariableRepositoryTest Dict/Array 用例"
+
+  - id: T04
+    title: "InMemoryVariableRepository 适配 Dict/Array"
+    description: |
+      确保 InMemoryVariableRepository 正确处理 DICTIONARY 和 ARRAY 类型：
+      - setVariable 时对 Dict/Array 进行深拷贝（防止引用泄露）
+      - observeChanges 正确触发 Dict/Array 内部修改事件
+      文件：tasker-engine/src/main/java/top/xjunz/tasker/engine/variable/InMemoryVariableRepository.kt
+    wave: 1
+    agent: gem-implementer
+    prototype: false
+    priority: medium
+    status: pending
+    dependencies: [T01, T02]
+    conflicts_with: []
+    context_files:
+      - path: "tasker-engine/src/main/java/top/xjunz/tasker/engine/variable/VariableRepository.kt"
+        description: "VariableRepository 接口"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-16"
+        estimated_effort: small
+        estimated_files: 2
+        estimated_lines: 60
+        focus_area: "内存变量仓库适配"
+        verification:
+          - "单测通过：./gradlew :tasker-engine:testDebugUnitTest --tests '*.InMemoryVariableRepositoryTest'"
+        acceptance_criteria:
+          - "Dict/Array 变量存取后互不干扰（深拷贝验证）"
+          - "变量变更事件正确分发"
+        failure_modes:
+          - scenario: "深拷贝对嵌套对象不完整导致引用共享"
+            likelihood: low
+            impact: medium
+            mitigation: "使用 JSON 序列化/反序列化实现深拷贝，确保完全隔离"
+        tech_stack:
+          - "Kotlin"
+        test_coverage: "扩展 InMemoryVariableRepositoryTest"
+
+  # ─── Wave 2: 表达式引擎扩展 ───
+
+  - id: T05
+    title: "ExpressionEvaluator 新增数组操作内置函数"
+    description: |
+      在表达式引擎中注册 6 个数组高阶操作函数（EX-006）：
+      - arraySort(array, ascending?): 排序（默认升序）
+      - arrayFilter(array, conditionExpr): 过滤（conditionExpr 中 $it 为当前元素）
+      - arrayMap(array, mapExpr): 映射
+      - arrayFind(array, conditionExpr): 查找首个匹配
+      - arrayDistinct(array): 去重
+      - arrayLength(array): 数组长度
+      注意：filter/map/find 中的 conditionExpr 需要做子表达式求值，
+      暂时用字符串表达式 + 递归调用 evaluate() 实现。
+      文件：tasker-engine 表达式引擎目录下新增 ArrayFunctions.kt
+    wave: 2
+    agent: gem-implementer
+    prototype: false
+    priority: high
+    status: pending
+    dependencies: [T01, T02]
+    conflicts_with: []
+    context_files:
+      - path: "tasker-engine/src/main/java/top/xjunz/tasker/engine/expression/"
+        description: "表达式引擎目录（AstNode/Token/Evaluator）"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-16"
+        estimated_effort: large
+        estimated_files: 3
+        estimated_lines: 250
+        focus_area: "表达式引擎函数扩展"
+        verification:
+          - "编译通过：./gradlew :tasker-engine:compileDebugKotlin"
+          - "单测通过：./gradlew :tasker-engine:testDebugUnitTest --tests '*.ArrayFunctionsTest'"
+        acceptance_criteria:
+          - "6 个数组操作函数在表达式中可正确调用"
+          - "arrayFilter/arrayMap/arrayFind 的子表达式求值正确"
+          - "空数组操作不报错（返回空数组或 null）"
+          - "类型不匹配（传入非数组）抛出明确错误"
+          - "单测覆盖：正常 + 空数组 + 嵌套数组 + 类型错误"
+        failure_modes:
+          - scenario: "子表达式递归求值导致无限循环（arrayFilter 中表达式引用自身）"
+            likelihood: low
+            impact: high
+            mitigation: "递归深度限制（默认 4 层）+ 超时保护"
+        tech_stack:
+          - "Kotlin"
+          - "AST 表达式引擎"
+        test_coverage: "新增 ArrayFunctionsTest（≥12 个用例）"
+
+  # ─── Wave 3: 控制流实现 ───
+
+  - id: T06
+    title: "IterateFlow — 遍历 Dictionary/Array 控制流"
+    description: |
+      新增 IterateFlow 类继承 ContainerFlow（CF-004），实现：
+      - execute() 中根据目标变量类型进行遍历
+      - Dictionary: 每轮迭代设置 __key 和 __value 局部变量
+      - Array: 每轮迭代设置 __index 和 __element 局部变量
+      - 支持 Break 和 Continue 语义（复用现有 ControlFlow 机制）
+      - 支持空集合（跳过）和嵌套遍历
+      文件：tasker-engine/src/main/java/top/xjunz/tasker/engine/applet/base/IterateFlow.kt（新建）
+    wave: 3
+    agent: gem-implementer
+    prototype: false
+    priority: high
+    status: pending
+    dependencies: [T01, T02, T04]
+    conflicts_with: []
+    context_files:
+      - path: "tasker-engine/src/main/java/top/xjunz/tasker/engine/applet/base/"
+        description: "Applet/Flow/ControlFlow 基类目录"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-16"
+        estimated_effort: medium
+        estimated_files: 2
+        estimated_lines: 120
+        focus_area: "控制流引擎"
+        verification:
+          - "编译通过：./gradlew :tasker-engine:compileDebugKotlin"
+          - "单测通过：./gradlew :tasker-engine:testDebugUnitTest --tests '*.IterateFlowTest'"
+        acceptance_criteria:
+          - "Dictionary 遍历正确设置 __key/__value 局部变量"
+          - "Array 遍历正确设置 __index/__element 局部变量"
+          - "Break 可提前终止遍历"
+          - "Continue 可跳过当前迭代"
+          - "空集合安全跳过"
+          - "嵌套遍历（Array 内嵌 Iterate）不冲突"
+        failure_modes:
+          - scenario: "遍历过程中修改集合导致 ConcurrentModificationException"
+            likelihood: medium
+            impact: medium
+            mitigation: "遍历前对集合做快照拷贝"
+        tech_stack:
+          - "Kotlin"
+          - "tasker-engine ContainerFlow 继承"
+        test_coverage: "新增 IterateFlowTest（≥8 个用例）"
+
+  - id: T07
+    title: "BlockCallStack — Action Block 调用栈管理"
+    description: |
+      新增 BlockCallStack 类管理 Action Block 的调用链：
+      - push(blockId): 压入新调用帧
+      - pop(): 弹出当前帧
+      - currentDepth(): 当前调用深度
+      - MAX_DEPTH = 16（可配置）
+      - 深度超限时抛出 BlockStackOverflowException
+      在 TaskRuntime 中新增 blockCallStack 属性（懒初始化）。
+      文件：tasker-engine 新建 BlockCallStack.kt，修改 TaskRuntime
+    wave: 3
+    agent: gem-implementer
+    prototype: false
+    priority: high
+    status: pending
+    dependencies: []
+    conflicts_with: []
+    context_files:
+      - path: "tasker-engine/src/main/java/top/xjunz/tasker/engine/runtime/TaskRuntime.kt"
+        description: "任务运行时核心类"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-16"
+        estimated_effort: small
+        estimated_files: 2
+        estimated_lines: 80
+        focus_area: "调用栈管理"
+        verification:
+          - "编译通过：./gradlew :tasker-engine:compileDebugKotlin"
+          - "单测通过：./gradlew :tasker-engine:testDebugUnitTest --tests '*.BlockCallStackTest'"
+        acceptance_criteria:
+          - "push/pop/currentDepth 行为正确"
+          - "超过 MAX_DEPTH 时抛出 BlockStackOverflowException"
+          - "空栈 pop 不报错（返回 null 或忽略）"
+          - "TaskRuntime.blockCallStack 可正确访问"
+        failure_modes:
+          - scenario: "TaskRuntime 修改引入线程安全问题"
+            likelihood: low
+            impact: high
+            mitigation: "BlockCallStack 标记为 @Volatile 或使用 ThreadLocal"
+        tech_stack:
+          - "Kotlin"
+        test_coverage: "新增 BlockCallStackTest"
+
+  - id: T08
+    title: "ActionBlockFlow — 可复用动作块实现"
+    description: |
+      新增 ActionBlockFlow 类继承 ContainerFlow（CF-009），实现：
+      - 作为子流程容器，包含一组动作 Applet
+      - execute() 中 push BlockCallStack → 执行子动作 → pop
+      - 支持被其他 Flow 通过 ID 引用调用（类似函数调用）
+      - 参数通过设置局部变量传递
+      - 捕获 ExitActionBlockException 实现提前退出
+      文件：tasker-engine/src/main/java/top/xjunz/tasker/engine/applet/base/ActionBlockFlow.kt（新建）
+    wave: 3
+    agent: gem-implementer
+    prototype: false
+    priority: high
+    status: pending
+    dependencies: [T07]
+    conflicts_with: []
+    context_files:
+      - path: "tasker-engine/src/main/java/top/xjunz/tasker/engine/applet/base/ContainerFlow.kt"
+        description: "ContainerFlow 基类"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-16"
+        estimated_effort: large
+        estimated_files: 2
+        estimated_lines: 150
+        focus_area: "Action Block 引擎核心"
+        verification:
+          - "编译通过：./gradlew :tasker-engine:compileDebugKotlin"
+          - "单测通过：./gradlew :tasker-engine:testDebugUnitTest --tests '*.ActionBlockFlowTest'"
+        acceptance_criteria:
+          - "ActionBlockFlow 按子动作顺序执行"
+          - "调用 Action Block 时 BlockCallStack depth +1，结束后 -1"
+          - "递归调用达到 MAX_DEPTH 后抛出异常并终止"
+          - "ExitActionBlockException 可提前退出当前 Block"
+          - "嵌套 Block 调用（A 调 B 调 C）正确"
+        failure_modes:
+          - scenario: "ActionBlockFlow 递归无限调用（A 调 A）导致 ANR"
+            likelihood: medium
+            impact: critical
+            mitigation: "BlockCallStack 深度限制 + 超时保护（默认 30 秒）"
+        tech_stack:
+          - "Kotlin"
+          - "tasker-engine ContainerFlow 继承"
+        test_coverage: "新增 ActionBlockFlowTest（≥10 个用例）"
+
+  - id: T09
+    title: "ExitActionBlock — 提前退出动作块"
+    description: |
+      新增 ExitActionBlock 类继承 ControlFlow（CF-010），实现：
+      - execute() 中抛出 ExitActionBlockException
+      - ActionBlockFlow.execute() 捕获此异常并正常结束当前 Block
+      - 如果在 ActionBlock 外部使用则忽略（仅记录警告日志）
+      文件：tasker-engine/src/main/java/top/xjunz/tasker/engine/applet/base/ExitActionBlock.kt（新建）
+    wave: 3
+    agent: gem-implementer
+    prototype: false
+    priority: medium
+    status: pending
+    dependencies: [T08]
+    conflicts_with: []
+    context_files:
+      - path: "tasker-engine/src/main/java/top/xjunz/tasker/engine/applet/base/ControlFlow.kt"
+        description: "ControlFlow 基类"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-16"
+        estimated_effort: small
+        estimated_files: 2
+        estimated_lines: 40
+        focus_area: "控制流"
+        verification:
+          - "编译通过：./gradlew :tasker-engine:compileDebugKotlin"
+          - "在 ActionBlockFlowTest 中验证提前退出场景"
+        acceptance_criteria:
+          - "在 ActionBlockFlow 内执行时正确终止当前 Block"
+          - "不影响外层 Flow 的执行"
+          - "在 ActionBlock 外部使用时仅记录警告，不崩溃"
+        failure_modes: []
+        tech_stack:
+          - "Kotlin"
+        test_coverage: "ActionBlockFlowTest 扩展"
+
+  # ─── Wave 4: 注册 + UI ───
+
+  - id: T10
+    title: "字符串资源 — Dict/Array/ActionBlock/Template"
+    description: |
+      新增所有 V1 引擎核心功能的字符串资源：
+      - Iterate Dictionary/Array 的标题、描述
+      - Action Block / Exit Action Block 的标题、描述
+      - 数组操作函数的名称、描述
+      - 宏模板相关文案
+      - Dict/Array 变量类型显示名
+      文件：app/src/main/res/values/strings.xml + values-zh/strings.xml
+    wave: 4
+    agent: gem-implementer
+    prototype: false
+    priority: medium
+    status: pending
+    dependencies: [T06, T08, T09]
+    conflicts_with: []
+    context_files:
+      - path: "app/src/main/res/values/strings.xml"
+        description: "字符串资源文件"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-16"
+        estimated_effort: small
+        estimated_files: 2
+        estimated_lines: 50
+        focus_area: "字符串资源"
+        verification:
+          - "编译通过：./gradlew :app:compileDebugKotlin"
+        acceptance_criteria:
+          - "所有新 UI 可见文本有对应字符串资源"
+          - "中英文资源都存在"
+        failure_modes: []
+        tech_stack:
+          - "Android 资源 XML"
+        test_coverage: null
+
+  - id: T11
+    title: "VariableManagerDialog 支持 Dict/Array 类型"
+    description: |
+      扩展现有 VariableManagerDialog：
+      - 类型过滤器新增 Dictionary 和 Array 选项
+      - 新建变量对话框支持选择 Dict/Array 类型
+      - Dict 变量编辑：显示为 key-value 列表，支持添加/删除/编辑条目
+      - Array 变量编辑：显示为有序列表，支持添加/删除/重排
+      - 值预览：Dict 显示 "{3 items}"，Array 显示 "[5 items]"
+      文件：app/src/main/java/top/xjunz/tasker/ui/task/VariableManagerDialog.kt
+    wave: 4
+    agent: gem-implementer
+    prototype: false
+    priority: medium
+    status: pending
+    dependencies: [T01, T02, T03, T10]
+    conflicts_with: []
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/ui/task/VariableManagerDialog.kt"
+        description: "变量管理 UI"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-16"
+        estimated_effort: medium
+        estimated_files: 3
+        estimated_lines: 200
+        focus_area: "变量管理 UI"
+        verification:
+          - "编译通过：./gradlew :app:compileDebugKotlin"
+          - "手动验证（或 screenshot test）：Dict/Array 变量的显示/编辑流程"
+        acceptance_criteria:
+          - "类型过滤器显示 6 种类型（Boolean/Integer/Decimal/String/Dictionary/Array）"
+          - "新建 Dict 变量并添加 key-value 正确保存"
+          - "新建 Array 变量并添加/删除元素正确保存"
+          - "值预览格式正确"
+        failure_modes:
+          - scenario: "Dict/Array 编辑 UI 在大数据量下卡顿"
+            likelihood: low
+            impact: low
+            mitigation: "V1 阶段限制显示条目数（默认 100），大数据集显示截断提示"
+        tech_stack:
+          - "Jetpack Compose / Android View"
+        test_coverage: null
+
+  - id: T12
+    title: "BootstrapOptionRegistry 注册 Iterate/ActionBlock"
+    description: |
+      在 BootstrapOptionRegistry 中新增 3 个控制流选项：
+      - Iterate Dictionary/Array（flowOptionWithId，引用 IterateFlow）
+      - Action Block（flowOptionWithId，引用 ActionBlockFlow）
+      - Exit Action Block（flowOptionWithId，引用 ExitActionBlock）
+      分配 appletId（使用下一个可用 ID）。
+      在 AppletOptionFactory 中确保新注册项正确加载。
+    wave: 4
+    agent: gem-implementer
+    prototype: false
+    priority: high
+    status: pending
+    dependencies: [T06, T08, T09]
+    conflicts_with: []
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/option/registry/BootstrapOptionRegistry.kt"
+        description: "控制流注册表"
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/option/AppletOptionFactory.kt"
+        description: "选项工厂"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-16"
+        estimated_effort: medium
+        estimated_files: 2
+        estimated_lines: 60
+        focus_area: "注册表集成"
+        verification:
+          - "编译通过：./gradlew :app:compileDebugKotlin"
+          - "全量测试：./gradlew :app:testDebugUnitTest — 确认 0 回归"
+        acceptance_criteria:
+          - "Iterate/ActionBlock/ExitActionBlock 在宏编辑器的控制流列表中可见"
+          - "appletId 不与现有 ID 冲突"
+          - "AppletOptionFactory 可正确实例化新 Flow"
+        failure_modes:
+          - scenario: "appletId 与已有 ID 冲突导致 hash 碰撞"
+            likelihood: low
+            impact: high
+            mitigation: "参照 MVP 中 appletId 碰撞修复经验，分配前检查所有已用 ID"
+        tech_stack:
+          - "Kotlin"
+        test_coverage: "回归验证"
+
+  - id: T13
+    title: "VariantArgType 新增 Dict/Array 参数类型"
+    description: |
+      在 VariantArgType 中新增 DICTIONARY 和 ARRAY 类型标识，
+      在 ArgumentsEditorDialog 中新增对应的编辑器入口（使用 T11 的 Dict/Array 编辑 UI）。
+      确保 Applet 参数可以接受 Dict/Array 类型。
+    wave: 4
+    agent: gem-implementer
+    prototype: false
+    priority: medium
+    status: pending
+    dependencies: [T01, T11]
+    conflicts_with: []
+    context_files:
+      - path: "app/src/main/java/top/xjunz/tasker/task/applet/value/VariantArgType.kt"
+        description: "Applet 参数类型枚举"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-16"
+        estimated_effort: small
+        estimated_files: 2
+        estimated_lines: 40
+        focus_area: "参数类型系统"
+        verification:
+          - "编译通过：./gradlew :app:compileDebugKotlin"
+        acceptance_criteria:
+          - "VariantArgType 新增 DICTIONARY 和 ARRAY 值"
+          - "ArgumentsEditorDialog 对 Dict/Array 类型显示适当的编辑器"
+        failure_modes: []
+        tech_stack:
+          - "Kotlin"
+        test_coverage: null
+
+  # ─── Wave 5: 宏模板系统 ───
+
+  - id: T14
+    title: "MacroTemplate 数据模型 + MacroTemplateRepository"
+    description: |
+      新增宏模板系统（E-007）：
+      - data class MacroTemplate(id, name, description, category, iconRes, macroJson)
+      - MacroTemplateRepository: 从 assets/templates/ 加载预置 JSON 模板文件
+      - 模板分类：日常、连接、通知、系统、自定义
+      文件：app 新建 task/template/ 目录
+    wave: 5
+    agent: gem-implementer
+    prototype: false
+    priority: medium
+    status: pending
+    dependencies: [T01]
+    conflicts_with: []
+    context_files: []
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-16"
+        estimated_effort: medium
+        estimated_files: 3
+        estimated_lines: 120
+        focus_area: "模板数据模型"
+        verification:
+          - "编译通过：./gradlew :app:compileDebugKotlin"
+          - "单测通过：./gradlew :app:testDebugUnitTest --tests '*.MacroTemplateRepositoryTest'"
+        acceptance_criteria:
+          - "MacroTemplateRepository 可从 assets 加载模板列表"
+          - "模板 JSON 可正确反序列化为宏对象"
+          - "无效模板 JSON 不崩溃（跳过并记录日志）"
+        failure_modes:
+          - scenario: "模板 JSON 格式与当前宏格式版本不匹配"
+            likelihood: low
+            impact: medium
+            mitigation: "模板 JSON 中包含 schemaVersion 字段，加载时校验"
+        tech_stack:
+          - "Kotlin"
+          - "Android assets"
+        test_coverage: "新增 MacroTemplateRepositoryTest"
+
+  - id: T15
+    title: "预置宏模板 JSON 文件（5-8 个常用模板）"
+    description: |
+      创建 5-8 个预置宏模板 JSON 文件放入 assets/templates/：
+      - "低电量省电"：Battery Level < 20% → 关 WiFi + 降亮度
+      - "到公司自动静音"：WiFi SSID = 办公网络 → 静音模式
+      - "来电自动回复"：Call Incoming → 发短信
+      - "夜间免打扰"：Time 22:00-07:00 → DND On
+      - "充电亮屏"：Power Connected → Screen On + 亮度 100%
+      每个模板使用现有 MVP 功能即可实现。
+    wave: 5
+    agent: gem-implementer
+    prototype: false
+    priority: low
+    status: pending
+    dependencies: [T14]
+    conflicts_with: []
+    context_files: []
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-16"
+        estimated_effort: medium
+        estimated_files: 8
+        estimated_lines: 200
+        focus_area: "模板内容"
+        verification:
+          - "MacroTemplateRepositoryTest 可加载所有模板"
+          - "每个模板 JSON 通过 SchemaValidator 验证"
+        acceptance_criteria:
+          - "5-8 个模板文件存在于 assets/templates/"
+          - "每个模板可被 MacroTemplateRepository 正确加载和预览"
+          - "模板一键导入后宏可正常运行（逻辑验证）"
+        failure_modes: []
+        tech_stack:
+          - "JSON"
+        test_coverage: "MacroTemplateRepositoryTest"
+
+  - id: T16
+    title: "MacroTemplateDialog — 模板浏览与导入 UI"
+    description: |
+      新增模板浏览对话框：
+      - 分类标签栏（日常/连接/通知/系统）
+      - 模板卡片列表（图标 + 名称 + 描述 + 使用按钮）
+      - 点击"使用"→ 导入到宏列表并跳转到编辑页
+      - 首页增加"从模板创建"入口
+    wave: 5
+    agent: gem-implementer
+    prototype: false
+    priority: medium
+    status: pending
+    dependencies: [T14, T15, T10]
+    conflicts_with: []
+    context_files: []
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-16"
+        estimated_effort: medium
+        estimated_files: 3
+        estimated_lines: 180
+        focus_area: "模板 UI"
+        verification:
+          - "编译通过：./gradlew :app:compileDebugKotlin"
+          - "手动验证：打开模板对话框 → 浏览 → 选择 → 导入成功"
+        acceptance_criteria:
+          - "模板对话框正确显示所有预置模板"
+          - "分类筛选正常工作"
+          - "点击使用后宏正确导入到列表"
+          - "首页有'从模板创建'入口"
+        failure_modes: []
+        tech_stack:
+          - "Jetpack Compose / Android View"
+          - "RecyclerView / LazyColumn"
+        test_coverage: null
+
+  # ─── Wave 6: 安全审查 + 验证 ───
+
+  - id: T17
+    title: "安全审查 — Dict/Array 注入 + ActionBlock 栈溢出"
+    description: |
+      审查所有新代码的安全隐患：
+      - Dict key 注入：确保 dictGet/dictSet 的 key 不可用于路径遍历
+      - Array 越界：arrayGet(index) 越界应返回异常而非崩溃
+      - ActionBlock 递归：确认 MAX_DEPTH 限制正常工作，超限异常被捕获
+      - 表达式注入：arrayFilter 等子表达式不能执行危险操作
+      - 模板 JSON：加载时验证 Schema，防止恶意模板
+    wave: 6
+    agent: gem-reviewer
+    prototype: false
+    priority: high
+    status: pending
+    dependencies: [T05, T06, T08, T14]
+    conflicts_with: []
+    context_files: []
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-16"
+        estimated_effort: medium
+        estimated_files: 3
+        estimated_lines: 60
+        focus_area: "安全审查"
+        verification:
+          - "所有安全问题已修复或记录 TODO（附理由）"
+        acceptance_criteria:
+          - "Dict key 长度限制（≤256 字符）+ 特殊字符转义"
+          - "Array 越界返回 AppletResult.FAILURE 而非崩溃"
+          - "BlockCallStack 超限测试通过"
+          - "子表达式递归深度限制测试通过"
+        failure_modes: []
+        requires_review: true
+        review_depth: full
+        review_security_sensitive: true
+        tech_stack:
+          - "Kotlin"
+        test_coverage: "安全边界测试"
+
+  - id: T18
+    title: "全量编译 + 测试验证"
+    description: |
+      完整构建验证：
+      1. ./gradlew :app:assembleDebug — 确认 APK 构建成功
+      2. ./gradlew :app:testDebugUnitTest — 所有测试通过
+      3. 回归检查：确认 MVP 的 416+ 测试全部通过
+      4. 新增测试数量统计
+    wave: 6
+    agent: gem-implementer
+    prototype: false
+    priority: high
+    status: pending
+    dependencies: [T17]
+    conflicts_with: []
+    context_files: []
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "初始规划"
+        timestamp: "2026-04-16"
+        estimated_effort: small
+        estimated_files: 0
+        estimated_lines: 0
+        focus_area: "验证"
+        verification:
+          - "./gradlew :app:assembleDebug — exit 0"
+          - "./gradlew :app:testDebugUnitTest — 0 failures"
+          - "新增测试数 ≥ 30"
+        acceptance_criteria:
+          - "APK 构建成功"
+          - "所有测试通过（含 MVP 回归 + V1 新增）"
+          - "0 编译警告涉及新增代码（deprecation 等例外）"
+        failure_modes:
+          - scenario: "新增代码引入编译错误"
+            likelihood: low
+            impact: medium
+            mitigation: "每个任务结束后都执行 compileDebugKotlin 验证"
+        tech_stack:
+          - "Gradle"
+        test_coverage: "全量验证"
