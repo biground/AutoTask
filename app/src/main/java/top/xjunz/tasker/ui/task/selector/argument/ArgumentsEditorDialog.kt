@@ -385,6 +385,13 @@ class ArgumentsEditorDialog : BaseDialogFragment<DialogArgumentsEditorBinding>()
                         updateValue(it.single())
                     }.show(fragmentManager)
 
+            VariantArgType.INT_FREQUENCY_WINDOW ->
+                EnumSelectorDialog().setSingleSelectionMode()
+                    .setInitialSelections(value?.let { Collections.singleton(it as Int) })
+                    .init(arg.name, R.array.frequency_windows) {
+                        updateValue(it.single())
+                    }.show(fragmentManager)
+
             else ->
                 TextEditorDialog().configEditText { et ->
                     et.configInputType(arg.valueType, true)

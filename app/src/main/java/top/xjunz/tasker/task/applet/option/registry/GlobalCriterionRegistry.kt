@@ -108,6 +108,6 @@ class GlobalCriterionRegistry(id: Int) : AppletOptionRegistry(id) {
         FrequencyConstraint { FrequencyCounterRepository.getOrInitialize() }
     }.withValueArgument<String>(R.string.frequency_task_key)
         .withValueArgument<Int>(R.string.frequency_max_count)
-        .withValueArgument<Int>(R.string.frequency_window_type)
+        .withValueArgument<Int>(R.string.frequency_window_type, VariantArgType.INT_FREQUENCY_WINDOW)
 
 }
