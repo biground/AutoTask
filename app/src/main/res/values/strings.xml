@@ -950,4 +950,6 @@
     <string name="error_mode_name_empty">模式名称不能为空</string>
     <string name="error_mode_name_duplicate">同名模式已存在</string>
     <string name="select_mode_operation">选择操作类型</string>
+    <string name="silence_non_alarm_streams">静音除闹钟外的所有声音</string>
+    <string name="format_silence_non_alarm_desc">将通话、系统、铃声、媒体、通知音量设为 0，闹钟保持不变</string>
 </resources>

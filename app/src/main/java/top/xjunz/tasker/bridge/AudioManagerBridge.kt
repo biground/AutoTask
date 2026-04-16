@@ -40,4 +40,21 @@ object AudioManagerBridge {
         audioManager.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, keyCode))
         audioManager.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_UP, keyCode))
     }
+
+    /**
+     * 将闹钟以外的所有音频流静音。
+     * 适用于"静音除闹钟外的所有声音"场景。
+     */
+    fun silenceNonAlarmStreams() {
+        val streams = intArrayOf(
+            AudioManager.STREAM_VOICE_CALL,
+            AudioManager.STREAM_SYSTEM,
+            AudioManager.STREAM_RING,
+            AudioManager.STREAM_MUSIC,
+            AudioManager.STREAM_NOTIFICATION
+        )
+        for (stream in streams) {
+            audioManager.setStreamVolume(stream, 0, 0)
+        }
+    }
 }

@@ -9,6 +9,7 @@ import top.xjunz.tasker.bridge.AudioManagerBridge
 import top.xjunz.tasker.bridge.NotificationManagerBridge
 import top.xjunz.tasker.bridge.TtsBridge
 import top.xjunz.tasker.engine.applet.action.doubleArgsAction
+import top.xjunz.tasker.engine.applet.action.emptyArgAction
 import top.xjunz.tasker.engine.applet.action.optimisticVarRefAction
 import top.xjunz.tasker.engine.applet.action.simpleSingleNonNullArgAction
 import top.xjunz.tasker.task.applet.action.PlaySoundAction
@@ -105,8 +106,16 @@ class SoundActionRegistry(id: Int) : AppletOptionRegistry(id) {
     @AppletOrdinal(0x0005)
     val setAlarm = appletOption(R.string.set_alarm_action) {
         SetAlarmAction()
-    }.withValueArgument<Int>(R.string.alarm_hour)
-        .withValueArgument<Int>(R.string.alarm_minute)
+    }.withValueArgument<Int>(R.string.alarm_hour, VariantArgType.INT_HOUR_OF_DAY)
+        .withValueArgument<Int>(R.string.alarm_minute, VariantArgType.INT_MIN_OR_SEC)
         .withValueArgument<String>(R.string.alarm_message)
         .withValueArgument<Boolean>(R.string.alarm_vibrate)
+
+    @AppletOrdinal(0x0006)
+    val silenceNonAlarmStreams = appletOption(R.string.silence_non_alarm_streams) {
+        emptyArgAction {
+            AudioManagerBridge.silenceNonAlarmStreams()
+            true
+        }
+    }
 }
