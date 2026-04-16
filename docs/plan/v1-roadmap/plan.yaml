@@ -1,0 +1,672 @@
+plan_id: v1-roadmap
+plan_name: "AutoPilot V1 实施路线图"
+version: "1.0.0"
+created_at: "2026-04-16"
+created_by: gem-planner
+status: pending_approval
+
+objective: |
+  在 MVP（118 项）100% 完成的基础上，补全 177 项 V1 新增功能：
+  引擎核心补全（Dictionary/Array 变量、Action Block、宏模板），
+  38 个新触发器、55 个新动作、28 个新约束条件，
+  自定义 UI 场景系统（15 组件 + 6 设计能力），
+  PC/Web 宏编辑器 + Firebase 云同步，
+  以及 7 项 Android 基础设施补充（A11y Service / HTTP Server / 传感器 / Shizuku / Widget / QS Tile / 悬浮按钮）。
+  使 AutoPilot 成为功能齐全的自动化平台。
+
+total_features: 177
+total_batches: 10
+total_waves: 3
+
+# ───────────────────────────────────────────────────────────
+# 波次总览
+# ───────────────────────────────────────────────────────────
+
+waves:
+  - wave: 1
+    batches: [B01-engine-core, B02-android-infra]
+    description: |
+      基础层：补全引擎核心能力（Dictionary/Array 变量、Action Block、数组操作、宏模板）
+      与 Android 基础设施（Accessibility Service、HTTP Server、传感器服务、Shizuku、Widget/QS Tile/悬浮按钮）。
+      这两个批次没有外部依赖，可完全并行，是后续所有功能的前置条件。
+
+  - wave: 2
+    batches: [B03-triggers-broadcast, B04-triggers-sensor-phone-internal, B05-actions-settings-sound, B06-actions-comm-app-data, B07-actions-ui-net-script, B08-constraints]
+    description: |
+      功能扩展层：在 Wave 1 基础设施就绪后，6 个批次全面并行推进——
+      2 个触发器批次（38 项）、3 个动作批次（54 项，A-UI-004 归入 B09）、1 个约束批次（28 项）。
+      这些批次之间无交叉依赖，可同时分派给多个实施代理。
+
+  - wave: 3
+    batches: [B09-custom-scene, B10-web-editor-sync]
+    description: |
+      高级系统层：两个重量级独立子系统——
+      B09 自定义 UI 场景引擎（Compose 动态渲染 + 事件/数据绑定），
+      B10 PC/Web 宏编辑器（React 拖拽编辑器）+ Firebase 云同步。
+      两者仅依赖 Wave 1 的数据模型和基础设施，技术上可与 Wave 2 并行，
+      但建议在 Wave 2 核心功能稳定后再启动，以确保数据模型不再变动。
+
+# ───────────────────────────────────────────────────────────
+# 批次详情
+# ───────────────────────────────────────────────────────────
+
+batches:
+  # ─────────── Wave 1 ───────────
+
+  - batch_id: B01-engine-core
+    batch_name: "引擎核心补全"
+    wave: 1
+    depends_on: []
+    complexity: complex
+    estimated_tasks: 28
+    description: |
+      补全引擎高级数据结构与控制流：Dictionary/Array 变量类型及其持久化/序列化，
+      Iterate Dictionary/Array 遍历控制流，Action Block 可复用动作块（类函数调用栈），
+      数组高级操作（排序/过滤/映射/查找/去重），以及预置宏模板系统。
+      这是 V1 最关键的基础工作——后续的数据相关动作、约束、Web 编辑器和场景数据绑定都依赖此批次。
+    features:
+      engine:
+        - E-007   # 宏模板
+        - V-005   # Dictionary 变量
+        - V-006   # Array 变量
+        - CF-004  # Iterate Dictionary/Array
+        - CF-009  # Action Block（可复用动作块）
+        - CF-010  # Exit Action Block
+        - EX-006  # 数组操作（排序/过滤/映射/查找/去重）
+      triggers: []
+      actions: []
+      constraints: []
+      ui_scene: []
+      web_sync: []
+      android_infra: []
+    risk_notes: |
+      1. Action Block 需要实现调用栈（call stack）、参数传递和返回值，是类函数抽象，
+         引擎 Runtime 改动较大，需要处理递归深度限制和栈溢出保护。
+      2. Dictionary/Array 变量的 JSON 序列化需要兼容现有 DTO 体系（Referent/Reference），
+         持久化到 DataStore 时需注意大对象的性能。
+      3. CF-004 Iterate 需要与现有 Repeat 循环共享 Break/Continue 语义，避免行为冲突。
+      4. EX-006 数组操作的 filter/map 涉及表达式求值，需扩展 ExpressionEvaluator。
+      5. 宏模板系统需要设计模板发现/加载/参数化机制，与导入/导出格式统一。
+
+  - batch_id: B02-android-infra
+    batch_name: "Android 基础设施补充"
+    wave: 1
+    depends_on: []
+    complexity: complex
+    estimated_tasks: 30
+    description: |
+      补全 7 项 Android 平台基础设施：Accessibility Service 无障碍服务框架（UI 自动化核心），
+      内置 HTTP Server（Webhook/远程控制），传感器服务（加速度/陀螺仪/光线/距离），
+      Shizuku/ADB 权限集成，桌面小部件、Quick Settings Tile 和悬浮按钮。
+      这些是 Wave 2 中众多触发器和动作的硬件/系统依赖。
+    features:
+      engine: []
+      triggers: []
+      actions: []
+      constraints: []
+      ui_scene: []
+      web_sync: []
+      android_infra:
+        - AND-002    # Accessibility Service
+        - AND-006    # 内置 HTTP Server
+        - AND-008    # 传感器服务
+        - PERM-002   # Shizuku/ADB 权限
+        - WIDGET-001 # 桌面小部件（按钮）
+        - WIDGET-002 # Quick Settings Tile
+        - WIDGET-004 # 悬浮按钮
+    risk_notes: |
+      1. Accessibility Service 在国产 ROM（MIUI/ColorOS/OneUI）上易被系统自动关闭，
+         需引导用户加入自启动白名单 + 定期检测服务状态 + 断线重连机制。
+      2. AND-006 HTTP Server 选型（NanoHTTPD vs Ktor-Server）需评估体积与性能，
+         必须绑定 localhost 或加认证防止局域网未授权访问（安全敏感）。
+      3. Shizuku 用户安装门槛高（需 ADB 或 Root），作为可选增强，核心功能不能强依赖。
+      4. Widget/QS Tile 在不同启动器上行为不一致，需测试主流 ROM。
+      5. 悬浮按钮需要 SYSTEM_ALERT_WINDOW 权限，且需处理 Android 16 overlay 限制。
+
+  # ─────────── Wave 2 ───────────
+
+  - batch_id: B03-triggers-broadcast
+    batch_name: "触发器批次 A — 系统与网络广播"
+    wave: 2
+    depends_on: [B02-android-infra]
+    complexity: medium
+    estimated_tasks: 25
+    description: |
+      16 个基于系统广播（BroadcastReceiver）和 ContentObserver 的触发器：
+      网络状态变化（WiFi SSID/数据连接/飞行模式/热点/VPN），
+      电池扩展（温度/省电模式），系统设置变化（GPS/静音/DND/手电筒/自动同步/设置项变更），
+      深色主题切换，通知栏按钮，以及应用安装/卸载/更新。
+      这些触发器遵循 MVP 已有的 EventDispatcher → EventFilter → Referent 模式，
+      大部分是 BroadcastReceiver + ContentObserver 的标准实现。
+    features:
+      engine: []
+      triggers:
+        # 网络（5）
+        - T-NET-002  # WiFi SSID Transition
+        - T-NET-004  # Data Connectivity Change
+        - T-NET-008  # Airplane Mode Changed
+        - T-NET-009  # Hotspot Enabled/Disabled
+        - T-NET-011  # VPN State
+        # 电量（2）
+        - T-PWR-003  # Battery Temperature
+        - T-PWR-004  # Battery Saver State
+        # 系统（6）
+        - T-SYS-001  # System Setting Change
+        - T-SYS-004  # GPS Enabled/Disabled
+        - T-SYS-005  # Silent Mode
+        - T-SYS-006  # DND Mode
+        - T-SYS-007  # Torch On/Off
+        - T-SYS-008  # Autosync Changed
+        # 设备（1）
+        - T-DEV-011  # Dark Theme Change
+        # 通知（1）
+        - T-NOTIF-002 # Notification Bar Button
+        # 应用（1）
+        - T-APP-002  # App Install/Remove/Update
+      actions: []
+      constraints: []
+      ui_scene: []
+      web_sync: []
+      android_infra: []
+    risk_notes: |
+      1. T-SYS-001 System Setting Change 需要 ContentObserver 监听 Settings.System/Secure/Global，
+         在高频变化场景下需要 debounce 防止事件风暴。
+      2. T-NET-009 Hotspot 在部分 ROM 上广播行为不一致，可能需要反射或轮询备选。
+      3. T-NET-011 VPN State 依赖 ConnectivityManager.NetworkCallback，需处理多 VPN 场景。
+      4. T-NOTIF-002 需要在常驻通知中动态添加/移除自定义按钮，依赖 AND-001 已有的前台通知框架。
+
+  - batch_id: B04-triggers-sensor-phone-internal
+    batch_name: "触发器批次 B — 传感器/电话/内部"
+    wave: 2
+    depends_on: [B01-engine-core, B02-android-infra]
+    complexity: complex
+    estimated_tasks: 35
+    description: |
+      22 个需要特殊基础设施的触发器：
+      传感器类（屏幕方向/翻转/摇晃依赖 AND-008 传感器服务），
+      电话补全（去电/通话中/结束/未接/短信发送，扩展 MVP 的 PhoneCallEventDispatcher），
+      内部触发器（宏启用/完成/模式切换/Webhook/悬浮按钮/小部件/快捷方式/QS Tile），
+      硬件（USB 设备/媒体按钮），媒体（曲目变化/音频播放检测），
+      时间扩展（秒表/日历事件）。
+    features:
+      engine: []
+      triggers:
+        # 设备传感器（3）
+        - T-DEV-004  # Screen Orientation
+        - T-DEV-005  # Flip Device
+        - T-DEV-006  # Shake Device
+        # 硬件（2）
+        - T-HW-008   # USB Device Connect/Disconnect
+        - T-HW-009   # Media Button Pressed
+        # 媒体（2）
+        - T-MEDIA-001 # Media Track Changed
+        - T-MEDIA-002 # Music/Sound Playing
+        # 时间（2）
+        - T-TIME-004 # Stopwatch
+        - T-TIME-005 # Calendar Event
+        # 电话（5）
+        - T-PHONE-002 # Call Outgoing
+        - T-PHONE-003 # Call Active
+        - T-PHONE-004 # Call Ended
+        - T-PHONE-005 # Call Missed
+        - T-PHONE-007 # SMS Sent
+        # 内部（8）
+        - T-INT-002  # Macro Enabled
+        - T-INT-003  # Macro Finished
+        - T-INT-004  # Mode Change
+        - T-INT-007  # Webhook URL
+        - T-INT-010  # Floating Button
+        - T-INT-011  # Widget Button
+        - T-INT-012  # Shortcut Launched
+        - T-INT-013  # Quick Settings Tile
+      actions: []
+      constraints: []
+      ui_scene: []
+      web_sync: []
+      android_infra: []
+    risk_notes: |
+      1. T-DEV-005/006（翻转/摇晃）依赖加速度计和陀螺仪，需实现传感器融合算法，
+         低端设备传感器精度差可能导致误触发，需可调灵敏度阈值。
+      2. T-INT-007 Webhook 依赖 AND-006 HTTP Server，需处理路由注册、认证和并发请求。
+      3. T-INT-010/011/013 分别依赖 WIDGET-004/WIDGET-001/WIDGET-002，
+         需要在 B02 完成后才能集成事件分发。
+      4. T-PHONE-002~005 扩展现有 PhoneCallEventDispatcher，需要处理 TelephonyCallback
+         的多状态机转换（ringing → active → ended / ringing → missed）。
+      5. T-TIME-005 Calendar Event 需要 CalendarProvider 权限和 ContentObserver，
+         高频日历变更可能产生大量事件。
+      6. T-MEDIA-001/002 依赖 MediaSession/AudioManager，需兼容不同播放器的实现差异。
+
+  - batch_id: B05-actions-settings-sound
+    batch_name: "动作批次 A — 设备设置与音量"
+    wave: 2
+    depends_on: [B02-android-infra]
+    complexity: medium
+    estimated_tasks: 22
+    description: |
+      17 个设备设置和音量相关动作：
+      设备设置（飞行模式/GPS/热点/沉浸模式/移动数据/屏幕超时/省电/自动同步/驾驶模式/壁纸），
+      音量扩展（音量增减/铃声/通知音/报时/扬声器/振动开关/音量弹窗）。
+      大部分依赖 Settings.System/Secure 写入或 Shizuku 特权操作。
+    features:
+      engine: []
+      triggers: []
+      actions:
+        # 设备设置（10）
+        - A-SET-001  # Airplane Mode On/Off
+        - A-SET-006  # GPS Enable/Disable
+        - A-SET-007  # HotSpot On/Off
+        - A-SET-008  # Immersive Mode
+        - A-SET-010  # Mobile Data On/Off
+        - A-SET-013  # Set Screen Timeout
+        - A-SET-017  # Battery Saver
+        - A-SET-022  # Autosync On/Off
+        - A-SET-025  # Car Mode
+        - A-SET-030  # Set Wallpaper
+        # 音量（7）
+        - A-SND-002  # Volume Up/Down
+        - A-SND-003  # Ringtone Configure
+        - A-SND-004  # Set Notification Sound
+        - A-SND-008  # Say Current Time
+        - A-SND-009  # Speakerphone On/Off
+        - A-SND-011  # Vibrate Enable/Disable
+        - A-SND-012  # Show Volume Popup
+      constraints: []
+      ui_scene: []
+      web_sync: []
+      android_infra: []
+    risk_notes: |
+      1. A-SET-001/006/007/010 需要 Shizuku 或 WRITE_SECURE_SETTINGS 权限，
+         无 Shizuku 时应优雅降级并提示用户。
+      2. A-SET-008 Immersive Mode 在不同 Android 版本 API 有变化（WindowInsetsController vs SystemUiVisibility）。
+      3. A-SET-030 Set Wallpaper 需要处理 WallpaperManager 的锁屏/主屏分别设置。
+      4. A-SND-003/004 铃声/通知音设置需要 RingtoneManager + MediaStore 文件选择。
+      5. A-SND-008 Say Current Time 依赖 MVP 已有的 TtsBridge。
+
+  - batch_id: B06-actions-comm-app-data
+    batch_name: "动作批次 B — 通讯/应用/数据/内部"
+    wave: 2
+    depends_on: [B01-engine-core, B02-android-infra]
+    complexity: medium
+    estimated_tasks: 28
+    description: |
+      20 个涵盖通讯、应用控制、数据操作和内部控制的动作：
+      通讯（拨打电话/接听/拒接/发短信/发邮件/通知回复），
+      应用（强杀应用/启动快捷方式/设置闹钟），
+      数据（打开文件/清除变量/数组操作/字典清除/JSON解析/文本处理/清除&导出日志/添加日历事件），
+      内部（启用/禁用分类、启用/禁用触发器）。
+      数据操作动作依赖 B01 的 Dictionary/Array 变量系统。
+    features:
+      engine: []
+      triggers: []
+      actions:
+        # 通讯（6）
+        - A-COMM-001 # Make Call
+        - A-COMM-002 # Answer Call
+        - A-COMM-003 # Call Reject
+        - A-COMM-004 # Send SMS
+        - A-COMM-005 # Send Email
+        - A-COMM-009 # Notification Reply
+        # 应用（3）
+        - A-APP-003  # Kill Application
+        - A-APP-007  # Launch Shortcut
+        - A-APP-010  # Alarm Clock
+        # 数据（9）
+        - A-DATA-003 # Open File
+        - A-DATA-008 # Clear Variables
+        - A-DATA-009 # Array Manipulation
+        - A-DATA-010 # Clear Dictionary/Array Entry
+        - A-DATA-011 # JSON Parse Action
+        - A-DATA-012 # Text Manipulation
+        - A-DATA-014 # Clear Log
+        - A-DATA-015 # Export Log
+        - A-DATA-016 # Calendar Add Event
+        # 内部（2）
+        - A-INT-002  # Enable/Disable Category
+        - A-INT-003  # Enable/Disable Trigger
+      constraints: []
+      ui_scene: []
+      web_sync: []
+      android_infra: []
+    risk_notes: |
+      1. A-COMM-002/003 接听/拒接来电需要 TelecomManager + ANSWER_PHONE_CALLS 权限（API 26+），
+         或通过 Accessibility Service 模拟操作作为备选。
+      2. A-COMM-009 Notification Reply 需要通过 NLS 获取 RemoteInput 并 sendReply，
+         不同应用的通知结构不一致，需健壮的解析逻辑。
+      3. A-APP-003 Kill Application 需要 Shizuku/Root 的 forceStopPackage，
+         无特权时降级为 killBackgroundProcesses。
+      4. A-DATA-009/010 Array/Dict 操作直接依赖 B01 的 V-005/V-006 变量类型。
+      5. A-DATA-011 JSON Parse 需要处理嵌套对象到 Dictionary 变量的映射。
+
+  - batch_id: B07-actions-ui-net-script
+    batch_name: "动作批次 C — UI 显示/网络/脚本/系统/媒体"
+    wave: 2
+    depends_on: [B02-android-infra]
+    complexity: medium
+    estimated_tasks: 25
+    description: |
+      17 个 UI 显示、网络通信、脚本执行、系统控制和媒体相关动作：
+      UI（气泡通知/选项对话框/选择对话框/悬浮文本/悬浮按钮配置/展开状态栏/清除通知/键盘输入/降低亮度），
+      网络（HTTP Server 响应/打开网页/发送 Intent/分享文本），
+      脚本（JavaScript 执行），系统（保持唤醒/生物识别验证），媒体（秒表）。
+      注意：A-UI-004（Display Custom Scene）归入 B09 场景系统。
+    features:
+      engine: []
+      triggers: []
+      actions:
+        # UI 显示（9，不含 A-UI-004）
+        - A-UI-003   # Bubble Notification
+        - A-UI-005   # Option Dialog
+        - A-UI-006   # Selection Dialog
+        - A-UI-008   # Floating Text
+        - A-UI-009   # Floating Button Configure
+        - A-UI-012   # Expand/Collapse Status Bar
+        - A-UI-013   # Clear Notifications
+        - A-UI-018   # Keyboard Prompt
+        - A-UI-020   # Dim Screen
+        # 网络（4）
+        - A-NET-002  # HTTP Server Response
+        - A-NET-003  # Open Website / HTTP GET
+        - A-NET-005  # Send Intent
+        - A-NET-007  # Share Text
+        # 脚本（1）
+        - A-SCRIPT-002 # JavaScript Code
+        # 系统（2）
+        - A-SYS-002  # Keep Device Awake
+        - A-SYS-005  # Authenticate User
+        # 媒体（1）
+        - A-MEDIA-002 # Stopwatch
+      constraints: []
+      ui_scene: []
+      web_sync: []
+      android_infra: []
+    risk_notes: |
+      1. A-UI-003 Bubble Notification 需要 Android 11+ Bubble API，需处理用户未开启气泡权限的降级。
+      2. A-UI-012 Expand/Collapse StatusBar 需要 Accessibility Service 或 StatusBarManager（受限 API）。
+      3. A-UI-013 Clear Notifications 需要 NLS 的 cancelAllNotifications 能力。
+      4. A-NET-002 HTTP Server Response 依赖 B02 的 AND-006 HTTP Server 基础设施。
+      5. A-SCRIPT-002 JavaScript 执行需要嵌入 JS 引擎（Rhino/QuickJS），
+         需沙箱隔离防止恶意代码（安全敏感），需限制可用 API 和执行时间。
+      6. A-SYS-005 Authenticate User 使用 BiometricPrompt API，需处理多种认证方式降级。
+      7. A-MEDIA-002 Stopwatch 与 T-TIME-004 触发器共享秒表状态，需统一 StopwatchManager。
+
+  - batch_id: B08-constraints
+    batch_name: "约束条件批量实现"
+    wave: 2
+    depends_on: [B01-engine-core, B02-android-infra]
+    complexity: medium
+    estimated_tasks: 25
+    description: |
+      28 个新约束条件的批量实现：设备状态（朝向/方向/近距离/光线/亮度/手电筒），
+      网络（热点/移动数据/NFC/VPN/IP地址），电量（温度/省电模式），
+      时间（月日/月份/开机时长），应用（音乐/日历事件），
+      电话通知（响铃/通知存在/通知音量/铃声音量/DND），
+      系统（自动旋转/自动同步/GPS/系统设置值/剪贴板内容）。
+      约束条件大多是轻量的状态查询（Criterion），遵循统一的 Applet 注册模式。
+    features:
+      engine: []
+      triggers: []
+      actions: []
+      constraints:
+        # 设备（6）
+        - C-DEV-003  # Device Facing
+        - C-DEV-004  # Device Orientation
+        - C-DEV-005  # Proximity Sensor
+        - C-DEV-006  # Light Sensor
+        - C-DEV-007  # Brightness
+        - C-DEV-008  # Torch On/Off
+        # 网络（5）
+        - C-NET-002  # WiFi HotSpot State
+        - C-NET-004  # Mobile Data On/Off
+        - C-NET-005  # NFC State
+        - C-NET-007  # VPN State
+        - C-NET-008  # IP Address
+        # 电量（2）
+        - C-PWR-002  # Battery Temperature
+        - C-PWR-003  # Battery Saver State
+        # 时间（3）
+        - C-TIME-003 # Day of the Month
+        - C-TIME-004 # Month of the Year
+        - C-TIME-006 # Time Since Boot
+        # 应用（2）
+        - C-APP-002  # Music Active
+        - C-APP-004  # Calendar Entry
+        # 电话通知（5）
+        - C-PHONE-002 # Phone Ringing
+        - C-PHONE-004 # Notification Present
+        - C-PHONE-005 # Notification Volume
+        - C-PHONE-006 # Ringer Volume
+        - C-PHONE-008 # Priority Mode / DND
+        # 系统（5）
+        - C-SYS-001  # Auto Rotate
+        - C-SYS-002  # Auto Sync
+        - C-SYS-003  # GPS State
+        - C-SYS-005  # System Settings
+        - C-SYS-007  # Clipboard Content
+      ui_scene: []
+      web_sync: []
+      android_infra: []
+    risk_notes: |
+      1. C-DEV-005/006 传感器约束依赖 B02 的 AND-008 传感器服务，需复用同一 SensorManager 实例。
+      2. C-PHONE-004 Notification Present 需要 NLS 查询当前通知状态，依赖 MVP 已完成的 NLS 框架。
+      3. C-APP-004 Calendar Entry 需要 READ_CALENDAR 权限和 CalendarProvider 查询。
+      4. C-SYS-005 System Settings 是通用约束（读取任意 Settings 值并比较），
+         需要防止用户输入不存在的 key 导致异常。
+      5. 28 个约束大量复用相同模式（CriterionRegistry + AppletOrdinal + GlobalCriterionRegistry），
+         可以流水线式批量实现，效率较高。
+
+  # ─────────── Wave 3 ───────────
+
+  - batch_id: B09-custom-scene
+    batch_name: "自定义 UI 场景系统"
+    wave: 3
+    depends_on: [B01-engine-core, B02-android-infra]
+    complexity: complex
+    estimated_tasks: 45
+    description: |
+      构建完整的自定义 UI 场景引擎（22 项）：
+      15 个 UI 组件（Scene 画布、按钮、文本、图片、输入框、开关、滑块、列表/网格、下拉选择、
+      进度条、布局容器、样式系统、事件绑定、数据绑定、场景导航），
+      6 项设计能力（预置主题、组件样式预设、动画预设、深色模式适配、模糊背景、自适应布局），
+      加上 A-UI-004（Display Custom Scene 动作）。
+      核心是基于 Compose 的运行时 UI 渲染器：JSON 场景定义 → 动态组件树 → 事件/数据绑定。
+    features:
+      engine: []
+      triggers: []
+      actions:
+        - A-UI-004   # Display Custom Scene
+      constraints: []
+      ui_scene:
+        # UI 组件（15）
+        - UI-001     # Scene 画布
+        - UI-002     # 按钮组件
+        - UI-003     # 文本标签
+        - UI-004     # 图片组件
+        - UI-005     # 输入框组件
+        - UI-006     # 开关组件
+        - UI-007     # 滑块组件
+        - UI-008     # 列表/网格组件
+        - UI-009     # 下拉选择组件
+        - UI-010     # 进度条组件
+        - UI-011     # 布局容器
+        - UI-012     # 样式系统
+        - UI-013     # 事件绑定
+        - UI-014     # 数据绑定
+        - UI-015     # 场景间导航
+        # 设计能力（6）
+        - DES-SCENE-001 # 预置主题
+        - DES-SCENE-002 # 组件样式预设
+        - DES-SCENE-003 # 动画预设
+        - DES-SCENE-004 # 深色模式自适应
+        - DES-SCENE-005 # 模糊背景效果
+        - DES-SCENE-006 # 自适应布局
+      web_sync: []
+      android_infra: []
+    risk_notes: |
+      1. 核心风险：Compose 动态渲染器——需要将 JSON 场景定义解析为 Composable 树，
+         这不是标准 Compose 用法，需要自定义 Composition + 运行时类型分发。
+      2. 数据绑定（UI-014）需要与变量系统（包括 B01 的 Dict/Array）双向绑定，
+         变量变更 → UI 更新，用户操作 → 变量写入，需处理循环更新。
+      3. 事件绑定（UI-013）需要将 UI 事件（onClick/onValueChange）映射到宏动作执行，
+         可能需要引入轻量级事件总线。
+      4. 性能风险：复杂场景（多组件 + 动画 + 数据绑定）可能导致 Compose 过度重组，
+         需要 key/remember 优化和组件池化策略。
+      5. DES-SCENE-005 模糊背景需要 RenderEffect（API 31+）或降级方案。
+      6. 场景定义的 JSON Schema 需要与 Web 端编辑器（B10 WEB-011）保持一致。
+
+  - batch_id: B10-web-editor-sync
+    batch_name: "PC/Web 宏编辑器与云同步"
+    wave: 3
+    depends_on: [B01-engine-core]
+    complexity: complex
+    estimated_tasks: 55
+    description: |
+      全新平台开发（21 项）：
+      React + TypeScript 宏编辑器（可视化拖拽编辑器/触发器配置/动作配置/约束配置/控制流可视化/
+      变量管理/表达式编辑/宏测试-模拟/列表管理/分类管理/场景编辑器/模板浏览），
+      Firebase 云同步（Google OAuth 登录/宏同步/变量同步/场景同步/设置同步/
+      冲突解决/离线编辑/增量同步/同步状态指示）。
+      这是独立的 Web 前端 + Firebase 后端工程，与 Android 端共享 JSON Schema。
+    features:
+      engine: []
+      triggers: []
+      actions: []
+      constraints: []
+      ui_scene: []
+      web_sync:
+        # 宏编辑器（12）
+        - WEB-001   # 可视化宏编辑器
+        - WEB-002   # 触发器配置面板
+        - WEB-003   # 动作配置面板
+        - WEB-004   # 约束条件配置面板
+        - WEB-005   # 控制流可视化
+        - WEB-006   # 变量管理器
+        - WEB-007   # 表达式编辑器
+        - WEB-008   # 宏测试/模拟
+        - WEB-009   # 宏列表管理
+        - WEB-010   # 分类管理
+        - WEB-011   # 自定义场景编辑器
+        - WEB-012   # 宏模板浏览
+        # 云同步（9）
+        - SYNC-001  # Google 账号登录
+        - SYNC-002  # 宏数据云同步
+        - SYNC-003  # 变量数据同步
+        - SYNC-004  # 自定义场景同步
+        - SYNC-005  # 设置同步
+        - SYNC-006  # 冲突解决
+        - SYNC-007  # 离线编辑
+        - SYNC-008  # 增量同步
+        - SYNC-009  # 同步状态指示
+      android_infra: []
+    risk_notes: |
+      1. 核心风险：Android ↔ Web 数据模型一致性——两端必须共享相同的 JSON Schema，
+         任何 Android 端数据结构变更都必须同步到 Web 端，建议抽取为独立的 schema 包。
+      2. Firestore 双向同步冲突：多端同时编辑同一宏时的冲突解决策略（Last-Write-Wins +
+         乐观锁版本号 + 用户可见的冲突 UI），需充分的边界测试。
+      3. WEB-005 控制流可视化（流程图形式展示 If/Loop/Block）是编辑器的核心难点，
+         推荐使用 React Flow / Reactflow 库，但需自定义节点类型。
+      4. WEB-011 场景编辑器是重量级拖拽 UI 设计器，工作量堪比独立产品，
+         V1 可先做基础版（组件拖放 + 属性编辑），高级交互编辑延后。
+      5. SYNC-007 离线编辑依赖 IndexedDB 本地缓存 + 联网后同步队列，
+         需处理离线期间多次编辑的合并。
+      6. Firebase Cloud Functions 的冷启动延迟（~1-2s）可能影响同步体验。
+      7. Web 端是全新技术栈（React + TypeScript），与 Android 端无代码复用，
+         需要独立的构建/部署/测试流水线。
+
+# ───────────────────────────────────────────────────────────
+# 依赖关系总览（DAG）
+# ───────────────────────────────────────────────────────────
+#
+#   Wave 1 (parallel):
+#     B01 ─┐
+#     B02 ─┤
+#           │
+#   Wave 2 (parallel, all depend on W1):
+#     B03 ─── depends B02
+#     B04 ─── depends B01 + B02
+#     B05 ─── depends B02
+#     B06 ─── depends B01 + B02
+#     B07 ─── depends B02
+#     B08 ─── depends B01 + B02
+#           │
+#   Wave 3 (parallel, depend on W1):
+#     B09 ─── depends B01 + B02
+#     B10 ─── depends B01
+#
+# 注：Wave 3 的两个批次技术上仅依赖 Wave 1，但建议在 Wave 2
+#     核心功能稳定后再启动，以确保数据模型和 API 不再剧烈变动。
+# ───────────────────────────────────────────────────────────
+
+# ───────────────────────────────────────────────────────────
+# 功能统计验证
+# ───────────────────────────────────────────────────────────
+#
+# | 批次 | 引擎 | 触发器 | 动作 | 约束 | 场景 | Web/Sync | 基础设施 | 合计 |
+# |------|------|--------|------|------|------|----------|----------|------|
+# | B01  |  7   |   0    |  0   |  0   |  0   |    0     |    0     |   7  |
+# | B02  |  0   |   0    |  0   |  0   |  0   |    0     |    7     |   7  |
+# | B03  |  0   |  16    |  0   |  0   |  0   |    0     |    0     |  16  |
+# | B04  |  0   |  22    |  0   |  0   |  0   |    0     |    0     |  22  |
+# | B05  |  0   |   0    | 17   |  0   |  0   |    0     |    0     |  17  |
+# | B06  |  0   |   0    | 20   |  0   |  0   |    0     |    0     |  20  |
+# | B07  |  0   |   0    | 17   |  0   |  0   |    0     |    0     |  17  |
+# | B08  |  0   |   0    |  0   | 28   |  0   |    0     |    0     |  28  |
+# | B09  |  0   |   0    |  1   |  0   | 21   |    0     |    0     |  22  |
+# | B10  |  0   |   0    |  0   |  0   |  0   |   21     |    0     |  21  |
+# |------|------|--------|------|------|------|----------|----------|------|
+# | 合计 |  7   |  38    | 55   | 28   | 21   |   21     |    7     | 177  |
+# ───────────────────────────────────────────────────────────
+
+pre_mortem:
+  overall_risk_level: high
+
+  critical_failure_modes:
+    - scenario: "Action Block 调用栈实现导致引擎 Runtime 不稳定"
+      likelihood: medium
+      impact: critical
+      mitigation: |
+        限制递归调用深度（默认 16 层）+ 栈溢出异常捕获 + 充分的边界测试；
+        CF-009/CF-010 先做 prototype 验证，确认 Runtime 改动安全后再全量推进。
+
+    - scenario: "Accessibility Service 在国产 ROM 上被频繁自动关闭"
+      likelihood: high
+      impact: high
+      mitigation: |
+        实现服务状态监控 + 自动重启机制 + 用户引导加入自启动白名单；
+        提供非 A11y 降级路径（通过 Shizuku 或标准 API）。
+
+    - scenario: "Firestore 双向同步导致数据丢失"
+      likelihood: medium
+      impact: critical
+      mitigation: |
+        乐观锁 + 版本号 + 变更日志 + 冲突检测 UI；
+        每次同步前本地快照备份；先实现单向同步再扩展为双向。
+
+    - scenario: "Custom Scene 渲染器性能不达标"
+      likelihood: medium
+      impact: high
+      mitigation: |
+        渐进式实现：先支持基础组件（按钮/文本/图片/开关），
+        复杂组件（列表/网格/动画）在 V1.1 追加；
+        使用 Compose LazyLayout + key 优化重组。
+
+    - scenario: "Android 端与 Web 端 JSON Schema 不一致导致同步异常"
+      likelihood: high
+      impact: high
+      mitigation: |
+        抽取 JSON Schema 为独立规范文件（docs/macro-schema.json），
+        两端均从该文件生成类型定义；CI 中加入 Schema 一致性检查。
+
+    - scenario: "JavaScript 执行引擎（A-SCRIPT-002）沙箱逃逸"
+      likelihood: low
+      impact: critical
+      mitigation: |
+        使用 QuickJS/Rhino 严格限制可用 API（禁止文件/网络/反射），
+        执行超时限制（默认 10 秒），独立线程 + 内存限制。
+
+  assumptions:
+    - "MVP 的 118 项功能全部稳定运行，无需在 V1 阶段重新修复"
+    - "Android 16 在 V1 开发期间不会引入破坏性 API 变更"
+    - "现有的 EventDispatcher/EventFilter/Referent 架构能承载 38 个新触发器而不需要重构"
+    - "Firebase 免费层的 Firestore 限额（50K reads/20K writes per day）足够个人使用"
+    - "NanoHTTPD/Ktor-Server 的轻量级 HTTP Server 能满足 Webhook 和远程控制需求"
+    - "QuickJS 或 Rhino JS 引擎可以在 Android 16 上稳定运行"
