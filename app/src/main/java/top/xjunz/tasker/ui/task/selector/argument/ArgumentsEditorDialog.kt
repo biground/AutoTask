@@ -24,6 +24,7 @@ import top.xjunz.tasker.ktx.configInputType
 import top.xjunz.tasker.ktx.doWhenCreated
 import top.xjunz.tasker.ktx.foreColored
 import top.xjunz.tasker.ktx.format
+import top.xjunz.tasker.ktx.array
 import top.xjunz.tasker.ktx.italic
 import top.xjunz.tasker.ktx.observeTransient
 import top.xjunz.tasker.ktx.peekParentViewModel
@@ -37,6 +38,7 @@ import top.xjunz.tasker.ktx.toast
 import top.xjunz.tasker.ktx.underlined
 import top.xjunz.tasker.task.applet.criterion.BoundsCriterion
 import top.xjunz.tasker.task.applet.option.AppletOption
+import top.xjunz.tasker.task.applet.option.AppletOptionFactory
 import top.xjunz.tasker.task.applet.option.descriptor.ArgumentDescriptor
 import top.xjunz.tasker.task.applet.option.descriptor.ValueDescriptor
 import top.xjunz.tasker.task.applet.util.IntValueUtil
@@ -337,6 +339,51 @@ class ArgumentsEditorDialog : BaseDialogFragment<DialogArgumentsEditorBinding>()
                     updateValue(it)
                 }.show(fragmentManager)
             }
+
+            VariantArgType.TEXT_MODE_NAME -> {
+                ModePickerDialog()
+                    .init(AppletOptionFactory.modeRepository) {
+                        updateValue(it)
+                    }
+                    .setTitle(arg.name)
+                    .setInitialSelection(value as? String)
+                    .show(fragmentManager)
+            }
+
+            VariantArgType.TEXT_MODE_OPERATION -> {
+                EnumSelectorDialog().setSingleSelectionMode()
+                    .setInitialSelections(value?.let {
+                        val values = R.array.mode_operation_values.array
+                        val idx = values.indexOf(it as String)
+                        if (idx >= 0) Collections.singleton(idx) else null
+                    })
+                    .init(arg.name, R.array.mode_operations) {
+                        val values = R.array.mode_operation_values.array
+                        updateValue(values[it.single()])
+                    }.show(fragmentManager)
+            }
+
+            VariantArgType.INT_RINGER_MODE ->
+                EnumSelectorDialog().setSingleSelectionMode()
+                    .setInitialSelections(value?.let { Collections.singleton(it as Int) })
+                    .init(arg.name, R.array.ringer_modes) {
+                        updateValue(it.single())
+                    }.show(fragmentManager)
+
+            VariantArgType.INT_DND_FILTER ->
+                EnumSelectorDialog().setSingleSelectionMode()
+                    .setInitialSelections(value?.let { Collections.singleton((it as Int) - 1) })
+                    .init(arg.name, R.array.dnd_filters) {
+                        // INTERRUPTION_FILTER 值从 1 开始
+                        updateValue(it.single() + 1)
+                    }.show(fragmentManager)
+
+            VariantArgType.INT_STREAM_TYPE ->
+                EnumSelectorDialog().setSingleSelectionMode()
+                    .setInitialSelections(value?.let { Collections.singleton(it as Int) })
+                    .init(arg.name, R.array.stream_types) {
+                        updateValue(it.single())
+                    }.show(fragmentManager)
 
             else ->
                 TextEditorDialog().configEditText { et ->

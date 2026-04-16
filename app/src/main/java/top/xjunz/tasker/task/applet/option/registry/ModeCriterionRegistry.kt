@@ -9,6 +9,7 @@ import top.xjunz.tasker.engine.mode.ModeRepository
 import top.xjunz.tasker.task.applet.anno.AppletOrdinal
 import top.xjunz.tasker.task.applet.criterion.ModeActivatedTodayConstraint
 import top.xjunz.tasker.task.applet.criterion.ModeConstraint
+import top.xjunz.tasker.task.applet.value.VariantArgType
 import top.xjunz.tasker.task.mode.ModeHistoryRepository
 
 /**
@@ -22,11 +23,11 @@ class ModeCriterionRegistry(
     @AppletOrdinal(0x0000)
     val modeConstraint = invertibleAppletOption(R.string.check_mode_status) {
         ModeConstraint(modeRepositoryProvider)
-    }.withValueArgument<String>(R.string.mode_name)
+    }.withValueArgument<String>(R.string.mode_name, VariantArgType.TEXT_MODE_NAME)
         .withValueArgument<Boolean>(R.string.expected_mode_active)
 
     @AppletOrdinal(0x0001)
     val modeActivatedToday = invertibleAppletOption(R.string.mode_activated_today) {
         ModeActivatedTodayConstraint { ModeHistoryRepository.getOrInitialize() }
-    }.withValueArgument<String>(R.string.mode_name)
+    }.withValueArgument<String>(R.string.mode_name, VariantArgType.TEXT_MODE_NAME)
 }

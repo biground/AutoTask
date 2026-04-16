@@ -141,4 +141,23 @@
         <item>上一首</item>
         <item>停止</item>
     </string-array>
+
+    <!-- 模式操作类型 -->
+    <string-array name="mode_operations">
+        <item>激活</item>
+        <item>停用</item>
+        <item>切换</item>
+    </string-array>
+    <!-- 模式操作类型内部值 -->
+    <string-array name="mode_operation_values">
+        <item>activate</item>
+        <item>deactivate</item>
+        <item>toggle</item>
+    </string-array>
+    <!-- 频率窗口类型 -->
+    <string-array name="frequency_windows">
+        <item>每小时</item>
+        <item>每天</item>
+        <item>每周</item>
+    </string-array>
 </resources>

@@ -52,6 +52,18 @@ object VariantArgType {
 
     const val INT_PERCENT = 12 shl 16 or Applet.ARG_TYPE_INT
 
+    // 铃声模式枚举选择器（静音/振动/正常）
+    const val INT_RINGER_MODE = 13 shl 16 or Applet.ARG_TYPE_INT
+
+    // 免打扰过滤级别枚举选择器
+    const val INT_DND_FILTER = 14 shl 16 or Applet.ARG_TYPE_INT
+
+    // 音频流类型枚举选择器
+    const val INT_STREAM_TYPE = 15 shl 16 or Applet.ARG_TYPE_INT
+
+    // 频率窗口类型枚举选择器（每小时/每天/每周）
+    const val INT_FREQUENCY_WINDOW = 16 shl 16 or Applet.ARG_TYPE_INT
+
     const val TEXT_PACKAGE_NAME = 1 shl 16 or Applet.ARG_TYPE_TEXT
 
     const val TEXT_ACTIVITY = 2 shl 16 or Applet.ARG_TYPE_TEXT
@@ -66,6 +78,12 @@ object VariantArgType {
         6 shl 16 or Applet.ARG_TYPE_TEXT or MASK_IGNORE_VARIANT_TYPE_WHEN_MATCHING
 
     const val TEXT_VIBRATION_PATTERN = 7 shl 16 or Applet.ARG_TYPE_TEXT
+
+    // 模式名称选择器（从已有模式列表中选择）
+    const val TEXT_MODE_NAME = 8 shl 16 or Applet.ARG_TYPE_TEXT
+
+    // 模式操作类型枚举选择器（激活/停用/切换）
+    const val TEXT_MODE_OPERATION = 9 shl 16 or Applet.ARG_TYPE_TEXT
 
     fun shouldIgnoreVariantTypeWhenMatching(type: Int): Boolean {
         return type == NONE || type and MASK_IGNORE_VARIANT_TYPE_WHEN_MATCHING != 0

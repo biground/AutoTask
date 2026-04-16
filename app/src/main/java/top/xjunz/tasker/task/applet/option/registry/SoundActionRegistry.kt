@@ -30,7 +30,7 @@ class SoundActionRegistry(id: Int) : AppletOptionRegistry(id) {
             AudioManagerBridge.setStreamVolume(streamType!!, volume!!)
             true
         }
-    }.withValueArgument<Int>(R.string.stream_type)
+    }.withValueArgument<Int>(R.string.stream_type, VariantArgType.INT_STREAM_TYPE)
         .withValueArgument<Int>(R.string.volume_level)
         .withSingleValueAppletDescriber<Int> { _, t ->
             val streams = R.array.stream_types.array
@@ -50,7 +50,7 @@ class SoundActionRegistry(id: Int) : AppletOptionRegistry(id) {
             AudioManagerBridge.setRingerMode(it)
             true
         }
-    }.withValueArgument<Int>(R.string.ringer_mode)
+    }.withValueArgument<Int>(R.string.ringer_mode, VariantArgType.INT_RINGER_MODE)
         .withSingleValueAppletDescriber<Int> { applet, t ->
             val modes = R.array.ringer_modes.array
             val idx = t ?: 0
@@ -71,7 +71,7 @@ class SoundActionRegistry(id: Int) : AppletOptionRegistry(id) {
                 false
             }
         }
-    }.withValueArgument<Int>(R.string.set_dnd)
+    }.withValueArgument<Int>(R.string.set_dnd, VariantArgType.INT_DND_FILTER)
         .withSingleValueAppletDescriber<Int> { applet, t ->
             val filters = R.array.dnd_filters.array
             // INTERRUPTION_FILTER 值从 1 开始

@@ -935,4 +935,19 @@
     <string name="frequency_max_count">最大执行次数</string>
     <string name="frequency_window_type">时间窗口</string>
     <string name="mode_activated_today">今天是否激活过模式</string>
+
+    <!-- 模式管理 UI -->
+    <string name="manage_modes">管理模式</string>
+    <string name="create_mode">创建模式</string>
+    <string name="edit_mode">编辑模式</string>
+    <string name="delete_mode">删除模式</string>
+    <string name="select_mode">选择模式</string>
+    <string name="no_modes_hint">暂无模式，请先创建</string>
+    <string name="mode_name_input_hint">输入模式名称</string>
+    <string name="prompt_delete_mode">确认删除模式「<b>%1$s</b>」？此操作不可撤销。</string>
+    <string name="mode_active">已激活</string>
+    <string name="mode_inactive">未激活</string>
+    <string name="error_mode_name_empty">模式名称不能为空</string>
+    <string name="error_mode_name_duplicate">同名模式已存在</string>
+    <string name="select_mode_operation">选择操作类型</string>
 </resources>
